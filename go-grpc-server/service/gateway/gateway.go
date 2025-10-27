@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "grpc-server/api/proto"
+	grpcConfig "grpc-server/config"
 	"grpc-server/pkg/logger"
 	"grpc-server/pkg/rl"
 )
@@ -46,9 +47,31 @@ var CONTROL_RL_ACTIONS = ControlRLActions{
 
 // NewFogAllocationService creates and initializes a new fog allocation service
 func NewFogAllocationService(logger *logger.Logger) *FogAllocationService {
+	// Use default config
+	cfg, _ := grpcConfig.LoadConfig("")
+	defaultModelPath := "./models"
+	if cfg != nil {
+		defaultModelPath = cfg.RL.ModelSavePath
+	}
+	agent := rl.NewAgent(logger, defaultModelPath)
 
-	// TODO constant dir
-	agent := rl.NewAgent(logger, "./models")
+	// Try to load any existing models
+	if err := agent.LoadModels(); err != nil {
+		logger.Error("Failed to load RL models", err)
+	}
+
+	return &FogAllocationService{
+		logger:        logger,
+		nodeRegistry:  &sync.Map{},
+		decisionStore: rl.NewDecisionStore(),
+		agent:         agent,
+		taskTimers:    &sync.Map{},
+	}
+}
+
+// NewFogAllocationServiceWithConfig creates and initializes a fog allocation service with custom config
+func NewFogAllocationServiceWithConfig(logger *logger.Logger, cfg *grpcConfig.Config) *FogAllocationService {
+	agent := rl.NewAgent(logger, cfg.RL.ModelSavePath)
 
 	// Try to load any existing models
 	if err := agent.LoadModels(); err != nil {
