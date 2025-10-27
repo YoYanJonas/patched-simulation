@@ -108,6 +108,10 @@ ifogsim/temp.md
 ifogsim/logs/
 ifogsim/*.log
 
+# Reports
+ifogsim/reports/*.txt
+ifogsim/reports/*.json
+
 # Generated sources
 ifogsim/generated/
 
