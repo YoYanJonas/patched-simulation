@@ -134,3 +134,6 @@ config/**/production.yaml
 config/**/local.yaml
 config/**/secrets.yaml
 
+# Development documentation
+dev-mds/
+
