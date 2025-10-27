@@ -3,9 +3,9 @@ package rl
 import (
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
 	"sync"
 )
 
@@ -114,15 +114,21 @@ func (s *SARSAAlgorithm) Learn(prevState SystemState, action string, newState Sy
 		s.qTable[prevStateID][action] = 0.0
 	}
 
-	// Get next action's Q-value
+	// SARSA uses the actual next action that was taken in the new state
+	// The lastState and lastAction are set by SelectAction when entering newState
+	// so they represent the action that will be taken from newState
 	var nextQ float64 = 0
 	if s.lastState == newStateID && s.lastAction != "" {
-		if val, exists := s.qTable[newStateID][s.lastAction]; exists {
-			nextQ = val
+		// Initialize next action if it doesn't exist yet
+		if _, exists := s.qTable[newStateID][s.lastAction]; !exists {
+			s.qTable[newStateID][s.lastAction] = 0.0
 		}
+		// Get the Q-value for the next action
+		nextQ = s.qTable[newStateID][s.lastAction]
 	}
 
-	// SARSA update formula (uses the actual next action)
+	// SARSA update formula: Q(s,a) = Q(s,a) + alpha * [r + gamma*Q(s',a') - Q(s,a)]
+	// Uses the actual next action (a') not the optimal action
 	oldQ := s.qTable[prevStateID][action]
 	newQ := oldQ + s.alpha*(reward+s.gamma*nextQ-oldQ)
 	s.qTable[prevStateID][action] = newQ
@@ -138,7 +144,7 @@ func (s *SARSAAlgorithm) SaveModel(path string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0644)
 }
 
 // LoadModel loads the Q-table from a file
@@ -146,7 +152,7 @@ func (s *SARSAAlgorithm) LoadModel(path string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}

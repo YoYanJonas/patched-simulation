@@ -3,9 +3,9 @@ package rl
 import (
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 )
@@ -455,7 +455,7 @@ func (h *HybridAlgorithm) SaveModel(path string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(path+".hybrid", data, 0644)
+	return os.WriteFile(path+".hybrid", data, 0644)
 }
 
 // LoadModel restores the algorithm's knowledge
@@ -466,7 +466,7 @@ func (h *HybridAlgorithm) LoadModel(path string) error {
 	}
 
 	// Load hybrid-specific parameters
-	data, err := ioutil.ReadFile(path + ".hybrid")
+	data, err := os.ReadFile(path + ".hybrid")
 	if err != nil {
 		return err
 	}

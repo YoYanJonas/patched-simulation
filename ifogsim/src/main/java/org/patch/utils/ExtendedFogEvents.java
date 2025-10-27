@@ -20,6 +20,8 @@ public class ExtendedFogEvents {
     public static final int ALLOC_ERROR = 1009; // When allocation call fails
     public static final int TASK_FORWARDED = 1010; // When task is forwarded from cloud to fog node
     public static final int TASK_COMPLETION_CHECK = 1011; // For periodic task completion checking
+    public static final int ALLOC_OUTCOME_REPORT = 1012; // When fog reports task outcome to cloud for allocator
+                                                         // learning
 
     /**
      * Get event name for logging/debugging
@@ -48,6 +50,8 @@ public class ExtendedFogEvents {
                 return "TASK_FORWARDED";
             case TASK_COMPLETION_CHECK:
                 return "TASK_COMPLETION_CHECK";
+            case ALLOC_OUTCOME_REPORT:
+                return "ALLOC_OUTCOME_REPORT";
             default:
                 return "UNKNOWN_EVENT";
         }

@@ -3,6 +3,7 @@ package rl
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -132,7 +133,7 @@ func NewAgent(logger interface {
 	sarsa := NewSARSAAlgorithm(stateEncoder)
 	algorithmManager.RegisterAlgorithm(sarsa)
 
-	// Default to Q-Learning as active algorithm // TODO constant active algorithm
+	// Default to Q-Learning as active algorithm (can be changed via config)
 	algorithmManager.SetActiveAlgorithm("q_learning")
 
 	agent := &Agent{
@@ -141,7 +142,7 @@ func NewAgent(logger interface {
 		learningEnabled:      true,
 		logger:               logger,
 		savePath:             savePath,
-		performanceMetrics:   NewPerformanceMetrics(1000), // Track last 1000 rewards // TODO constant
+		performanceMetrics:   NewPerformanceMetrics(1000), // Track last 1000 rewards for performance monitoring
 		performanceTracking:  true,
 		usingEnhancedEncoder: false,
 	}
@@ -167,8 +168,19 @@ func (a *Agent) SelectNode(state SystemState, availableNodes []string) (string, 
 	// Start timing the decision
 	startTime := time.Now()
 
+	// Validate inputs
 	if len(availableNodes) == 0 {
 		return "", fmt.Errorf("no available nodes to select from")
+	}
+	if state.FogNodes == nil || len(state.FogNodes) == 0 {
+		return "", fmt.Errorf("system state has no fog nodes")
+	}
+	
+	// Validate that available nodes exist in the state
+	for _, nodeID := range availableNodes {
+		if _, exists := state.FogNodes[nodeID]; !exists {
+			return "", fmt.Errorf("node %s not found in system state", nodeID)
+		}
 	}
 
 	a.mutex.RLock()
@@ -579,12 +591,30 @@ func (a *Agent) GetPerformanceMetrics() PerformanceSnapshot {
 
 // SetAlgorithmParameters updates parameters for a specific algorithm
 func (a *Agent) SetAlgorithmParameters(algorithmName string, parameters map[string]float64) error {
+	// Validate input
+	if algorithmName == "" {
+		return fmt.Errorf("algorithm name cannot be empty")
+	}
+	if parameters == nil {
+		return fmt.Errorf("parameters cannot be nil")
+	}
+	if len(parameters) == 0 {
+		return fmt.Errorf("parameters cannot be empty")
+	}
+	
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
 	alg, err := a.algorithmManager.GetAlgorithm(algorithmName)
 	if err != nil {
 		return fmt.Errorf("algorithm not found: %s", algorithmName)
+	}
+
+	// Validate parameter values
+	for name, value := range parameters {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("invalid parameter value for %s: %f", name, value)
+		}
 	}
 
 	// Convert float64 parameters to interface{} for SetParams
@@ -685,7 +715,8 @@ func (a *Agent) StartTuning(algorithmName string, strategyName string, budget in
 	var strategy TuningStrategy
 
 	switch strategyName {
-	case "evolutionary": // TODO ?
+	case "evolutionary":
+		// Evolutionary strategy: divide budget into population size and generations
 		popSize := budget / 4
 		if popSize < 4 {
 			popSize = 4

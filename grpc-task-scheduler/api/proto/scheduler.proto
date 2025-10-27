@@ -116,6 +116,9 @@ message AddTaskToQueueResponse {
   string message = 3;
   int64 queue_position = 4;
   int64 estimated_wait_time_ms = 5;
+  bool is_cached_task = 6;           // Whether this task result is cached
+  string cache_key = 7;              // Cache key for lookup
+  CacheAction cache_action = 8;       // What to do with cache
 }
 
 message SchedulingPolicy {

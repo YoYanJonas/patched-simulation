@@ -309,17 +309,23 @@ func (se *SchedulerEngine) GetAvailableObjectiveProfiles() []string {
 	return profiles
 }
 
-// AddTaskToQueue adds a task to the scheduling queue
+// AddTaskToQueue adds a task to the scheduling queue (legacy compatibility)
 func (se *SchedulerEngine) AddTaskToQueue(task *pb.Task) (int64, int64, error) {
+	queuePos, waitTime, _, _, _, err := se.AddTaskToQueueWithCache(task)
+	return queuePos, waitTime, err
+}
+
+// AddTaskToQueueWithCache adds a task to the scheduling queue with cache information
+func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64, bool, string, pb.CacheAction, error) {
 	if err := ValidateTask(task); err != nil {
-		return 0, 0, err
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, err
 	}
 
 	// Check if task is already scheduled (prevent duplicates)
 	se.mu.RLock()
 	if _, exists := se.scheduledTasks[task.TaskId]; exists {
 		se.mu.RUnlock()
-		return 0, 0, fmt.Errorf("task %s already scheduled", task.TaskId)
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("task %s already scheduled", task.TaskId)
 	}
 	se.mu.RUnlock()
 
@@ -341,7 +347,7 @@ func (se *SchedulerEngine) AddTaskToQueue(task *pb.Task) (int64, int64, error) {
 			se.mu.Unlock()
 			
 			// Return cached result (immediate scheduling)
-			return 0, 0, nil // Position 0, no wait time for cached tasks
+			return 0, 0, true, cacheKey, cacheAction, nil // Position 0, no wait time for cached tasks
 		}
 	} else {
 		// Traditional algorithm - no cache
@@ -355,7 +361,7 @@ func (se *SchedulerEngine) AddTaskToQueue(task *pb.Task) (int64, int64, error) {
 
 	// Add to queue
 	if err := se.queue.Enqueue(taskEntry); err != nil {
-		return 0, 0, err
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, err
 	}
 
 	// Track scheduled task for delayed rewards
@@ -375,7 +381,7 @@ func (se *SchedulerEngine) AddTaskToQueue(task *pb.Task) (int64, int64, error) {
 		}
 	}
 
-	return queuePosition, estimatedWait, nil
+	return queuePosition, estimatedWait, isCached, cacheKey, cacheAction, nil
 }
 
 // REMOVED: schedulerLoop() - No periodic task execution in scheduler

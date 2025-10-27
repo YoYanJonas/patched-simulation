@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,8 +132,16 @@ func (c *Config) SaveConfig(filePath string) error {
 
 // Helper to convert config struct to map
 func structToMap(input interface{}) map[string]interface{} {
-	// In a production implementation, you would use reflection or viper marshaling
-	// This is a placeholder that should be replaced with proper implementation
-	// For example, you could marshal to JSON and then unmarshal to map[string]interface{}
-	return make(map[string]interface{})
+	// Use JSON marshaling to convert struct to map
+	jsonData, err := json.Marshal(input)
+	if err != nil {
+		return make(map[string]interface{})
+	}
+	
+	var result map[string]interface{}
+	if err := json.Unmarshal(jsonData, &result); err != nil {
+		return make(map[string]interface{})
+	}
+	
+	return result
 }

@@ -133,7 +133,7 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	}
 
 	// Add task to queue via scheduler engine
-	queuePosition, estimatedWait, err := s.schedulerEngine.AddTaskToQueue(req.Task)
+	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task)
 	if err != nil {
 		s.metrics.IncrementFailedRequests()
 		return &pb.AddTaskToQueueResponse{
@@ -147,11 +147,14 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	logger.GetLogger().Infof("Task %s added to queue at position %d", req.Task.TaskId, queuePosition)
 
 	return &pb.AddTaskToQueueResponse{
-		TaskId:                req.Task.TaskId,
-		Success:               true,
-		Message:               "task added to queue successfully",
-		QueuePosition:         queuePosition,
-		EstimatedWaitTimeMs:   estimatedWait,
+		TaskId:              req.Task.TaskId,
+		Success:             true,
+		Message:             "task added to queue successfully",
+		QueuePosition:       queuePosition,
+		EstimatedWaitTimeMs: estimatedWait,
+		IsCachedTask:        isCached,
+		CacheKey:            cacheKey,
+		CacheAction:         cacheAction,
 	}, nil
 }
 

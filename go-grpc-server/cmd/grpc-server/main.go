@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"grpc-server/api/proto"
+	grpcConfig "grpc-server/config"
 	"grpc-server/pkg/logger"
 	"grpc-server/service/gateway"
 
@@ -22,10 +23,18 @@ import (
 func main() {
 	log := logger.NewLogger()
 
-	// Create a TCP listener on port 50051 // TODO constant server info
-	lis, err := net.Listen("tcp", ":50051")
+	// Load configuration
+	cfg, err := grpcConfig.LoadConfig("")
 	if err != nil {
-		log.Error("Failed to listen on port 50051", err)
+		log.Error("Failed to load configuration", err)
+		return
+	}
+
+	// Create a TCP listener on configured host and port
+	listenAddr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	lis, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Error(fmt.Sprintf("Failed to listen on %s", listenAddr), err)
 		return
 	}
 
@@ -34,12 +43,12 @@ func main() {
 		grpc.UnaryInterceptor(loggingInterceptor(log)),
 	)
 
-	// Create and register the FogAllocationService
-	fogService := gateway.NewFogAllocationService(log)
+	// Create and register the FogAllocationService with config
+	fogService := gateway.NewFogAllocationServiceWithConfig(log, cfg)
 	proto.RegisterFogAllocationServiceServer(grpcServer, fogService)
 
 	// Start periodic model saving in the background
-	go startModelSaving(fogService, log)
+	go startModelSaving(fogService, log, cfg.RL.SaveInterval)
 
 	// Register health check service
 	healthServer := health.NewServer()
@@ -53,7 +62,7 @@ func main() {
 	go handleShutdown(grpcServer, fogService, log)
 
 	// Start the server
-	log.Info("Starting Fog Allocation gRPC server on port 50051...")
+	log.Info(fmt.Sprintf("Starting Fog Allocation gRPC server on %s...", listenAddr))
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Error("Failed to serve gRPC server", err)
 	}
@@ -84,8 +93,9 @@ func loggingInterceptor(log *logger.Logger) grpc.UnaryServerInterceptor {
 }
 
 // startModelSaving starts a goroutine that periodically saves RL models
-func startModelSaving(service *gateway.FogAllocationService, log *logger.Logger) {
-	ticker := time.NewTicker(10 * time.Minute) // TODO constant
+func startModelSaving(service *gateway.FogAllocationService, log *logger.Logger, intervalMinutes int) {
+	interval := time.Duration(intervalMinutes) * time.Minute
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -113,9 +123,16 @@ func handleShutdown(server *grpc.Server, fogService *gateway.FogAllocationServic
 		log.Info("Successfully saved RL models")
 	}
 
-	// Give clients 6 seconds to disconnect
+	// Load config for shutdown timeout
+	cfg, _ := grpcConfig.LoadConfig("")
+	timeoutDuration := 6 * time.Second
+	if cfg != nil && cfg.Server.ShutdownTimeout > 0 {
+		timeoutDuration = time.Duration(cfg.Server.ShutdownTimeout) * time.Second
+	}
+
+	// Give clients time to disconnect
 	go func() {
-		time.Sleep(6 * time.Second)
+		time.Sleep(timeoutDuration)
 		log.Info("Forcing server shutdown after grace period")
 		server.Stop()
 	}()

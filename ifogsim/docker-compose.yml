@@ -1,0 +1,17 @@
+services:
+  ifogsim:
+    build: .
+    container_name: ifogsim-container
+    volumes:
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+      - ./results:/app/results
+    environment:
+      - JAVA_OPTS=-Xmx2g -Xms1g -Djava.awt.headless=true
+    networks:
+      - ifogsim-network
+    restart: unless-stopped
+
+networks:
+  ifogsim-network:
+    driver: bridge

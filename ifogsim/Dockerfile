@@ -19,7 +19,7 @@ COPY go.mod go.sum ./
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p /app/results /app/logs /app/config /app/target
+RUN mkdir -p /app/results /app/logs /app/config /app/target /app/reports
 
 # Generate proto files
 RUN chmod +x scripts/generate_proto.sh

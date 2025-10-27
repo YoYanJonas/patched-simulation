@@ -756,6 +756,9 @@ type AddTaskToQueueResponse struct {
 	Message             string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	QueuePosition       int64                  `protobuf:"varint,4,opt,name=queue_position,json=queuePosition,proto3" json:"queue_position,omitempty"`
 	EstimatedWaitTimeMs int64                  `protobuf:"varint,5,opt,name=estimated_wait_time_ms,json=estimatedWaitTimeMs,proto3" json:"estimated_wait_time_ms,omitempty"`
+	IsCachedTask        bool                   `protobuf:"varint,6,opt,name=is_cached_task,json=isCachedTask,proto3" json:"is_cached_task,omitempty"`                    // Whether this task result is cached
+	CacheKey            string                 `protobuf:"bytes,7,opt,name=cache_key,json=cacheKey,proto3" json:"cache_key,omitempty"`                                   // Cache key for lookup
+	CacheAction         CacheAction            `protobuf:"varint,8,opt,name=cache_action,json=cacheAction,proto3,enum=thesis.CacheAction" json:"cache_action,omitempty"` // What to do with cache
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -823,6 +826,27 @@ func (x *AddTaskToQueueResponse) GetEstimatedWaitTimeMs() int64 {
 		return x.EstimatedWaitTimeMs
 	}
 	return 0
+}
+
+func (x *AddTaskToQueueResponse) GetIsCachedTask() bool {
+	if x != nil {
+		return x.IsCachedTask
+	}
+	return false
+}
+
+func (x *AddTaskToQueueResponse) GetCacheKey() string {
+	if x != nil {
+		return x.CacheKey
+	}
+	return ""
+}
+
+func (x *AddTaskToQueueResponse) GetCacheAction() CacheAction {
+	if x != nil {
+		return x.CacheAction
+	}
+	return CacheAction_CACHE_ACTION_UNSPECIFIED
 }
 
 type SchedulingPolicy struct {
@@ -2537,13 +2561,16 @@ const file_api_proto_scheduler_proto_rawDesc = "" +
 	"\x06region\x18\x03 \x01(\tR\x06region\"k\n" +
 	"\x15AddTaskToQueueRequest\x12 \n" +
 	"\x04task\x18\x01 \x01(\v2\f.thesis.TaskR\x04task\x120\n" +
-	"\x06policy\x18\x02 \x01(\v2\x18.thesis.SchedulingPolicyR\x06policy\"\xc1\x01\n" +
+	"\x06policy\x18\x02 \x01(\v2\x18.thesis.SchedulingPolicyR\x06policy\"\xbc\x02\n" +
 	"\x16AddTaskToQueueResponse\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12%\n" +
 	"\x0equeue_position\x18\x04 \x01(\x03R\rqueuePosition\x123\n" +
-	"\x16estimated_wait_time_ms\x18\x05 \x01(\x03R\x13estimatedWaitTimeMs\"\x8f\x02\n" +
+	"\x16estimated_wait_time_ms\x18\x05 \x01(\x03R\x13estimatedWaitTimeMs\x12$\n" +
+	"\x0eis_cached_task\x18\x06 \x01(\bR\fisCachedTask\x12\x1b\n" +
+	"\tcache_key\x18\a \x01(\tR\bcacheKey\x126\n" +
+	"\fcache_action\x18\b \x01(\x0e2\x13.thesis.CacheActionR\vcacheAction\"\x8f\x02\n" +
 	"\x10SchedulingPolicy\x129\n" +
 	"\talgorithm\x18\x01 \x01(\x0e2\x1b.thesis.SchedulingAlgorithmR\talgorithm\x127\n" +
 	"\tobjective\x18\x02 \x01(\x0e2\x19.thesis.ObjectiveFunctionR\tobjective\x12H\n" +
@@ -2813,54 +2840,55 @@ var file_api_proto_scheduler_proto_depIdxs = []int32{
 	39, // 6: thesis.FogNode.metadata:type_name -> thesis.FogNode.MetadataEntry
 	5,  // 7: thesis.AddTaskToQueueRequest.task:type_name -> thesis.Task
 	12, // 8: thesis.AddTaskToQueueRequest.policy:type_name -> thesis.SchedulingPolicy
-	2,  // 9: thesis.SchedulingPolicy.algorithm:type_name -> thesis.SchedulingAlgorithm
-	3,  // 10: thesis.SchedulingPolicy.objective:type_name -> thesis.ObjectiveFunction
-	40, // 11: thesis.SchedulingPolicy.parameters:type_name -> thesis.SchedulingPolicy.ParametersEntry
-	2,  // 12: thesis.SchedulingDecision.algorithm_used:type_name -> thesis.SchedulingAlgorithm
-	3,  // 13: thesis.SchedulingDecision.objective_used:type_name -> thesis.ObjectiveFunction
-	41, // 14: thesis.SchedulingDecision.node_scores:type_name -> thesis.SchedulingDecision.NodeScoresEntry
-	1,  // 15: thesis.GetSchedulingStatusResponse.node_statuses:type_name -> thesis.NodeStatus
-	42, // 16: thesis.GetSchedulingStatusResponse.system_metrics:type_name -> thesis.GetSchedulingStatusResponse.SystemMetricsEntry
-	22, // 17: thesis.GetNodeRegistryResponse.nodes:type_name -> thesis.NodeSummary
-	1,  // 18: thesis.NodeSummary.status:type_name -> thesis.NodeStatus
-	43, // 19: thesis.GetSchedulingStatsResponse.algorithm_usage:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmUsageEntry
-	44, // 20: thesis.GetSchedulingStatsResponse.algorithm_performance:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmPerformanceEntry
-	27, // 21: thesis.GetDashboardResponse.status:type_name -> thesis.SystemStatus
-	45, // 22: thesis.UpdateObjectiveWeightsRequest.weights:type_name -> thesis.UpdateObjectiveWeightsRequest.WeightsEntry
-	31, // 23: thesis.TaskCompletionReport.tasks:type_name -> thesis.CompletedTask
-	32, // 24: thesis.TaskCompletionReport.metrics:type_name -> thesis.SystemPerformanceMetrics
-	46, // 25: thesis.CompletedTask.resource_usage:type_name -> thesis.CompletedTask.ResourceUsageEntry
-	5,  // 26: thesis.GetSortedQueueResponse.sorted_tasks:type_name -> thesis.Task
-	47, // 27: thesis.GetSortedQueueResponse.metadata:type_name -> thesis.GetSortedQueueResponse.MetadataEntry
-	5,  // 28: thesis.QueueUpdateResponse.sorted_tasks:type_name -> thesis.Task
-	48, // 29: thesis.QueueUpdateResponse.metadata:type_name -> thesis.QueueUpdateResponse.MetadataEntry
-	10, // 30: thesis.TaskScheduler.AddTaskToQueue:input_type -> thesis.AddTaskToQueueRequest
-	14, // 31: thesis.TaskScheduler.GetSchedulingStatus:input_type -> thesis.GetSchedulingStatusRequest
-	16, // 32: thesis.TaskScheduler.HealthCheck:input_type -> thesis.HealthCheckRequest
-	28, // 33: thesis.TaskScheduler.UpdateObjectiveWeights:input_type -> thesis.UpdateObjectiveWeightsRequest
-	30, // 34: thesis.TaskScheduler.ReportTaskCompletion:input_type -> thesis.TaskCompletionReport
-	34, // 35: thesis.TaskScheduler.GetSortedQueue:input_type -> thesis.GetSortedQueueRequest
-	36, // 36: thesis.TaskScheduler.SubscribeToQueueUpdates:input_type -> thesis.SubscribeRequest
-	18, // 37: thesis.SystemMonitoring.GetSystemMetrics:input_type -> thesis.GetSystemMetricsRequest
-	20, // 38: thesis.SystemMonitoring.GetNodeRegistry:input_type -> thesis.GetNodeRegistryRequest
-	23, // 39: thesis.SystemMonitoring.GetSchedulingStats:input_type -> thesis.GetSchedulingStatsRequest
-	25, // 40: thesis.SystemMonitoring.GetDashboard:input_type -> thesis.GetDashboardRequest
-	11, // 41: thesis.TaskScheduler.AddTaskToQueue:output_type -> thesis.AddTaskToQueueResponse
-	15, // 42: thesis.TaskScheduler.GetSchedulingStatus:output_type -> thesis.GetSchedulingStatusResponse
-	17, // 43: thesis.TaskScheduler.HealthCheck:output_type -> thesis.HealthCheckResponse
-	29, // 44: thesis.TaskScheduler.UpdateObjectiveWeights:output_type -> thesis.UpdateObjectiveWeightsResponse
-	33, // 45: thesis.TaskScheduler.ReportTaskCompletion:output_type -> thesis.TaskCompletionAck
-	35, // 46: thesis.TaskScheduler.GetSortedQueue:output_type -> thesis.GetSortedQueueResponse
-	37, // 47: thesis.TaskScheduler.SubscribeToQueueUpdates:output_type -> thesis.QueueUpdateResponse
-	19, // 48: thesis.SystemMonitoring.GetSystemMetrics:output_type -> thesis.GetSystemMetricsResponse
-	21, // 49: thesis.SystemMonitoring.GetNodeRegistry:output_type -> thesis.GetNodeRegistryResponse
-	24, // 50: thesis.SystemMonitoring.GetSchedulingStats:output_type -> thesis.GetSchedulingStatsResponse
-	26, // 51: thesis.SystemMonitoring.GetDashboard:output_type -> thesis.GetDashboardResponse
-	41, // [41:52] is the sub-list for method output_type
-	30, // [30:41] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	4,  // 9: thesis.AddTaskToQueueResponse.cache_action:type_name -> thesis.CacheAction
+	2,  // 10: thesis.SchedulingPolicy.algorithm:type_name -> thesis.SchedulingAlgorithm
+	3,  // 11: thesis.SchedulingPolicy.objective:type_name -> thesis.ObjectiveFunction
+	40, // 12: thesis.SchedulingPolicy.parameters:type_name -> thesis.SchedulingPolicy.ParametersEntry
+	2,  // 13: thesis.SchedulingDecision.algorithm_used:type_name -> thesis.SchedulingAlgorithm
+	3,  // 14: thesis.SchedulingDecision.objective_used:type_name -> thesis.ObjectiveFunction
+	41, // 15: thesis.SchedulingDecision.node_scores:type_name -> thesis.SchedulingDecision.NodeScoresEntry
+	1,  // 16: thesis.GetSchedulingStatusResponse.node_statuses:type_name -> thesis.NodeStatus
+	42, // 17: thesis.GetSchedulingStatusResponse.system_metrics:type_name -> thesis.GetSchedulingStatusResponse.SystemMetricsEntry
+	22, // 18: thesis.GetNodeRegistryResponse.nodes:type_name -> thesis.NodeSummary
+	1,  // 19: thesis.NodeSummary.status:type_name -> thesis.NodeStatus
+	43, // 20: thesis.GetSchedulingStatsResponse.algorithm_usage:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmUsageEntry
+	44, // 21: thesis.GetSchedulingStatsResponse.algorithm_performance:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmPerformanceEntry
+	27, // 22: thesis.GetDashboardResponse.status:type_name -> thesis.SystemStatus
+	45, // 23: thesis.UpdateObjectiveWeightsRequest.weights:type_name -> thesis.UpdateObjectiveWeightsRequest.WeightsEntry
+	31, // 24: thesis.TaskCompletionReport.tasks:type_name -> thesis.CompletedTask
+	32, // 25: thesis.TaskCompletionReport.metrics:type_name -> thesis.SystemPerformanceMetrics
+	46, // 26: thesis.CompletedTask.resource_usage:type_name -> thesis.CompletedTask.ResourceUsageEntry
+	5,  // 27: thesis.GetSortedQueueResponse.sorted_tasks:type_name -> thesis.Task
+	47, // 28: thesis.GetSortedQueueResponse.metadata:type_name -> thesis.GetSortedQueueResponse.MetadataEntry
+	5,  // 29: thesis.QueueUpdateResponse.sorted_tasks:type_name -> thesis.Task
+	48, // 30: thesis.QueueUpdateResponse.metadata:type_name -> thesis.QueueUpdateResponse.MetadataEntry
+	10, // 31: thesis.TaskScheduler.AddTaskToQueue:input_type -> thesis.AddTaskToQueueRequest
+	14, // 32: thesis.TaskScheduler.GetSchedulingStatus:input_type -> thesis.GetSchedulingStatusRequest
+	16, // 33: thesis.TaskScheduler.HealthCheck:input_type -> thesis.HealthCheckRequest
+	28, // 34: thesis.TaskScheduler.UpdateObjectiveWeights:input_type -> thesis.UpdateObjectiveWeightsRequest
+	30, // 35: thesis.TaskScheduler.ReportTaskCompletion:input_type -> thesis.TaskCompletionReport
+	34, // 36: thesis.TaskScheduler.GetSortedQueue:input_type -> thesis.GetSortedQueueRequest
+	36, // 37: thesis.TaskScheduler.SubscribeToQueueUpdates:input_type -> thesis.SubscribeRequest
+	18, // 38: thesis.SystemMonitoring.GetSystemMetrics:input_type -> thesis.GetSystemMetricsRequest
+	20, // 39: thesis.SystemMonitoring.GetNodeRegistry:input_type -> thesis.GetNodeRegistryRequest
+	23, // 40: thesis.SystemMonitoring.GetSchedulingStats:input_type -> thesis.GetSchedulingStatsRequest
+	25, // 41: thesis.SystemMonitoring.GetDashboard:input_type -> thesis.GetDashboardRequest
+	11, // 42: thesis.TaskScheduler.AddTaskToQueue:output_type -> thesis.AddTaskToQueueResponse
+	15, // 43: thesis.TaskScheduler.GetSchedulingStatus:output_type -> thesis.GetSchedulingStatusResponse
+	17, // 44: thesis.TaskScheduler.HealthCheck:output_type -> thesis.HealthCheckResponse
+	29, // 45: thesis.TaskScheduler.UpdateObjectiveWeights:output_type -> thesis.UpdateObjectiveWeightsResponse
+	33, // 46: thesis.TaskScheduler.ReportTaskCompletion:output_type -> thesis.TaskCompletionAck
+	35, // 47: thesis.TaskScheduler.GetSortedQueue:output_type -> thesis.GetSortedQueueResponse
+	37, // 48: thesis.TaskScheduler.SubscribeToQueueUpdates:output_type -> thesis.QueueUpdateResponse
+	19, // 49: thesis.SystemMonitoring.GetSystemMetrics:output_type -> thesis.GetSystemMetricsResponse
+	21, // 50: thesis.SystemMonitoring.GetNodeRegistry:output_type -> thesis.GetNodeRegistryResponse
+	24, // 51: thesis.SystemMonitoring.GetSchedulingStats:output_type -> thesis.GetSchedulingStatsResponse
+	26, // 52: thesis.SystemMonitoring.GetDashboard:output_type -> thesis.GetDashboardResponse
+	42, // [42:53] is the sub-list for method output_type
+	31, // [31:42] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_scheduler_proto_init() }
