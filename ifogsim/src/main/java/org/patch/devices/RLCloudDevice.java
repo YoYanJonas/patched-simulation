@@ -874,6 +874,13 @@ public class RLCloudDevice extends FogDevice {
     }
 
     /**
+     * Get successful allocation count
+     */
+    public long getSuccessfulAllocations() {
+        return successfulAllocations;
+    }
+
+    /**
      * Get allocation success rate
      */
     public double getAllocationSuccessRate() {

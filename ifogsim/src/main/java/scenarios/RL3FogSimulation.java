@@ -442,6 +442,15 @@ public class RL3FogSimulation {
         // Print application statistics
         printApplicationStatistics();
 
+        // Print RL allocation statistics
+        printRLAllocationStatistics();
+
+        // Print RL scheduling statistics
+        printRLSchedulingStatistics();
+
+        // Print cache statistics
+        printCacheStatistics();
+
         // Print energy and cost
         printEnergyAndCost();
 
@@ -526,5 +535,57 @@ public class RL3FogSimulation {
         logger.info(String.format("Total Cost: $%.4f", totalCost));
         logger.info(String.format("Average Energy per Device: %.2f J", totalEnergy / (NUM_FOG_NODES + 1)));
         logger.info(String.format("Average Cost per Device: $%.4f", totalCost / (NUM_FOG_NODES + 1)));
+    }
+
+    private static void printRLAllocationStatistics() {
+        logger.info("\n[RL ALLOCATION STATISTICS]");
+        
+        if (cloud.getAllocationClient() != null && cloud.isRlEnabled()) {
+            logger.info(String.format("Total Allocation Decisions: %d", cloud.getTotalAllocationDecisions()));
+            logger.info(String.format("Successful Allocations: %d", cloud.getSuccessfulAllocations()));
+            logger.info(String.format("Allocation Success Rate: %.2f%%", cloud.getAllocationSuccessRate() * 100));
+            logger.info(String.format("Total Allocation Energy: %.2f J", cloud.getTotalAllocationEnergy()));
+            logger.info(String.format("Total Allocation Cost: $%.4f", cloud.getTotalAllocationCost()));
+            logger.info(String.format("Average Allocation Latency: %.2f ms", cloud.getAverageAllocationLatency()));
+            logger.info(String.format("Allocation Throughput: %.2f decisions/sec", cloud.getAllocationThroughput()));
+        } else {
+            logger.info("RL Allocation: DISABLED");
+        }
+    }
+
+    private static void printRLSchedulingStatistics() {
+        logger.info("\n[RL SCHEDULING STATISTICS]");
+
+        for (int i = 0; i < fogDevices.size(); i++) {
+            RLFogDevice fogDevice = fogDevices.get(i);
+            
+            if (fogDevice.getSchedulerClient() != null && fogDevice.isRlEnabled()) {
+                logger.info(String.format("\nFog Node %d: %s", i, fogDevice.getName()));
+                logger.info(String.format("  Total Scheduling Decisions: %d", fogDevice.getTotalSchedulingDecisions()));
+                logger.info(String.format("  Scheduling Success Rate: %.2f%%", fogDevice.getSchedulingSuccessRate() * 100));
+                logger.info(String.format("  Total Scheduling Energy: %.2f J", fogDevice.getTotalSchedulingEnergy()));
+                logger.info(String.format("  Total Scheduling Cost: $%.4f", fogDevice.getTotalSchedulingCost()));
+                logger.info(String.format("  Average Scheduling Latency: %.2f ms", fogDevice.getAverageSchedulingLatency()));
+                logger.info(String.format("  Scheduling Throughput: %.2f decisions/sec", fogDevice.getSchedulingThroughput()));
+                logger.info(String.format("  Streaming Observer Status: %s", 
+                        fogDevice.getStreamingObserver() != null ? "ACTIVE" : "INACTIVE"));
+            }
+        }
+    }
+
+    private static void printCacheStatistics() {
+        logger.info("\n[CACHE STATISTICS]");
+
+        for (int i = 0; i < fogDevices.size(); i++) {
+            RLFogDevice fogDevice = fogDevices.get(i);
+            
+            Map<String, Object> cacheStats = fogDevice.getCacheStatistics();
+            logger.info(String.format("\nFog Node %d: %s", i, fogDevice.getName()));
+            logger.info(String.format("  Cache Size: %s / %s", cacheStats.get("cacheSize"), cacheStats.get("maxCacheSize")));
+            logger.info(String.format("  Cache Hits: %s", cacheStats.get("cacheHitCount")));
+            logger.info(String.format("  Cache Misses: %s", cacheStats.get("cacheMissCount")));
+            logger.info(String.format("  Cache Hit Rate: %.2f%%", 
+                    ((Double) cacheStats.get("cacheHitRate")) * 100));
+        }
     }
 }
