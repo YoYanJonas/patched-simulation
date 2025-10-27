@@ -3,9 +3,9 @@ package rl
 import (
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
 	"sync"
 )
 
@@ -138,7 +138,7 @@ func (s *SARSAAlgorithm) SaveModel(path string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0644)
 }
 
 // LoadModel loads the Q-table from a file
@@ -146,7 +146,7 @@ func (s *SARSAAlgorithm) LoadModel(path string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}

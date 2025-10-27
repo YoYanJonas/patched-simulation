@@ -3,9 +3,9 @@ package rl
 import (
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
 	"sync"
 )
 
@@ -106,7 +106,7 @@ func (l *LinearFunctionApproximator) Save(path string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0644)
 }
 
 // Load restores the approximator's weights from a file
@@ -114,7 +114,7 @@ func (l *LinearFunctionApproximator) Load(path string) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
