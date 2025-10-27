@@ -423,7 +423,7 @@ public class RL3FogSimulation {
     }
 
     /**
-     * Print simulation results
+     * Print simulation results and generate report files
      */
     private static void printResults() {
         logger.info("================================================================================");
@@ -455,6 +455,10 @@ public class RL3FogSimulation {
         printEnergyAndCost();
 
         logger.info("================================================================================");
+
+        // Generate report files
+        org.patch.utils.ReportGenerator reportGenerator = new org.patch.utils.ReportGenerator();
+        reportGenerator.generateReports(cloud, fogDevices);
     }
 
     private static void printCloudStatistics() {
@@ -539,7 +543,7 @@ public class RL3FogSimulation {
 
     private static void printRLAllocationStatistics() {
         logger.info("\n[RL ALLOCATION STATISTICS]");
-        
+
         if (cloud.getAllocationClient() != null && cloud.isRlEnabled()) {
             logger.info(String.format("Total Allocation Decisions: %d", cloud.getTotalAllocationDecisions()));
             logger.info(String.format("Successful Allocations: %d", cloud.getSuccessfulAllocations()));
@@ -558,16 +562,19 @@ public class RL3FogSimulation {
 
         for (int i = 0; i < fogDevices.size(); i++) {
             RLFogDevice fogDevice = fogDevices.get(i);
-            
+
             if (fogDevice.getSchedulerClient() != null && fogDevice.isRlEnabled()) {
                 logger.info(String.format("\nFog Node %d: %s", i, fogDevice.getName()));
                 logger.info(String.format("  Total Scheduling Decisions: %d", fogDevice.getTotalSchedulingDecisions()));
-                logger.info(String.format("  Scheduling Success Rate: %.2f%%", fogDevice.getSchedulingSuccessRate() * 100));
+                logger.info(
+                        String.format("  Scheduling Success Rate: %.2f%%", fogDevice.getSchedulingSuccessRate() * 100));
                 logger.info(String.format("  Total Scheduling Energy: %.2f J", fogDevice.getTotalSchedulingEnergy()));
                 logger.info(String.format("  Total Scheduling Cost: $%.4f", fogDevice.getTotalSchedulingCost()));
-                logger.info(String.format("  Average Scheduling Latency: %.2f ms", fogDevice.getAverageSchedulingLatency()));
-                logger.info(String.format("  Scheduling Throughput: %.2f decisions/sec", fogDevice.getSchedulingThroughput()));
-                logger.info(String.format("  Streaming Observer Status: %s", 
+                logger.info(String.format("  Average Scheduling Latency: %.2f ms",
+                        fogDevice.getAverageSchedulingLatency()));
+                logger.info(String.format("  Scheduling Throughput: %.2f decisions/sec",
+                        fogDevice.getSchedulingThroughput()));
+                logger.info(String.format("  Streaming Observer Status: %s",
                         fogDevice.getStreamingObserver() != null ? "ACTIVE" : "INACTIVE"));
             }
         }
@@ -578,13 +585,14 @@ public class RL3FogSimulation {
 
         for (int i = 0; i < fogDevices.size(); i++) {
             RLFogDevice fogDevice = fogDevices.get(i);
-            
+
             Map<String, Object> cacheStats = fogDevice.getCacheStatistics();
             logger.info(String.format("\nFog Node %d: %s", i, fogDevice.getName()));
-            logger.info(String.format("  Cache Size: %s / %s", cacheStats.get("cacheSize"), cacheStats.get("maxCacheSize")));
+            logger.info(String.format("  Cache Size: %s / %s", cacheStats.get("cacheSize"),
+                    cacheStats.get("maxCacheSize")));
             logger.info(String.format("  Cache Hits: %s", cacheStats.get("cacheHitCount")));
             logger.info(String.format("  Cache Misses: %s", cacheStats.get("cacheMissCount")));
-            logger.info(String.format("  Cache Hit Rate: %.2f%%", 
+            logger.info(String.format("  Cache Hit Rate: %.2f%%",
                     ((Double) cacheStats.get("cacheHitRate")) * 100));
         }
     }
