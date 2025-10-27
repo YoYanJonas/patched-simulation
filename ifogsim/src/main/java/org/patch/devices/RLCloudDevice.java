@@ -211,12 +211,12 @@ public class RLCloudDevice extends FogDevice {
 
         // Create allocation client
         this.allocationClient = new AllocationClient(host, port);
-        
+
         RLConfig.configureCloudRLServer(getId(), host, port);
         this.rlConfigured = true;
-        
-        logger.info("Allocation client configured for cloud device: " + getName() + 
-                   " (ID: " + getId() + ") at " + host + ":" + port);
+
+        logger.info("Allocation client configured for cloud device: " + getName() +
+                " (ID: " + getId() + ") at " + host + ":" + port);
     }
 
     /**
@@ -310,7 +310,7 @@ public class RLCloudDevice extends FogDevice {
         } else if (tuple.getDestModuleName() != null) {
             // Use RL allocation for placement decision
             int targetNodeId = getRLAllocationDecision(tuple);
-            
+
             if (targetNodeId > 0) {
                 // Forward to selected fog node using enhanced forwarding
                 forwardTaskToFogNode(tuple, String.valueOf(targetNodeId));
@@ -345,12 +345,12 @@ public class RLCloudDevice extends FogDevice {
 
             // Request allocation decision
             TaskAllocationResponse response = allocationClient.allocateTask(
-                String.valueOf(tuple.getCloudletId()),
-                tuple.getCloudletLength(),
-                tuple.getCloudletFileSize(),
-                tuple.getCloudletOutputSize(),
-                1,
-                System.currentTimeMillis() + 10000,
+                    String.valueOf(tuple.getCloudletId()),
+                    tuple.getCloudletLength(),
+                    tuple.getCloudletFileSize(),
+                    tuple.getCloudletOutputSize(),
+                    1,
+                    System.currentTimeMillis() + 10000,
                     new HashMap<>());
 
             long latency = System.currentTimeMillis() - startTime;
@@ -453,8 +453,12 @@ public class RLCloudDevice extends FogDevice {
 
     /**
      * Report task outcome for RL learning to go-grpc-server
+     * 
+     * @param tuple         The tuple that was executed
+     * @param success       Whether the task completed successfully
+     * @param executionTime Execution time in milliseconds
      */
-    private void reportTaskOutcome(Tuple tuple, boolean success, long executionTime) {
+    public void reportTaskOutcome(Tuple tuple, boolean success, long executionTime) {
         if (allocationClient == null || !allocationClient.isConnected()) {
             return;
         }
@@ -462,16 +466,16 @@ public class RLCloudDevice extends FogDevice {
         try {
             // Report to go-grpc-server for learning
             allocationClient.reportTaskOutcome(
-                String.valueOf(tuple.getCloudletId()),
-                String.valueOf(getId()),
-                success,
-                executionTime,
-                getHost().getUtilizationOfCpu(),
-                getHost().getUtilizationOfRam(),
+                    String.valueOf(tuple.getCloudletId()),
+                    String.valueOf(getId()),
+                    success,
+                    executionTime,
+                    getHost().getUtilizationOfCpu(),
+                    getHost().getUtilizationOfRam(),
                     success ? "" : "Task execution failed");
 
             logger.info("Reported task outcome to allocation service: " + tuple.getCloudletId());
-            
+
         } catch (Exception e) {
             logger.severe("Failed to report task outcome to allocation service: " + e.getMessage());
         }
@@ -488,12 +492,12 @@ public class RLCloudDevice extends FogDevice {
         try {
             // Get system state
             SystemStateResponse systemState = allocationClient.getSystemState(true);
-            
+
             // Update fog nodes information
             for (Map.Entry<String, NodeState> entry : systemState.getFogNodesMap().entrySet()) {
                 String nodeId = entry.getKey();
                 NodeState nodeState = entry.getValue();
-                
+
                 // Update local fog node info
                 int nodeIdInt = Integer.parseInt(nodeId);
                 if (fogNodesInfo.containsKey(nodeIdInt)) {
@@ -501,9 +505,9 @@ public class RLCloudDevice extends FogDevice {
                     nodeInfo.updateFromNodeState(nodeState);
                 }
             }
-            
+
             logger.fine("Updated placement decisions based on system state");
-            
+
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to update placement decisions", e);
         }

@@ -400,7 +400,7 @@ public class TaskExecutionEngine {
     }
 
     /**
-     * Report task completion to RL agents
+     * Report task completion to RL agents (both scheduler and allocator)
      * 
      * @param taskInfo      The task information
      * @param result        The processing result
@@ -409,21 +409,33 @@ public class TaskExecutionEngine {
     private void reportTaskCompletion(ScheduledQueue.TaskInfo taskInfo,
             RLTupleProcessingResult result,
             long executionTime) {
-        if (schedulerClient == null || !schedulerClient.isConnected()) {
-            return;
+        String taskId = taskInfo.getTaskId();
+        Tuple tuple = taskInfo.getTuple();
+        boolean success = result.isSuccess();
+
+        // Report to grpc-task-scheduler (if available)
+        if (schedulerClient != null && schedulerClient.isConnected()) {
+            try {
+                // Use the existing reportTaskCompletion method from RLFogDevice
+                if (fogDevice instanceof org.patch.devices.RLFogDevice) {
+                    ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
+                            tuple, success, executionTime);
+                    logger.fine("Task completion reported to scheduler: " + taskId);
+                }
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to report task completion to scheduler: " + taskId, e);
+            }
         }
 
-        try {
-            // Use the existing reportTaskCompletion method from RLFogDevice
-            if (fogDevice instanceof org.patch.devices.RLFogDevice) {
-                ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
-                        taskInfo.getTuple(), result.isSuccess(), executionTime);
+        // Report to go-grpc-server allocator (if available)
+        if (fogDevice instanceof org.patch.devices.RLCloudDevice) {
+            try {
+                org.patch.devices.RLCloudDevice cloudDevice = (org.patch.devices.RLCloudDevice) fogDevice;
+                cloudDevice.reportTaskOutcome(tuple, success, executionTime);
+                logger.fine("Task completion reported to allocator: " + taskId);
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to report task completion to allocator: " + taskId, e);
             }
-
-            logger.fine("Task completion reported to scheduler: " + taskInfo.getTaskId());
-
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to report task completion", e);
         }
     }
 
