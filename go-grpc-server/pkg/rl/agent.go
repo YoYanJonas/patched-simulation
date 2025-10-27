@@ -133,7 +133,7 @@ func NewAgent(logger interface {
 	sarsa := NewSARSAAlgorithm(stateEncoder)
 	algorithmManager.RegisterAlgorithm(sarsa)
 
-	// Default to Q-Learning as active algorithm // TODO constant active algorithm
+	// Default to Q-Learning as active algorithm (can be changed via config)
 	algorithmManager.SetActiveAlgorithm("q_learning")
 
 	agent := &Agent{
@@ -142,7 +142,7 @@ func NewAgent(logger interface {
 		learningEnabled:      true,
 		logger:               logger,
 		savePath:             savePath,
-		performanceMetrics:   NewPerformanceMetrics(1000), // Track last 1000 rewards // TODO constant
+		performanceMetrics:   NewPerformanceMetrics(1000), // Track last 1000 rewards for performance monitoring
 		performanceTracking:  true,
 		usingEnhancedEncoder: false,
 	}
@@ -715,7 +715,8 @@ func (a *Agent) StartTuning(algorithmName string, strategyName string, budget in
 	var strategy TuningStrategy
 
 	switch strategyName {
-	case "evolutionary": // TODO ?
+	case "evolutionary":
+		// Evolutionary strategy: divide budget into population size and generations
 		popSize := budget / 4
 		if popSize < 4 {
 			popSize = 4

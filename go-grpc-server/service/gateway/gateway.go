@@ -533,7 +533,7 @@ func (s *FogAllocationService) ControlRLAgent(ctx context.Context, request *pb.R
 
 	case CONTROL_RL_ACTIONS.StartTuning:
 		algorithm := request.AlgorithmName
-		strategyName := "random" // TODO check other options
+		strategyName := "random" // Default to random search, can be overridden via metadata
 		budget := 20
 
 		// Extract parameters from task metadata
