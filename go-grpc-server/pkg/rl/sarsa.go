@@ -114,15 +114,23 @@ func (s *SARSAAlgorithm) Learn(prevState SystemState, action string, newState Sy
 		s.qTable[prevStateID][action] = 0.0
 	}
 
-	// Get next action's Q-value
+	// SARSA uses the actual next action that was taken in the new state
+	// The lastState and lastAction are set by SelectAction when entering newState
+	// so they represent the action that will be taken from newState
 	var nextQ float64 = 0
 	if s.lastState == newStateID && s.lastAction != "" {
+		// Check if we have a Q-value for the next action in the new state
 		if val, exists := s.qTable[newStateID][s.lastAction]; exists {
 			nextQ = val
 		}
+		// If action doesn't exist yet, initialize it
+		if _, exists := s.qTable[newStateID][s.lastAction]; !exists {
+			s.qTable[newStateID][s.lastAction] = 0.0
+		}
 	}
 
-	// SARSA update formula (uses the actual next action)
+	// SARSA update formula: Q(s,a) = Q(s,a) + alpha * [r + gamma*Q(s',a') - Q(s,a)]
+	// Uses the actual next action (a') not the optimal action
 	oldQ := s.qTable[prevStateID][action]
 	newQ := oldQ + s.alpha*(reward+s.gamma*nextQ-oldQ)
 	s.qTable[prevStateID][action] = newQ
