@@ -185,6 +185,9 @@ public class RLCloudDevice extends FogDevice {
             case ExtendedFogEvents.METRICS_COLLECTION:
                 handleMetricsCollection(ev);
                 break;
+            case ExtendedFogEvents.ALLOC_OUTCOME_REPORT:
+                handleAllocOutcomeReport(ev);
+                break;
             case FogEvents.TUPLE_ARRIVAL:
                 if (rlEnabled) {
                     handleExternalTaskArrival(ev);
@@ -1147,6 +1150,25 @@ public class RLCloudDevice extends FogDevice {
         // Collect and report metrics
         logger.fine("Metrics collection event processed for cloud device: " + getName());
         // This would typically collect and report metrics to monitoring systems
+    }
+
+    /**
+     * Handle allocation outcome report from fog device
+     * This is called when a fog device reports task completion for an external task
+     */
+    private void handleAllocOutcomeReport(SimEvent ev) {
+        try {
+            Object[] data = (Object[]) ev.getData();
+            Tuple tuple = (Tuple) data[0];
+            boolean success = (boolean) data[1];
+            long executionTime = (long) data[2];
+
+            // Report to go-grpc-server allocator
+            reportTaskOutcome(tuple, success, executionTime);
+            logger.info("Allocation outcome reported for task: " + tuple.getCloudletId());
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Error handling allocation outcome report", e);
+        }
     }
 
     @Override
