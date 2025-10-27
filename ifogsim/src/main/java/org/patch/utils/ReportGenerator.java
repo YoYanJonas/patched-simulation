@@ -1,9 +1,5 @@
 package org.patch.utils;
 
-import org.cloudbus.cloudsim.core.CloudSim;
-import org.patch.devices.RLCloudDevice;
-import org.patch.devices.RLFogDevice;
-
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -17,6 +13,7 @@ import java.util.logging.Logger;
 /**
  * Report generator for simulation results
  * Creates both human-readable and machine-readable reports
+ * Completely decoupled - accepts any data and persists it
  */
 public class ReportGenerator {
     private static final Logger logger = Logger.getLogger(ReportGenerator.class.getName());
@@ -39,6 +36,32 @@ public class ReportGenerator {
     }
     
     /**
+     * Generate reports from provided data
+     * 
+     * @param cloudDeviceData Cloud device statistics as Map
+     * @param fogDevicesData List of fog device statistics (List<Map>)
+     * @param simulationTime Simulation duration in seconds
+     */
+    public void generateReports(Map<String, Object> cloudDeviceData, 
+                                  List<Map<String, Object>> fogDevicesData,
+                                  double simulationTime) {
+        try {
+            ensureReportsDirectory();
+            
+            // Generate human-readable report
+            generateHumanReadableReport(cloudDeviceData, fogDevicesData, simulationTime);
+            
+            // Generate JSON report for Python visualization
+            generateJsonReport(cloudDeviceData, fogDevicesData, simulationTime);
+            
+            logger.info("Reports generated successfully in directory: " + reportsDirPath);
+            
+        } catch (IOException e) {
+            logger.severe("Error generating reports: " + e.getMessage());
+        }
+    }
+
+    /**
      * Create reports directory if it doesn't exist
      */
     private void ensureReportsDirectory() {
@@ -48,206 +71,179 @@ public class ReportGenerator {
             logger.info("Created reports directory: " + reportsDirPath);
         }
     }
-    
-    /**
-     * Generate and write all reports
-     */
-    public void generateReports(RLCloudDevice cloud, List<RLFogDevice> fogDevices) {
-        try {
-            ensureReportsDirectory();
-            
-            // Generate human-readable report
-            generateHumanReadableReport(cloud, fogDevices);
-            
-            // Generate JSON report for Python visualization
-            generateJsonReport(cloud, fogDevices);
-            
-            logger.info("Reports generated successfully in directory: " + reportsDirPath);
-            
-        } catch (IOException e) {
-            logger.severe("Error generating reports: " + e.getMessage());
-        }
-    }
-    
+
     /**
      * Generate human-readable text report
      */
-    private void generateHumanReadableReport(RLCloudDevice cloud, List<RLFogDevice> fogDevices) 
+    private void generateHumanReadableReport(Map<String, Object> cloudDeviceData, 
+                                               List<Map<String, Object>> fogDevicesData,
+                                               double simulationTime)
             throws IOException {
         String filename = reportsDirPath + "/report-" + timestamp + HUMAN_REPORT_EXT;
         File file = new File(filename);
-        
+
         try (FileWriter writer = new FileWriter(file)) {
             // Write header
             writer.write("================================================================================");
             writer.write("\nSIMULATION RESULTS");
             writer.write("\nGenerated: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
             writer.write("\n================================================================================");
-            
+
             // Write cloud statistics
             writer.write("\n\n[CLOUD DEVICE STATISTICS]");
-            writer.write(String.format("\nDevice: %s (ID: %d)", cloud.getName(), cloud.getId()));
-            writer.write(String.format("\nTotal Energy Consumed: %.2f J", cloud.getEnergyConsumption()));
-            writer.write(String.format("\nTotal Cost: $%.4f", cloud.getTotalCost()));
-            
-            if (cloud.getAllocationClient() != null && cloud.isRlEnabled()) {
+            writer.write(String.format("\nDevice: %s (ID: %s)", 
+                    cloudDeviceData.get("device_name"), cloudDeviceData.get("device_id")));
+            writer.write(String.format("\nTotal Energy Consumed: %.2f J", 
+                    getDouble(cloudDeviceData.get("energy_consumption"))));
+            writer.write(String.format("\nTotal Cost: $%.4f", 
+                    getDouble(cloudDeviceData.get("cost"))));
+
+            // RL allocation statistics
+            Object allocationStats = cloudDeviceData.get("allocation_stats");
+            if (allocationStats instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> stats = (Map<String, Object>) allocationStats;
                 writer.write("\n\n[RL ALLOCATION STATISTICS]");
-                writer.write(String.format("\nTotal Allocation Decisions: %d", cloud.getTotalAllocationDecisions()));
-                writer.write(String.format("\nSuccessful Allocations: %d", cloud.getSuccessfulAllocations()));
-                writer.write(String.format("\nAllocation Success Rate: %.2f%%", cloud.getAllocationSuccessRate() * 100));
-                writer.write(String.format("\nTotal Allocation Energy: %.2f J", cloud.getTotalAllocationEnergy()));
-                writer.write(String.format("\nTotal Allocation Cost: $%.4f", cloud.getTotalAllocationCost()));
-                writer.write(String.format("\nAverage Allocation Latency: %.2f ms", cloud.getAverageAllocationLatency()));
-                writer.write(String.format("\nAllocation Throughput: %.2f decisions/sec", cloud.getAllocationThroughput()));
+                writer.write(String.format("\nTotal Allocation Decisions: %s", stats.get("total_decisions")));
+                writer.write(String.format("\nSuccessful Allocations: %s", stats.get("successful_allocations")));
+                writer.write(String.format("\nAllocation Success Rate: %.2f%%", 
+                        getDouble(stats.get("success_rate")) * 100));
+                writer.write(String.format("\nTotal Allocation Energy: %.2f J", 
+                        getDouble(stats.get("total_energy"))));
+                writer.write(String.format("\nTotal Allocation Cost: $%.4f", 
+                        getDouble(stats.get("total_cost"))));
+                writer.write(String.format("\nAverage Allocation Latency: %.2f ms", 
+                        getDouble(stats.get("average_latency_ms"))));
+                writer.write(String.format("\nAllocation Throughput: %.2f decisions/sec", 
+                        getDouble(stats.get("throughput_per_sec"))));
             }
-            
+
             // Write fog node statistics
             writer.write("\n\n[FOG NODE STATISTICS]");
-            for (int i = 0; i < fogDevices.size(); i++) {
-                RLFogDevice fogDevice = fogDevices.get(i);
-                writer.write(String.format("\n\nFog Node %d: %s (ID: %d)", i, fogDevice.getName(), fogDevice.getId()));
-                writer.write(String.format("\n  Total Energy Consumed: %.2f J", fogDevice.getEnergyConsumption()));
-                writer.write(String.format("\n  Total Cost: $%.4f", fogDevice.getTotalCost()));
-                writer.write(String.format("\n  Unscheduled Queue Size: %d", fogDevice.getUnscheduledQueue().size()));
-                writer.write(String.format("\n  Scheduled Queue Size: %d", fogDevice.getScheduledQueue().size()));
-                
-                if (fogDevice.getSchedulerClient() != null && fogDevice.isRlEnabled()) {
+            for (int i = 0; i < fogDevicesData.size(); i++) {
+                Map<String, Object> fogData = fogDevicesData.get(i);
+                writer.write(String.format("\n\nFog Node %s: %s (ID: %s)", 
+                        fogData.get("node_id"), fogData.get("device_name"), fogData.get("device_id")));
+                writer.write(String.format("\n  Total Energy Consumed: %.2f J", 
+                        getDouble(fogData.get("energy_consumption"))));
+                writer.write(String.format("\n  Total Cost: $%.4f", 
+                        getDouble(fogData.get("cost"))));
+                writer.write(String.format("\n  Unscheduled Queue Size: %s", fogData.get("unscheduled_queue_size")));
+                writer.write(String.format("\n  Scheduled Queue Size: %s", fogData.get("scheduled_queue_size")));
+
+                // RL scheduling statistics
+                Object schedulingStats = fogData.get("scheduling_stats");
+                if (schedulingStats instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> stats = (Map<String, Object>) schedulingStats;
                     writer.write("\n  [RL SCHEDULING STATISTICS]");
-                    writer.write(String.format("\n  Total Scheduling Decisions: %d", fogDevice.getTotalSchedulingDecisions()));
-                    writer.write(String.format("\n  Scheduling Success Rate: %.2f%%", fogDevice.getSchedulingSuccessRate() * 100));
-                    writer.write(String.format("\n  Total Scheduling Energy: %.2f J", fogDevice.getTotalSchedulingEnergy()));
-                    writer.write(String.format("\n  Total Scheduling Cost: $%.4f", fogDevice.getTotalSchedulingCost()));
-                    writer.write(String.format("\n  Average Scheduling Latency: %.2f ms", fogDevice.getAverageSchedulingLatency()));
-                    writer.write(String.format("\n  Scheduling Throughput: %.2f decisions/sec", fogDevice.getSchedulingThroughput()));
-                    writer.write(String.format("\n  Streaming Observer Status: %s", 
-                            fogDevice.getStreamingObserver() != null ? "ACTIVE" : "INACTIVE"));
+                    writer.write(String.format("\n  Total Scheduling Decisions: %s", stats.get("total_decisions")));
+                    writer.write(String.format("\n  Scheduling Success Rate: %.2f%%", 
+                            getDouble(stats.get("success_rate")) * 100));
+                    writer.write(String.format("\n  Total Scheduling Energy: %.2f J", 
+                            getDouble(stats.get("total_energy"))));
+                    writer.write(String.format("\n  Total Scheduling Cost: $%.4f", 
+                            getDouble(stats.get("total_cost"))));
+                    writer.write(String.format("\n  Average Scheduling Latency: %.2f ms", 
+                            getDouble(stats.get("average_latency_ms"))));
+                    writer.write(String.format("\n  Scheduling Throughput: %.2f decisions/sec", 
+                            getDouble(stats.get("throughput_per_sec"))));
                 }
-                
+
                 // Cache statistics
-                Map<String, Object> cacheStats = fogDevice.getCacheStatistics();
-                writer.write("\n  [CACHE STATISTICS]");
-                writer.write(String.format("\n  Cache Size: %s / %s", cacheStats.get("cacheSize"), cacheStats.get("maxCacheSize")));
-                writer.write(String.format("\n  Cache Hits: %s", cacheStats.get("cacheHitCount")));
-                writer.write(String.format("\n  Cache Misses: %s", cacheStats.get("cacheMissCount")));
-                writer.write(String.format("\n  Cache Hit Rate: %.2f%%", 
-                        ((Double) cacheStats.get("cacheHitRate")) * 100));
+                Object cacheStats = fogData.get("cache_stats");
+                if (cacheStats instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> stats = (Map<String, Object>) cacheStats;
+                    writer.write("\n  [CACHE STATISTICS]");
+                    writer.write(String.format("\n  Cache Size: %s / %s", stats.get("cache_size"), stats.get("max_cache_size")));
+                    writer.write(String.format("\n  Cache Hits: %s", stats.get("hits")));
+                    writer.write(String.format("\n  Cache Misses: %s", stats.get("misses")));
+                    writer.write(String.format("\n  Cache Hit Rate: %.2f%%", 
+                            getDouble(stats.get("hit_rate")) * 100));
+                }
             }
-            
+
             // Write summary
             writer.write("\n\n[OVERALL SUMMARY]");
-            double totalEnergy = cloud.getEnergyConsumption();
-            double totalCost = cloud.getTotalCost();
-            for (RLFogDevice fogDevice : fogDevices) {
-                totalEnergy += fogDevice.getEnergyConsumption();
-                totalCost += fogDevice.getTotalCost();
+            double totalEnergy = getDouble(cloudDeviceData.get("energy_consumption"));
+            double totalCost = getDouble(cloudDeviceData.get("cost"));
+            for (Map<String, Object> fogData : fogDevicesData) {
+                totalEnergy += getDouble(fogData.get("energy_consumption"));
+                totalCost += getDouble(fogData.get("cost"));
             }
             writer.write(String.format("\nTotal Energy Consumption: %.2f J", totalEnergy));
             writer.write(String.format("\nTotal Cost: $%.4f", totalCost));
-            writer.write(String.format("\nSimulation Time: %.2f", CloudSim.clock()));
-            
+            writer.write(String.format("\nSimulation Time: %.2f", simulationTime));
+
             writer.write("\n\n================================================================================");
         }
-        
+
         logger.info("Human-readable report written to: " + filename);
+    }
+
+    /**
+     * Helper method to safely extract double value
+     */
+    private double getDouble(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Double.parseDouble((String) value);
+            } catch (NumberFormatException e) {
+                return 0.0;
+            }
+        }
+        return 0.0;
     }
     
     /**
      * Generate JSON report for Python visualization
      */
-    private void generateJsonReport(RLCloudDevice cloud, List<RLFogDevice> fogDevices) throws IOException {
+    private void generateJsonReport(Map<String, Object> cloudDeviceData, 
+                                     List<Map<String, Object>> fogDevicesData,
+                                     double simulationTime) throws IOException {
         String filename = reportsDirPath + "/report-" + timestamp + JSON_REPORT_EXT;
         File file = new File(filename);
-        
+
+        // Build complete report from provided data
         Map<String, Object> report = new HashMap<>();
         
         // Metadata
         report.put("timestamp", timestamp);
-        report.put("simulation_time", CloudSim.clock());
+        report.put("simulation_time", simulationTime);
         
-        // Cloud device data
-        Map<String, Object> cloudData = new HashMap<>();
-        cloudData.put("device_id", cloud.getId());
-        cloudData.put("device_name", cloud.getName());
-        cloudData.put("energy_consumption", cloud.getEnergyConsumption());
-        cloudData.put("cost", cloud.getTotalCost());
+        // Cloud device (use provided data as-is)
+        report.put("cloud_device", cloudDeviceData);
         
-        if (cloud.getAllocationClient() != null && cloud.isRlEnabled()) {
-            Map<String, Object> allocationStats = new HashMap<>();
-            allocationStats.put("total_decisions", cloud.getTotalAllocationDecisions());
-            allocationStats.put("successful_allocations", cloud.getSuccessfulAllocations());
-            allocationStats.put("success_rate", cloud.getAllocationSuccessRate());
-            allocationStats.put("total_energy", cloud.getTotalAllocationEnergy());
-            allocationStats.put("total_cost", cloud.getTotalAllocationCost());
-            allocationStats.put("average_latency_ms", cloud.getAverageAllocationLatency());
-            allocationStats.put("throughput_per_sec", cloud.getAllocationThroughput());
-            cloudData.put("allocation_stats", allocationStats);
-        }
-        
-        report.put("cloud_device", cloudData);
-        
-        // Fog devices data
-        List<Map<String, Object>> fogDevicesData = new java.util.ArrayList<>();
-        for (int i = 0; i < fogDevices.size(); i++) {
-            RLFogDevice fogDevice = fogDevices.get(i);
-            Map<String, Object> fogData = new HashMap<>();
-            fogData.put("node_id", i);
-            fogData.put("device_id", fogDevice.getId());
-            fogData.put("device_name", fogDevice.getName());
-            fogData.put("energy_consumption", fogDevice.getEnergyConsumption());
-            fogData.put("cost", fogDevice.getTotalCost());
-            fogData.put("unscheduled_queue_size", fogDevice.getUnscheduledQueue().size());
-            fogData.put("scheduled_queue_size", fogDevice.getScheduledQueue().size());
-            
-            // Scheduling stats
-            if (fogDevice.getSchedulerClient() != null && fogDevice.isRlEnabled()) {
-                Map<String, Object> schedulingStats = new HashMap<>();
-                schedulingStats.put("total_decisions", fogDevice.getTotalSchedulingDecisions());
-                schedulingStats.put("success_rate", fogDevice.getSchedulingSuccessRate());
-                schedulingStats.put("total_energy", fogDevice.getTotalSchedulingEnergy());
-                schedulingStats.put("total_cost", fogDevice.getTotalSchedulingCost());
-                schedulingStats.put("average_latency_ms", fogDevice.getAverageSchedulingLatency());
-                schedulingStats.put("throughput_per_sec", fogDevice.getSchedulingThroughput());
-                fogData.put("scheduling_stats", schedulingStats);
-            }
-            
-            // Cache stats
-            Map<String, Object> cacheStats = new HashMap<>();
-            Map<String, Object> deviceCacheStats = fogDevice.getCacheStatistics();
-            cacheStats.put("cache_size", deviceCacheStats.get("cacheSize"));
-            cacheStats.put("max_cache_size", deviceCacheStats.get("maxCacheSize"));
-            cacheStats.put("hits", deviceCacheStats.get("cacheHitCount"));
-            cacheStats.put("misses", deviceCacheStats.get("cacheMissCount"));
-            cacheStats.put("hit_rate", deviceCacheStats.get("cacheHitRate"));
-            fogData.put("cache_stats", cacheStats);
-            
-            fogDevicesData.add(fogData);
-        }
-        
+        // Fog devices (use provided data as-is)
         report.put("fog_devices", fogDevicesData);
         
-        // Overall summary
+        // Calculate summary from provided data
         Map<String, Object> summary = new HashMap<>();
-        double totalEnergy = cloud.getEnergyConsumption();
-        double totalCost = cloud.getTotalCost();
-        for (RLFogDevice fogDevice : fogDevices) {
-            totalEnergy += fogDevice.getEnergyConsumption();
-            totalCost += fogDevice.getTotalCost();
+        double totalEnergy = getDouble(cloudDeviceData.get("energy_consumption"));
+        double totalCost = getDouble(cloudDeviceData.get("cost"));
+        for (Map<String, Object> fogData : fogDevicesData) {
+            totalEnergy += getDouble(fogData.get("energy_consumption"));
+            totalCost += getDouble(fogData.get("cost"));
         }
         summary.put("total_energy", totalEnergy);
         summary.put("total_cost", totalCost);
-        summary.put("average_energy_per_device", totalEnergy / (fogDevices.size() + 1));
-        summary.put("average_cost_per_device", totalCost / (fogDevices.size() + 1));
+        summary.put("average_energy_per_device", totalEnergy / (fogDevicesData.size() + 1));
+        summary.put("average_cost_per_device", totalCost / (fogDevicesData.size() + 1));
         
         report.put("summary", summary);
-        
+
         // Write JSON file (pretty-printed for readability)
         try (FileWriter writer = new FileWriter(file)) {
             writer.write(formatJson(report));
         }
-        
+
         logger.info("JSON report written to: " + filename);
     }
-    
+
     /**
      * Format map to pretty-printed JSON string
      */
@@ -258,17 +254,18 @@ public class ReportGenerator {
         json.append("}\n");
         return json.toString();
     }
-    
+
     @SuppressWarnings("unchecked")
     private void formatJsonValue(StringBuilder json, Object value, int indent) {
         String indentStr = repeatString("  ", indent);
-        
+
         if (value instanceof Map) {
             Map<String, Object> map = (Map<String, Object>) value;
             json.append("{\n");
             boolean first = true;
             for (Map.Entry<String, Object> entry : map.entrySet()) {
-                if (!first) json.append(",\n");
+                if (!first)
+                    json.append(",\n");
                 first = false;
                 json.append(indentStr).append("\"").append(entry.getKey()).append("\": ");
                 formatJsonValue(json, entry.getValue(), indent + 1);
@@ -279,7 +276,8 @@ public class ReportGenerator {
             List<?> list = (List<?>) value;
             boolean first = true;
             for (Object item : list) {
-                if (!first) json.append(",\n");
+                if (!first)
+                    json.append(",\n");
                 first = false;
                 json.append(indentStr);
                 formatJsonValue(json, item, indent + 1);
@@ -293,7 +291,7 @@ public class ReportGenerator {
             json.append("\"").append(String.valueOf(value)).append("\"");
         }
     }
-    
+
     /**
      * Repeat a string n times (Java 8 compatible)
      */
@@ -304,14 +302,14 @@ public class ReportGenerator {
         }
         return result.toString();
     }
-    
+
     /**
      * Get the timestamp used for file naming
      */
     public String getTimestamp() {
         return timestamp;
     }
-    
+
     /**
      * Get the reports directory path
      */
@@ -319,4 +317,3 @@ public class ReportGenerator {
         return reportsDirPath;
     }
 }
-
