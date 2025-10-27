@@ -99,8 +99,51 @@ func (s *FogAllocationService) ReportNodeState(stream pb.FogAllocationService_Re
 			return err
 		}
 
-		// Convert and store the node state
+		// Validate node state update
 		nodeID := stateUpdate.NodeId
+		if nodeID == "" {
+			if sendErr := stream.Send(&pb.NodeStateResponse{
+				Acknowledged: false,
+				Message:      "node_id is required",
+			}); sendErr != nil {
+				return sendErr
+			}
+			continue
+		}
+		
+		// Validate CPU and memory utilization ranges
+		if stateUpdate.CpuUtilization < 0 || stateUpdate.CpuUtilization > 1 {
+			if sendErr := stream.Send(&pb.NodeStateResponse{
+				Acknowledged: false,
+				Message:      "cpu_utilization must be between 0 and 1",
+			}); sendErr != nil {
+				return sendErr
+			}
+			continue
+		}
+		
+		if stateUpdate.MemoryUtilization < 0 || stateUpdate.MemoryUtilization > 1 {
+			if sendErr := stream.Send(&pb.NodeStateResponse{
+				Acknowledged: false,
+				Message:      "memory_utilization must be between 0 and 1",
+			}); sendErr != nil {
+				return sendErr
+			}
+			continue
+		}
+		
+		// Validate network bandwidth
+		if stateUpdate.NetworkBandwidth < 0 {
+			if sendErr := stream.Send(&pb.NodeStateResponse{
+				Acknowledged: false,
+				Message:      "network_bandwidth must be non-negative",
+			}); sendErr != nil {
+				return sendErr
+			}
+			continue
+		}
+
+		// Convert and store the node state
 		nodeState := rl.FogNodeState{
 			NodeID:            nodeID,
 			CPUUtilization:    stateUpdate.CpuUtilization,
@@ -127,7 +170,27 @@ func (s *FogAllocationService) ReportNodeState(stream pb.FogAllocationService_Re
 
 // AllocateTask implements the task allocation RPC endpoint
 func (s *FogAllocationService) AllocateTask(ctx context.Context, request *pb.TaskAllocationRequest) (*pb.TaskAllocationResponse, error) {
+	// Validate input
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+	
 	taskID := request.TaskId
+	if taskID == "" {
+		return nil, status.Error(codes.InvalidArgument, "task_id is required")
+	}
+	
+	// Validate task requirements
+	if request.CpuRequirement < 0 || request.CpuRequirement > 1 {
+		return nil, status.Error(codes.InvalidArgument, "cpu_requirement must be between 0 and 1")
+	}
+	if request.MemoryRequirement < 0 || request.MemoryRequirement > 1 {
+		return nil, status.Error(codes.InvalidArgument, "memory_requirement must be between 0 and 1")
+	}
+	if request.BandwidthRequirement < 0 {
+		return nil, status.Error(codes.InvalidArgument, "bandwidth_requirement must be non-negative")
+	}
+	
 	s.logger.Info(fmt.Sprintf("Processing task allocation request for taskID: %s", taskID))
 
 	// Get available nodes for allocation
@@ -211,8 +274,24 @@ func isNodeCapable(state rl.FogNodeState, request *pb.TaskAllocationRequest) boo
 
 // ReportTaskOutcome implements the task outcome reporting RPC endpoint
 func (s *FogAllocationService) ReportTaskOutcome(ctx context.Context, report *pb.TaskOutcomeRequest) (*pb.TaskOutcomeResponse, error) {
+	// Validate input
+	if report == nil {
+		return nil, status.Error(codes.InvalidArgument, "report cannot be nil")
+	}
+	
 	taskID := report.TaskId
 	nodeID := report.NodeId
+	
+	if taskID == "" {
+		return nil, status.Error(codes.InvalidArgument, "task_id is required")
+	}
+	if nodeID == "" {
+		return nil, status.Error(codes.InvalidArgument, "node_id is required")
+	}
+	if report.ActualExecutionTimeMs < 0 {
+		return nil, status.Error(codes.InvalidArgument, "actual_execution_time_ms must be non-negative")
+	}
+	
 	success := report.CompletedSuccessfully
 
 	s.logger.Info(fmt.Sprintf("Received task outcome report - TaskID: %s, NodeID: %s, Success: %t, Time: %dms",
@@ -273,6 +352,11 @@ func (s *FogAllocationService) ReportTaskOutcome(ctx context.Context, report *pb
 
 // GetSystemState implements the system state query RPC endpoint
 func (s *FogAllocationService) GetSystemState(ctx context.Context, request *pb.SystemStateRequest) (*pb.SystemStateResponse, error) {
+	// Validate input
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+	
 	s.logger.Info(fmt.Sprintf("Processing system state request (detailed metrics: %t)", request.IncludeDetailedMetrics))
 
 	response := &pb.SystemStateResponse{
@@ -393,8 +477,23 @@ func estimateCompletionTime(request *pb.TaskAllocationRequest) int64 {
 	return baseTime + cpuFactor + memoryFactor
 }
 
-// ControlRLAgent implements the agent control RPC endpoint // TODO make actions better.
+// ControlRLAgent implements the agent control RPC endpoint
 func (s *FogAllocationService) ControlRLAgent(ctx context.Context, request *pb.RLAgentControlRequest) (*pb.RLAgentControlResponse, error) {
+	// Validate input
+	if request == nil {
+		return &pb.RLAgentControlResponse{
+			Success: false,
+			Message: "request cannot be nil",
+		}, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+	
+	if request.Action == "" {
+		return &pb.RLAgentControlResponse{
+			Success: false,
+			Message: "action is required",
+		}, status.Error(codes.InvalidArgument, "action is required")
+	}
+	
 	s.logger.Info(fmt.Sprintf("Processing agent control request: %s", request.Action))
 
 	response := &pb.RLAgentControlResponse{
@@ -481,6 +580,11 @@ func (s *FogAllocationService) ControlRLAgent(ctx context.Context, request *pb.R
 
 // GetRLAgentStatus implements the agent status RPC endpoint
 func (s *FogAllocationService) GetRLAgentStatus(ctx context.Context, request *pb.RLAgentStatusRequest) (*pb.RLAgentStatusResponse, error) {
+	// Validate input
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+	
 	s.logger.Info("Processing agent status request")
 
 	// Get registered algorithms
@@ -504,6 +608,11 @@ func (s *FogAllocationService) SaveRLModels() error {
 
 // GetRLPerformanceMetrics implements the performance metrics retrieval RPC endpoint
 func (s *FogAllocationService) GetRLPerformanceMetrics(ctx context.Context, request *pb.RLPerformanceRequest) (*pb.RLPerformanceResponse, error) {
+	// Validate input
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+	
 	s.logger.Info("Processing RL performance metrics request")
 
 	metrics := s.agent.GetPerformanceMetrics()
@@ -587,6 +696,28 @@ func (s *FogAllocationService) GetRLPerformanceMetrics(ctx context.Context, requ
 
 // SetRLParameters implements the parameter tuning RPC endpoint
 func (s *FogAllocationService) SetRLParameters(ctx context.Context, request *pb.RLParametersRequest) (*pb.RLParametersResponse, error) {
+	// Validate input
+	if request == nil {
+		return &pb.RLParametersResponse{
+			Success: false,
+			Message: "request cannot be nil",
+		}, status.Error(codes.InvalidArgument, "request cannot be nil")
+	}
+	
+	if request.AlgorithmName == "" {
+		return &pb.RLParametersResponse{
+			Success: false,
+			Message: "algorithm_name is required",
+		}, status.Error(codes.InvalidArgument, "algorithm_name is required")
+	}
+	
+	if request.Parameters == nil || len(request.Parameters) == 0 {
+		return &pb.RLParametersResponse{
+			Success: false,
+			Message: "parameters cannot be empty",
+		}, status.Error(codes.InvalidArgument, "parameters cannot be empty")
+	}
+	
 	algorithmName := request.AlgorithmName
 	parameters := request.Parameters
 

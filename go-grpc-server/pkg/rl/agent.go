@@ -3,6 +3,7 @@ package rl
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -167,8 +168,19 @@ func (a *Agent) SelectNode(state SystemState, availableNodes []string) (string, 
 	// Start timing the decision
 	startTime := time.Now()
 
+	// Validate inputs
 	if len(availableNodes) == 0 {
 		return "", fmt.Errorf("no available nodes to select from")
+	}
+	if state.FogNodes == nil || len(state.FogNodes) == 0 {
+		return "", fmt.Errorf("system state has no fog nodes")
+	}
+	
+	// Validate that available nodes exist in the state
+	for _, nodeID := range availableNodes {
+		if _, exists := state.FogNodes[nodeID]; !exists {
+			return "", fmt.Errorf("node %s not found in system state", nodeID)
+		}
 	}
 
 	a.mutex.RLock()
@@ -579,12 +591,30 @@ func (a *Agent) GetPerformanceMetrics() PerformanceSnapshot {
 
 // SetAlgorithmParameters updates parameters for a specific algorithm
 func (a *Agent) SetAlgorithmParameters(algorithmName string, parameters map[string]float64) error {
+	// Validate input
+	if algorithmName == "" {
+		return fmt.Errorf("algorithm name cannot be empty")
+	}
+	if parameters == nil {
+		return fmt.Errorf("parameters cannot be nil")
+	}
+	if len(parameters) == 0 {
+		return fmt.Errorf("parameters cannot be empty")
+	}
+	
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
 	alg, err := a.algorithmManager.GetAlgorithm(algorithmName)
 	if err != nil {
 		return fmt.Errorf("algorithm not found: %s", algorithmName)
+	}
+
+	// Validate parameter values
+	for name, value := range parameters {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("invalid parameter value for %s: %f", name, value)
+		}
 	}
 
 	// Convert float64 parameters to interface{} for SetParams
