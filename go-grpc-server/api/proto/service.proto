@@ -1,0 +1,174 @@
+syntax = "proto3";
+
+package thesis;
+
+option go_package = "grpc-server/api/proto";
+
+service FogAllocationService {
+  // Stream-based state updates from clients
+  rpc ReportNodeState(stream NodeStateRequest) returns (stream NodeStateResponse);
+  
+  // Request task allocation decision
+  rpc AllocateTask(TaskAllocationRequest) returns (TaskAllocationResponse);
+  
+  // Report task completion and outcomes
+  rpc ReportTaskOutcome(TaskOutcomeRequest) returns (TaskOutcomeResponse);
+  
+  // Get system overview
+  rpc GetSystemState(SystemStateRequest) returns (SystemStateResponse);
+
+  // Control the RL agent (enable/disable learning, switch algorithms)
+  rpc ControlRLAgent(RLAgentControlRequest) returns (RLAgentControlResponse);
+
+  // Get current status of the RL agent
+  rpc GetRLAgentStatus(RLAgentStatusRequest) returns (RLAgentStatusResponse);
+
+  // Get performance metrics from the RL agent
+  rpc GetRLPerformanceMetrics(RLPerformanceRequest) returns (RLPerformanceResponse);
+  
+  // Set algorithm parameters for tuning
+  rpc SetRLParameters(RLParametersRequest) returns (RLParametersResponse);
+}
+
+// Performance metrics request
+message RLPerformanceRequest {
+  // Empty request - no fields needed
+}
+
+// Performance metrics response
+message RLPerformanceResponse {
+  int64 total_decisions = 1;
+  int64 successful_tasks = 2;
+  int64 failed_tasks = 3;
+  double success_rate = 4;
+  double avg_recent_reward = 5;
+  double cumulative_reward = 6;
+  int64 avg_decision_time_ns = 7;
+  
+  // Per-algorithm metrics
+  message AlgorithmMetric {
+    int64 decisions = 1;
+    double success_rate = 2;
+    double avg_reward = 3;
+    int64 last_updated_unix_ms = 4;  // Unix timestamp in milliseconds
+  }
+  
+  map<string, AlgorithmMetric> algorithm_metrics = 8;
+
+  message HybridMetric {
+    double transition_progress = 1;  // Progress from heuristic to RL (0-1)
+    double confidence_avg = 2;       // Average confidence in decisions
+    double heuristic_usage = 3;      // Percentage of decisions using heuristics
+  }
+  
+  HybridMetric hybrid_metrics = 9; 
+}
+
+// Set parameters request
+message RLParametersRequest {
+  string algorithm_name = 1;
+  map<string, double> parameters = 2;
+}
+
+// Set parameters response
+message RLParametersResponse {
+  bool success = 1;
+  string message = 2;
+  map<string, double> current_parameters = 3;
+}
+
+// Add these message definitions at the end of the file
+message RLAgentControlRequest {
+  string action = 1;              // "enable_learning", "disable_learning", "switch_algorithm" // search CONTROL_RL_ACTIONS
+  string algorithm_name = 2;      // Used when action is "switch_algorithm"
+  map<string, string> task_metadata = 3; // metadata
+}
+
+message RLAgentControlResponse {
+  bool success = 1;
+  string message = 2;
+  string current_algorithm = 3;
+  bool learning_enabled = 4;
+}
+
+message RLAgentStatusRequest {
+  // Empty request - no fields needed
+}
+
+message RLAgentStatusResponse {
+  string active_algorithm = 1;
+  bool learning_enabled = 2;
+  repeated string available_algorithms = 3;
+}
+
+// Node state reporting
+message NodeStateRequest {
+  string node_id = 1;
+  double cpu_utilization = 2;
+  double memory_utilization = 3;
+  double network_bandwidth = 4;
+  int32 task_count = 5;
+  map<string, double> custom_metrics = 6;
+}
+
+message NodeStateResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// Task allocation
+message TaskAllocationRequest {
+  string task_id = 1;
+  double cpu_requirement = 2;
+  double memory_requirement = 3;
+  double bandwidth_requirement = 4;
+  int32 priority = 5;
+  int64 deadline_ms = 6;
+  map<string, string> task_metadata = 7;
+}
+
+message TaskAllocationResponse {
+  string task_id = 1;
+  string allocated_node_id = 2;
+  bool success = 3;
+  string message = 4;
+  int64 expected_completion_time_ms = 5;
+}
+
+// Task outcome reporting
+message TaskOutcomeRequest {
+  string task_id = 1;
+  string node_id = 2;
+  bool completed_successfully = 3;
+  int64 actual_execution_time_ms = 4;
+  double actual_cpu_usage = 5;
+  double actual_memory_usage = 6;
+  string error_message = 7;
+}
+
+message TaskOutcomeResponse {
+  bool acknowledged = 1;
+  string message = 2;
+}
+
+// System state query
+message SystemStateRequest {
+  bool include_detailed_metrics = 1;
+}
+
+message SystemStateResponse {
+  map<string, NodeState> fog_nodes = 1;
+  int32 total_tasks_running = 2;
+  int32 total_tasks_queued = 3;
+  double system_health_score = 4;
+}
+
+message NodeState {
+  string node_id = 1;
+  double cpu_utilization = 2;
+  double memory_utilization = 3;
+  double network_bandwidth = 4;
+  int32 task_count = 5;
+  bool is_available = 6;
+  map<string, double> custom_metrics = 7;
+}

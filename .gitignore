@@ -1,0 +1,132 @@
+# ============================================================
+# 🔧 Global rules
+# ============================================================
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.project
+.classpath
+.settings/
+
+# Environment files
+.env
+env.local
+.env.*
+!env.example
+
+# Common temp or build dirs
+tmp/
+temp/
+logs/
+generated/
+out/
+target/
+bin/
+jars/
+
+# ============================================================
+# ⚙️ Go Projects
+# ============================================================
+
+# ──────────────────────────────────────────────
+# go-grpc-server specific ignores
+# ──────────────────────────────────────────────
+go-grpc-server/*.exe
+go-grpc-server/*.exe~
+go-grpc-server/*.dll
+go-grpc-server/*.so
+go-grpc-server/*.dylib
+go-grpc-server/*.test
+go-grpc-server/*.out
+# Dependency directories
+go-grpc-server/vendor/
+# Go workspace
+go-grpc-server/go.work
+go-grpc-server/go.work.sum
+# Env
+go-grpc-server/.env
+# Temporary build / runtime dirs
+go-grpc-server/tmp
+go-grpc-server/cmd/server/tmp
+
+# ──────────────────────────────────────────────
+# grpc-task-scheduler specific ignores
+# ──────────────────────────────────────────────
+grpc-task-scheduler/*.exe
+grpc-task-scheduler/*.exe~
+grpc-task-scheduler/*.dll
+grpc-task-scheduler/*.so
+grpc-task-scheduler/*.dylib
+grpc-task-scheduler/*.test
+grpc-task-scheduler/*.out
+grpc-task-scheduler/coverage.*
+grpc-task-scheduler/*.coverprofile
+grpc-task-scheduler/profile.cov
+grpc-task-scheduler/vendor/
+grpc-task-scheduler/go.work
+grpc-task-scheduler/go.work.sum
+grpc-task-scheduler/.env
+grpc-task-scheduler/tmp
+grpc-task-scheduler/cmd/server/tmp
+
+# IDE (commented out in original, included here)
+grpc-task-scheduler/.idea/
+grpc-task-scheduler/.vscode/
+
+# ============================================================
+# ☕ Java Project (iFogSim)
+# ============================================================
+
+# Build dirs
+ifogsim/bin/
+ifogsim/target/
+ifogsim/out/
+ifogsim/jars/
+
+# IDE
+ifogsim/.classpath
+ifogsim/.project
+ifogsim/.settings/
+ifogsim/.idea/
+ifogsim/*.iml
+ifogsim/.vscode/
+
+# Env & temp files
+ifogsim/.env
+ifogsim/temp.md
+
+# Logs
+ifogsim/logs/
+ifogsim/*.log
+
+# Generated sources
+ifogsim/generated/
+
+# OS junk
+ifogsim/.DS_Store
+ifogsim/Thumbs.db
+
+# ============================================================
+# 🧱 Docker & Config
+# ============================================================
+
+# Docker build cache
+**/docker-compose.override.yml.backup
+**/docker-compose.yml.backup
+**/Dockerfile.*
+
+# Ignore personal or environment configuration
+config/**/development.yaml
+config/**/production.yaml
+config/**/local.yaml
+config/**/secrets.yaml
+

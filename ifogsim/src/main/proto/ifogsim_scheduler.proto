@@ -1,0 +1,258 @@
+syntax = "proto3";
+
+package thesis;
+
+option java_package = "org.patch.proto";
+option java_outer_classname = "IfogsimScheduler";
+
+import "ifogsim_common.proto";
+
+// Task scheduling service matching Go service
+service TaskScheduler {
+  // Add task to queue for scheduling
+  rpc AddTaskToQueue(AddTaskToQueueRequest) returns (AddTaskToQueueResponse);
+  
+  // Get scheduling status
+  rpc GetSchedulingStatus(GetSchedulingStatusRequest) returns (GetSchedulingStatusResponse);
+  
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Update objective weights for runtime configuration
+  rpc UpdateObjectiveWeights(UpdateObjectiveWeightsRequest) returns (UpdateObjectiveWeightsResponse);
+
+  // Report task completion for delayed reward system
+  rpc ReportTaskCompletion(TaskCompletionReport) returns (TaskCompletionAck);
+
+  // Get current sorted queue (single request)
+  rpc GetSortedQueue(GetSortedQueueRequest) returns (GetSortedQueueResponse);
+  
+  // Subscribe to queue updates (streaming)
+  rpc SubscribeToQueueUpdates(SubscribeRequest) returns (stream QueueUpdateResponse);
+}
+
+// System monitoring service for practical monitoring aspects
+service SystemMonitoring {
+  // Get system metrics - perfect for presentations
+  rpc GetSystemMetrics(GetSystemMetricsRequest) returns (GetSystemMetricsResponse);
+  
+  // Get node registry status
+  rpc GetNodeRegistry(GetNodeRegistryRequest) returns (GetNodeRegistryResponse);
+  
+  // Get scheduling performance stats
+  rpc GetSchedulingStats(GetSchedulingStatsRequest) returns (GetSchedulingStatsResponse);
+  
+  // Get live dashboard data
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+}
+
+// Request/Response messages matching Go service
+message AddTaskToQueueRequest {
+  Task task = 1;
+  repeated FogNode available_nodes = 2;
+  SchedulingPolicy policy = 3;
+}
+
+message AddTaskToQueueResponse {
+  string task_id = 1;
+  bool success = 2;
+  int64 queue_position = 3;
+  int64 estimated_wait_time_ms = 4;
+  string error_message = 5;
+  bool is_cached_task = 6;         // Whether to use cached result immediately
+  string cache_key = 7;            // Unique fingerprint for caching
+  CacheAction cache_action = 8;    // What to do with cache
+}
+
+message GetSortedQueueRequest {
+  string node_id = 1; // Optional: get queue for specific node
+}
+
+message GetSortedQueueResponse {
+  repeated Task queue_tasks = 1;
+  int64 total_tasks = 2;
+  int64 timestamp = 3;
+  string node_id = 4;
+}
+
+message SubscribeRequest {
+  string node_id = 1; // Optional: subscribe to specific node updates
+}
+
+message QueueUpdateResponse {
+  repeated Task updated_tasks = 1;
+  int64 total_tasks = 2;
+  int64 timestamp = 3;
+  string node_id = 4;
+  UpdateType update_type = 5;
+}
+
+enum UpdateType {
+  UPDATE_TYPE_UNSPECIFIED = 0;
+  UPDATE_TYPE_FULL_QUEUE = 1;
+  UPDATE_TYPE_TASK_ADDED = 2;
+  UPDATE_TYPE_TASK_REMOVED = 3;
+  UPDATE_TYPE_TASK_UPDATED = 4;
+}
+
+message SchedulingPolicy {
+  SchedulingAlgorithm algorithm = 1;
+  ObjectiveFunction objective = 2;
+  map<string, string> parameters = 3;
+}
+
+enum SchedulingAlgorithm {
+  SCHEDULING_ALGORITHM_UNSPECIFIED = 0;
+  SCHEDULING_ALGORITHM_FIFO = 1;           // First In First Out
+  SCHEDULING_ALGORITHM_PRIORITY = 2;       // Priority-based
+  SCHEDULING_ALGORITHM_SHORTEST_JOB_FIRST = 3; // SJF
+}
+
+enum ObjectiveFunction {
+  OBJECTIVE_FUNCTION_UNSPECIFIED = 0;
+  OBJECTIVE_FUNCTION_MINIMIZE_LATENCY = 1;
+  OBJECTIVE_FUNCTION_MAXIMIZE_THROUGHPUT = 2;
+  OBJECTIVE_FUNCTION_BALANCE_LOAD = 3;
+}
+
+message SchedulingDecision {
+  SchedulingAlgorithm algorithm_used = 1;
+  ObjectiveFunction objective_used = 2;
+  double confidence_score = 3;     // RL agent confidence (0.0-1.0)
+  int64 decision_time_ms = 4;      // Time taken to make decision
+  string reasoning = 5;            // Human-readable decision reasoning
+  map<string, double> node_scores = 6; // Scores for each considered node
+}
+
+message GetSchedulingStatusRequest {
+  string node_id = 1; // Optional: get status for specific node
+}
+
+message GetSchedulingStatusResponse {
+  repeated NodeStatus node_statuses = 1;
+  int64 total_tasks_scheduled = 2;
+  int64 total_tasks_completed = 3;
+  int64 total_tasks_failed = 4;
+  double average_response_time_ms = 5;
+  map<string, string> system_metrics = 6;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string status = 2;
+  int64 timestamp = 3;
+  string version = 4;
+}
+
+// ==================== MONITORING MESSAGES ====================
+
+// System Metrics
+message GetSystemMetricsRequest {}
+
+message GetSystemMetricsResponse {
+  int64 uptime_seconds = 1;
+  double cpu_usage_percent = 2;
+  int64 memory_usage_mb = 3;
+  int64 total_requests = 4;
+  int64 successful_requests = 5;
+  int64 failed_requests = 6;
+  double success_rate_percent = 7;
+  double avg_response_time_ms = 8;
+  int32 active_connections = 9;
+  int64 timestamp = 10;
+}
+
+// Node Registry
+message GetNodeRegistryRequest {}
+
+message GetNodeRegistryResponse {
+  repeated NodeSummary nodes = 1;
+  int64 total_nodes = 2;
+  int64 active_nodes = 3;
+}
+
+message NodeSummary {
+  string node_id = 1;
+  NodeStatus status = 2;
+  double utilization_percent = 3;
+  int64 tasks_assigned = 4;
+  string region = 5;
+}
+
+// Scheduling Statistics
+message GetSchedulingStatsRequest {}
+
+message GetSchedulingStatsResponse {
+  map<string, int64> algorithm_usage = 1;
+  map<string, float> algorithm_performance = 2;
+  float overall_efficiency = 3;
+  int64 total_tasks_processed = 4;
+}
+
+// Dashboard
+message GetDashboardRequest {}
+
+message GetDashboardResponse {
+  SystemStatus status = 1;
+  repeated string recent_activities = 2;
+  repeated string alerts = 3;
+}
+
+message SystemStatus {
+  string server_status = 1;
+  int64 uptime_seconds = 2;
+  int64 active_nodes = 3;
+  int64 tasks_today = 4;
+  double current_load = 5;
+}
+
+// ==================== OBJECTIVE WEIGHTS MESSAGES ====================
+
+// Request to update objective weights
+message UpdateObjectiveWeightsRequest {
+  map<string, double> weights = 1; // Key: objective name (e.g., "latency"), Value: weight (0.0-1.0)
+}
+
+// Response for objective weights update
+message UpdateObjectiveWeightsResponse {
+  bool success = 1;
+  string message = 2; // Confirmation or error details
+}
+
+// ==================== DELAYED REWARD SYSTEM MESSAGES ====================
+
+// Task completion reporting for delayed reward system
+message TaskCompletionReport {
+  string task_id = 1;                     // Using task_id as unique identifier
+  repeated CompletedTask tasks = 2;
+  SystemPerformanceMetrics metrics = 3;
+  int64 completion_timestamp = 4;
+}
+
+message CompletedTask {
+  string task_id = 1;
+  string assigned_node_id = 2;
+  double actual_execution_time_ms = 3;
+  double actual_latency_ms = 4;
+  double energy_consumed = 5;
+  bool deadline_met = 6;
+  int64 start_time = 7;
+  int64 completion_time = 8;
+  map<string, double> resource_usage = 9;
+}
+
+message SystemPerformanceMetrics {
+  double total_throughput = 1;
+  double average_latency_ms = 2;
+  double energy_efficiency = 3;
+  double resource_utilization = 4;
+  int32 deadline_misses = 5;
+  double fairness_index = 6;
+}
+
+message TaskCompletionAck {
+  bool success = 1;
+  string message = 2;
+}

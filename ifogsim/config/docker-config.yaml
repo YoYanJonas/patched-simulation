@@ -1,0 +1,47 @@
+# iFogSim Docker Configuration
+# This file contains configuration for running iFogSim in Docker containers
+
+# Simulation Configuration
+simulation:
+  duration: 3600 # Simulation duration in seconds
+  timeStep: 1.0 # Time step for simulation
+  randomSeed: 42 # Random seed for reproducible results
+
+# gRPC Service Configuration
+grpc:
+  # Allocation Service (go-grpc-server)
+  allocation:
+    host: ${ALLOCATION_HOST:-go-grpc-server}
+    port: ${ALLOCATION_PORT:-50051}
+    timeout: 30s
+    retryAttempts: 3
+
+  # Task Scheduler Services (for 3-4 fog nodes)
+  schedulers:
+    - name: 'scheduler-1'
+      host: ${SCHEDULER_HOST_1:-grpc-task-scheduler-1}
+      port: ${SCHEDULER_PORT_1:-40040}
+      fogNodeIds: [1, 2] # Fog nodes 1-2 assigned to scheduler-1
+    - name: 'scheduler-2'
+      host: ${SCHEDULER_HOST_2:-grpc-task-scheduler-2}
+      port: ${SCHEDULER_PORT_2:-40040}
+      fogNodeIds: [3, 4] # Fog nodes 3-4 assigned to scheduler-2
+
+# Fog Network Configuration
+fogNetwork:
+  numFogNodes: 4 # 3-4 fog nodes as per your requirement
+  numCloudNodes: 1 # 1 cloud device as per your requirement
+  schedulerInstances: 2 # 1-2 scheduler instances for 3-4 fog nodes
+
+# Logging Configuration
+logging:
+  level: INFO
+  file: /app/logs/ifogsim.log
+  maxSize: 100MB
+  maxFiles: 5
+
+# Results Configuration
+results:
+  outputDir: /app/results
+  exportFormats: ['json', 'csv']
+  metricsCollection: true

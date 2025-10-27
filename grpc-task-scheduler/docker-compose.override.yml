@@ -1,0 +1,5 @@
+services:
+  grpc-server-task-scheduler:
+    ports:
+      - "40040:40040"
+      - "9090:9090"

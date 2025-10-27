@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package thesis;
+
+option java_package = "org.patch.proto";
+option java_outer_classname = "IfogsimCommon";
+
+// Common message types for iFogSim integration
+message DeviceState {
+  string device_id = 1;
+  double cpu_utilization = 2;
+  double memory_utilization = 3;
+  double network_bandwidth = 4;
+  int32 task_count = 5;
+  int64 timestamp = 6;
+  map<string, double> custom_metrics = 7;
+}
+
+// Task definition matching Go service
+message Task {
+  string task_id = 1;
+  string task_name = 2;
+  TaskType task_type = 3;
+  int64 cpu_requirement = 4;      // CPU units needed
+  int64 memory_requirement = 5;   // Memory in MB
+  int64 execution_time = 6;       // Estimated execution time in ms
+  int32 priority = 7;             // Task priority (1-10, 10 = highest)
+  int64 deadline = 10;            // Task deadline as Unix timestamp
+  repeated string dependencies = 8; // Task IDs this task depends on
+  map<string, string> metadata = 9; // Additional task metadata
+}
+
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED = 0;
+  TASK_TYPE_COMPUTE = 1;
+  TASK_TYPE_IO = 2;
+  TASK_TYPE_NETWORK = 3;
+  TASK_TYPE_MIXED = 4;
+}
+
+// Fog node definition matching Go service
+message FogNode {
+  string node_id = 1;
+  string node_name = 2;
+  NodeStatus status = 3;
+  ResourceCapacity capacity = 4;
+  ResourceUsage current_usage = 5;
+  Location location = 6;
+  map<string, string> metadata = 7;
+}
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_ACTIVE = 1;
+  NODE_STATUS_INACTIVE = 2;
+  NODE_STATUS_MAINTENANCE = 3;
+  NODE_STATUS_OVERLOADED = 4;
+}
+
+message ResourceCapacity {
+  int64 cpu_cores = 1;
+  int64 memory_mb = 2;
+  int64 storage_gb = 3;
+  int64 network_bandwidth_mbps = 4;
+}
+
+message ResourceUsage {
+  int64 cpu_usage = 1;      // Current CPU usage (percentage)
+  int64 memory_usage_mb = 2; // Current memory usage in MB
+  int64 storage_usage_gb = 3; // Current storage usage in GB
+  int64 network_usage_mbps = 4; // Current network usage in Mbps
+}
+
+message Location {
+  double latitude = 1;
+  double longitude = 2;
+  string region = 3;
+}
+
+// Cache action enum
+enum CacheAction {
+  CACHE_ACTION_UNSPECIFIED = 0;
+  CACHE_ACTION_NONE = 1;           // No caching needed
+  CACHE_ACTION_STORE = 2;         // Execute and cache result
+  CACHE_ACTION_USE = 3;           // Use existing cache
+  CACHE_ACTION_INVALIDATE = 4;    // Delete cache only, serve scheduled result
+}
+
+// Simulation metrics
+message SimulationMetrics {
+  double total_latency = 1;
+  double throughput = 2;
+  double energy_consumption = 3;
+  double resource_utilization = 4;
+  int32 queue_length = 5;
+  double cache_hit_ratio = 6;
+  int64 timestamp = 7;
+}

@@ -1,0 +1,31 @@
+# The .idea folder files also can be added here if desired
+bin/
+.classpath
+.settings/
+.project
+
+# Maven build directory
+target/
+
+# Deps Jars data
+jars/
+
+# Env
+.env
+temp.md
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Generated files
+generated/

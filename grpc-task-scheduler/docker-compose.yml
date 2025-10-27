@@ -1,0 +1,28 @@
+services:
+  grpc-server-task-scheduler:
+    build: .
+    container_name: grpc-server-task-scheduler
+    command: ["air", "-c", "./config/air.toml"]
+    volumes:
+      - ./:/app
+      - ./tmp:/tmp
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./metrics:/app/metrics
+      - ./logs:/app/logs
+    environment:
+      - CONFIG_FILE_PATH=config/config.yaml
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=40040
+      - LOGGING_LEVEL=info
+      - MODEL_PERSISTENCE_ENABLED=true
+      - METRICS_ENABLED=true
+      - CGO_ENABLED=0
+
+    restart: unless-stopped
+    networks:
+      - scheduler-network
+
+networks:
+  scheduler-network:
+    driver: bridge

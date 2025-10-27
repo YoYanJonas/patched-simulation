@@ -1,0 +1,11 @@
+services:
+  grpc-server:
+    build: .
+    ports:
+      - 50051:50051
+    container_name: grpc-server
+    command: ["air", "-c", "./config/air.toml"]
+    volumes:
+      - ./:/app
+      - ./tmp:/tmp
+    restart: always

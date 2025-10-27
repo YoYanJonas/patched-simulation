@@ -1,0 +1,73 @@
+server:
+  host: "0.0.0.0"
+  port: 50051
+  shutdown_timeout: 6 # seconds
+
+logging:
+  level: "info" # debug, info, warn, error
+  format: "text" # text, json
+  output_path: "stdout" # stdout, or file path
+
+features:
+  enable_hyperparameter_tuning: true
+  enable_function_approximation: true
+  enable_hybrid_algorithm: true
+
+rl:
+  model_save_path: "./models"
+  save_interval: 10 # minutes
+  default_discretization: 5
+  directory_permissions: 0755
+  default_algorithm: "q_learning"
+  performance_window: 100
+
+  node_capability:
+    cpu_threshold: 0.9
+    memory_threshold: 0.85
+    bandwidth_threshold: 10.0 # Mbps
+
+  q_learning:
+    alpha: 0.1 # Learning rate
+    gamma: 0.9 # Discount factor
+    epsilon: 0.1 # Exploration rate
+    decay_rate: 0.99 # Epsilon decay rate
+    minimum_epsilon: 0.01
+    enable_eligibility: false
+    lambda: 0.8
+
+  sarsa:
+    alpha: 0.1
+    gamma: 0.9
+    epsilon: 0.1
+    decay_rate: 0.99
+    minimum_epsilon: 0.01
+    enable_eligibility: false
+    lambda: 0.8
+
+  function_q_learning:
+    alpha: 0.05
+    gamma: 0.95
+    epsilon: 0.1
+    decay_rate: 0.99
+    minimum_epsilon: 0.01
+    enable_eligibility: false
+    lambda: 0.8
+
+  hybrid:
+    alpha: 0.1
+    gamma: 0.9
+    epsilon: 0.1
+    decay_rate: 0.99
+    minimum_epsilon: 0.01
+    transition_threshold: 0.8
+    confidence_threshold: 0.7
+    heuristic_usage_threshold: 0.4
+
+  function_approximation:
+    learning_rate: 0.01
+    regularization_l1: 0.0
+    regularization_l2: 0.0001
+    enable_time_features: true
+    enable_trend_features: true
+    enable_historical_features: true
+    feature_range: 1.0
