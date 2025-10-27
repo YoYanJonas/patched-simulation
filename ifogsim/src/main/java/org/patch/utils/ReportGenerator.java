@@ -17,45 +17,45 @@ import java.util.logging.Logger;
  */
 public class ReportGenerator {
     private static final Logger logger = Logger.getLogger(ReportGenerator.class.getName());
-    
+
     private static final String REPORTS_DIR = "reports";
     private static final String HUMAN_REPORT_EXT = ".txt";
     private static final String JSON_REPORT_EXT = ".json";
-    
+
     private final String timestamp;
     private final String reportsDirPath;
-    
+
     public ReportGenerator() {
         // Create timestamp for file naming
         LocalDateTime now = LocalDateTime.now();
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss");
         this.timestamp = now.format(formatter);
-        
+
         // Determine reports directory path (in project root/out directory)
         this.reportsDirPath = "reports";
     }
-    
+
     /**
      * Generate reports from provided data
      * 
      * @param cloudDeviceData Cloud device statistics as Map
-     * @param fogDevicesData List of fog device statistics (List<Map>)
-     * @param simulationTime Simulation duration in seconds
+     * @param fogDevicesData  List of fog device statistics (List<Map>)
+     * @param simulationTime  Simulation duration in seconds
      */
-    public void generateReports(Map<String, Object> cloudDeviceData, 
-                                  List<Map<String, Object>> fogDevicesData,
-                                  double simulationTime) {
+    public void generateReports(Map<String, Object> cloudDeviceData,
+            List<Map<String, Object>> fogDevicesData,
+            double simulationTime) {
         try {
             ensureReportsDirectory();
-            
+
             // Generate human-readable report
             generateHumanReadableReport(cloudDeviceData, fogDevicesData, simulationTime);
-            
+
             // Generate JSON report for Python visualization
             generateJsonReport(cloudDeviceData, fogDevicesData, simulationTime);
-            
+
             logger.info("Reports generated successfully in directory: " + reportsDirPath);
-            
+
         } catch (IOException e) {
             logger.severe("Error generating reports: " + e.getMessage());
         }
@@ -75,9 +75,9 @@ public class ReportGenerator {
     /**
      * Generate human-readable text report
      */
-    private void generateHumanReadableReport(Map<String, Object> cloudDeviceData, 
-                                               List<Map<String, Object>> fogDevicesData,
-                                               double simulationTime)
+    private void generateHumanReadableReport(Map<String, Object> cloudDeviceData,
+            List<Map<String, Object>> fogDevicesData,
+            double simulationTime)
             throws IOException {
         String filename = reportsDirPath + "/report-" + timestamp + HUMAN_REPORT_EXT;
         File file = new File(filename);
@@ -91,11 +91,11 @@ public class ReportGenerator {
 
             // Write cloud statistics
             writer.write("\n\n[CLOUD DEVICE STATISTICS]");
-            writer.write(String.format("\nDevice: %s (ID: %s)", 
+            writer.write(String.format("\nDevice: %s (ID: %s)",
                     cloudDeviceData.get("device_name"), cloudDeviceData.get("device_id")));
-            writer.write(String.format("\nTotal Energy Consumed: %.2f J", 
+            writer.write(String.format("\nTotal Energy Consumed: %.2f J",
                     getDouble(cloudDeviceData.get("energy_consumption"))));
-            writer.write(String.format("\nTotal Cost: $%.4f", 
+            writer.write(String.format("\nTotal Cost: $%.4f",
                     getDouble(cloudDeviceData.get("cost"))));
 
             // RL allocation statistics
@@ -106,15 +106,15 @@ public class ReportGenerator {
                 writer.write("\n\n[RL ALLOCATION STATISTICS]");
                 writer.write(String.format("\nTotal Allocation Decisions: %s", stats.get("total_decisions")));
                 writer.write(String.format("\nSuccessful Allocations: %s", stats.get("successful_allocations")));
-                writer.write(String.format("\nAllocation Success Rate: %.2f%%", 
+                writer.write(String.format("\nAllocation Success Rate: %.2f%%",
                         getDouble(stats.get("success_rate")) * 100));
-                writer.write(String.format("\nTotal Allocation Energy: %.2f J", 
+                writer.write(String.format("\nTotal Allocation Energy: %.2f J",
                         getDouble(stats.get("total_energy"))));
-                writer.write(String.format("\nTotal Allocation Cost: $%.4f", 
+                writer.write(String.format("\nTotal Allocation Cost: $%.4f",
                         getDouble(stats.get("total_cost"))));
-                writer.write(String.format("\nAverage Allocation Latency: %.2f ms", 
+                writer.write(String.format("\nAverage Allocation Latency: %.2f ms",
                         getDouble(stats.get("average_latency_ms"))));
-                writer.write(String.format("\nAllocation Throughput: %.2f decisions/sec", 
+                writer.write(String.format("\nAllocation Throughput: %.2f decisions/sec",
                         getDouble(stats.get("throughput_per_sec"))));
             }
 
@@ -122,11 +122,11 @@ public class ReportGenerator {
             writer.write("\n\n[FOG NODE STATISTICS]");
             for (int i = 0; i < fogDevicesData.size(); i++) {
                 Map<String, Object> fogData = fogDevicesData.get(i);
-                writer.write(String.format("\n\nFog Node %s: %s (ID: %s)", 
+                writer.write(String.format("\n\nFog Node %s: %s (ID: %s)",
                         fogData.get("node_id"), fogData.get("device_name"), fogData.get("device_id")));
-                writer.write(String.format("\n  Total Energy Consumed: %.2f J", 
+                writer.write(String.format("\n  Total Energy Consumed: %.2f J",
                         getDouble(fogData.get("energy_consumption"))));
-                writer.write(String.format("\n  Total Cost: $%.4f", 
+                writer.write(String.format("\n  Total Cost: $%.4f",
                         getDouble(fogData.get("cost"))));
                 writer.write(String.format("\n  Unscheduled Queue Size: %s", fogData.get("unscheduled_queue_size")));
                 writer.write(String.format("\n  Scheduled Queue Size: %s", fogData.get("scheduled_queue_size")));
@@ -138,15 +138,15 @@ public class ReportGenerator {
                     Map<String, Object> stats = (Map<String, Object>) schedulingStats;
                     writer.write("\n  [RL SCHEDULING STATISTICS]");
                     writer.write(String.format("\n  Total Scheduling Decisions: %s", stats.get("total_decisions")));
-                    writer.write(String.format("\n  Scheduling Success Rate: %.2f%%", 
+                    writer.write(String.format("\n  Scheduling Success Rate: %.2f%%",
                             getDouble(stats.get("success_rate")) * 100));
-                    writer.write(String.format("\n  Total Scheduling Energy: %.2f J", 
+                    writer.write(String.format("\n  Total Scheduling Energy: %.2f J",
                             getDouble(stats.get("total_energy"))));
-                    writer.write(String.format("\n  Total Scheduling Cost: $%.4f", 
+                    writer.write(String.format("\n  Total Scheduling Cost: $%.4f",
                             getDouble(stats.get("total_cost"))));
-                    writer.write(String.format("\n  Average Scheduling Latency: %.2f ms", 
+                    writer.write(String.format("\n  Average Scheduling Latency: %.2f ms",
                             getDouble(stats.get("average_latency_ms"))));
-                    writer.write(String.format("\n  Scheduling Throughput: %.2f decisions/sec", 
+                    writer.write(String.format("\n  Scheduling Throughput: %.2f decisions/sec",
                             getDouble(stats.get("throughput_per_sec"))));
                 }
 
@@ -156,10 +156,11 @@ public class ReportGenerator {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> stats = (Map<String, Object>) cacheStats;
                     writer.write("\n  [CACHE STATISTICS]");
-                    writer.write(String.format("\n  Cache Size: %s / %s", stats.get("cache_size"), stats.get("max_cache_size")));
+                    writer.write(String.format("\n  Cache Size: %s / %s", stats.get("cache_size"),
+                            stats.get("max_cache_size")));
                     writer.write(String.format("\n  Cache Hits: %s", stats.get("hits")));
                     writer.write(String.format("\n  Cache Misses: %s", stats.get("misses")));
-                    writer.write(String.format("\n  Cache Hit Rate: %.2f%%", 
+                    writer.write(String.format("\n  Cache Hit Rate: %.2f%%",
                             getDouble(stats.get("hit_rate")) * 100));
                 }
             }
@@ -198,29 +199,29 @@ public class ReportGenerator {
         }
         return 0.0;
     }
-    
+
     /**
      * Generate JSON report for Python visualization
      */
-    private void generateJsonReport(Map<String, Object> cloudDeviceData, 
-                                     List<Map<String, Object>> fogDevicesData,
-                                     double simulationTime) throws IOException {
+    private void generateJsonReport(Map<String, Object> cloudDeviceData,
+            List<Map<String, Object>> fogDevicesData,
+            double simulationTime) throws IOException {
         String filename = reportsDirPath + "/report-" + timestamp + JSON_REPORT_EXT;
         File file = new File(filename);
 
         // Build complete report from provided data
         Map<String, Object> report = new HashMap<>();
-        
+
         // Metadata
         report.put("timestamp", timestamp);
         report.put("simulation_time", simulationTime);
-        
+
         // Cloud device (use provided data as-is)
         report.put("cloud_device", cloudDeviceData);
-        
+
         // Fog devices (use provided data as-is)
         report.put("fog_devices", fogDevicesData);
-        
+
         // Calculate summary from provided data
         Map<String, Object> summary = new HashMap<>();
         double totalEnergy = getDouble(cloudDeviceData.get("energy_consumption"));
@@ -233,7 +234,7 @@ public class ReportGenerator {
         summary.put("total_cost", totalCost);
         summary.put("average_energy_per_device", totalEnergy / (fogDevicesData.size() + 1));
         summary.put("average_cost_per_device", totalCost / (fogDevicesData.size() + 1));
-        
+
         report.put("summary", summary);
 
         // Write JSON file (pretty-printed for readability)

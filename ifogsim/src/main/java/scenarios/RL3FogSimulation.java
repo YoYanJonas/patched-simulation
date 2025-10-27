@@ -459,28 +459,28 @@ public class RL3FogSimulation {
         // Generate report files
         generateReportFiles();
     }
-    
+
     /**
      * Generate report files from simulation results
      */
     private static void generateReportFiles() {
         try {
             org.patch.utils.ReportGenerator reportGenerator = new org.patch.utils.ReportGenerator();
-            
+
             // Collect cloud device data
             Map<String, Object> cloudData = collectCloudData();
-            
+
             // Collect fog devices data
             List<Map<String, Object>> fogData = collectFogDevicesData();
-            
+
             // Generate reports with collected data
             reportGenerator.generateReports(cloudData, fogData, CloudSim.clock());
-            
+
         } catch (Exception e) {
             logger.severe("Error generating report files: " + e.getMessage());
         }
     }
-    
+
     /**
      * Collect cloud device data for reporting
      */
@@ -490,7 +490,7 @@ public class RL3FogSimulation {
         cloudData.put("device_name", cloud.getName());
         cloudData.put("energy_consumption", cloud.getEnergyConsumption());
         cloudData.put("cost", cloud.getTotalCost());
-        
+
         // RL allocation statistics
         if (cloud.getAllocationClient() != null && cloud.isRlEnabled()) {
             Map<String, Object> allocationStats = new HashMap<>();
@@ -503,20 +503,20 @@ public class RL3FogSimulation {
             allocationStats.put("throughput_per_sec", cloud.getAllocationThroughput());
             cloudData.put("allocation_stats", allocationStats);
         }
-        
+
         return cloudData;
     }
-    
+
     /**
      * Collect fog devices data for reporting
      */
     private static List<Map<String, Object>> collectFogDevicesData() {
         List<Map<String, Object>> fogDevicesData = new ArrayList<>();
-        
+
         for (int i = 0; i < fogDevices.size(); i++) {
             RLFogDevice fogDevice = fogDevices.get(i);
             Map<String, Object> fogData = new HashMap<>();
-            
+
             fogData.put("node_id", i);
             fogData.put("device_id", fogDevice.getId());
             fogData.put("device_name", fogDevice.getName());
@@ -524,7 +524,7 @@ public class RL3FogSimulation {
             fogData.put("cost", fogDevice.getTotalCost());
             fogData.put("unscheduled_queue_size", fogDevice.getUnscheduledQueue().size());
             fogData.put("scheduled_queue_size", fogDevice.getScheduledQueue().size());
-            
+
             // RL scheduling statistics
             if (fogDevice.getSchedulerClient() != null && fogDevice.isRlEnabled()) {
                 Map<String, Object> schedulingStats = new HashMap<>();
@@ -536,7 +536,7 @@ public class RL3FogSimulation {
                 schedulingStats.put("throughput_per_sec", fogDevice.getSchedulingThroughput());
                 fogData.put("scheduling_stats", schedulingStats);
             }
-            
+
             // Cache statistics
             Map<String, Object> deviceCacheStats = fogDevice.getCacheStatistics();
             Map<String, Object> cacheStats = new HashMap<>();
@@ -546,10 +546,10 @@ public class RL3FogSimulation {
             cacheStats.put("misses", deviceCacheStats.get("cacheMissCount"));
             cacheStats.put("hit_rate", deviceCacheStats.get("cacheHitRate"));
             fogData.put("cache_stats", cacheStats);
-            
+
             fogDevicesData.add(fogData);
         }
-        
+
         return fogDevicesData;
     }
 
