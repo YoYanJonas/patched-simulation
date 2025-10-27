@@ -192,28 +192,81 @@ public class SchedulerIntegration {
                 UnscheduledQueue.TaskInfo unscheduledTask = unscheduledQueue.removeTask(taskResponse.getTaskId());
 
                 if (unscheduledTask != null) {
-                    // Check if task is cached
-                    if (taskResponse.getIsCachedTask()) {
-                        // Task is cached - skip processing
-                        logger.info("Task " + taskResponse.getTaskId() + " served from cache");
-                        // Mark as completed immediately
-                        markTaskCompleted(unscheduledTask);
-                    } else {
-                        // Task needs processing - add to scheduled queue
-                        ScheduledQueue.TaskInfo scheduledTask = new ScheduledQueue.TaskInfo(
-                                unscheduledTask.getTuple(),
-                                unscheduledTask.getModuleId(),
-                                CloudSim.clock(),
-                                "fallback-node", // No assigned node in AddTaskToQueueResponse
-                                (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
-                                (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000), // Default
-                                                                                                          // execution
-                                                                                                          // time
-                                taskResponse.getIsCachedTask(),
-                                taskResponse.getCacheKey());
-
-                        scheduledQueue.addTask(scheduledTask);
-                        logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue");
+                    // Get cache information from scheduler
+                    CacheAction cacheAction = taskResponse.getCacheAction();
+                    String cacheKey = taskResponse.getCacheKey();
+                    
+                    // Handle based on cache action from scheduler
+                    switch (cacheAction) {
+                        case CACHE_ACTION_USE:
+                            // Scheduler says: Use cache immediately
+                            logger.info("Task " + taskResponse.getTaskId() + " served from cache");
+                            markTaskCompleted(unscheduledTask);
+                            break;
+                            
+                        case CACHE_ACTION_INVALIDATE:
+                            // Scheduler says: Cache expired, invalidate and re-execute
+                            logger.info("Task " + taskResponse.getTaskId() + " cache invalidated by scheduler, re-executing");
+                            
+                            // Invalidate local cache if it exists
+                            if (unscheduledTask.getTuple() != null) {
+                                String taskId = String.valueOf(unscheduledTask.getTuple().getCloudletId());
+                                if (cacheManager != null) {
+                                    cacheManager.invalidateCache(taskId);
+                                    logger.fine("Invalidated local cache for task " + taskId);
+                                }
+                            }
+                            
+                            // Add to queue for execution
+                            ScheduledQueue.TaskInfo scheduledTask = new ScheduledQueue.TaskInfo(
+                                    unscheduledTask.getTuple(),
+                                    unscheduledTask.getModuleId(),
+                                    CloudSim.clock(),
+                                    "fallback-node",
+                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
+                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000),
+                                    false, // Not cached (expired)
+                                    cacheKey); // Cache key for storing result
+                            
+                            scheduledQueue.addTask(scheduledTask);
+                            logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue after cache invalidation");
+                            break;
+                            
+                        case CACHE_ACTION_STORE:
+                            // Scheduler says: Execute and store result in cache
+                            logger.info("Task " + taskResponse.getTaskId() + " needs execution and caching");
+                            
+                            ScheduledQueue.TaskInfo scheduledTaskStore = new ScheduledQueue.TaskInfo(
+                                    unscheduledTask.getTuple(),
+                                    unscheduledTask.getModuleId(),
+                                    CloudSim.clock(),
+                                    "fallback-node",
+                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
+                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000),
+                                    false, // Not cached yet (will be after execution)
+                                    cacheKey); // Cache key for storing result
+                            
+                            scheduledQueue.addTask(scheduledTaskStore);
+                            logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue (will be cached)");
+                            break;
+                            
+                        case CACHE_ACTION_NONE:
+                        case CACHE_ACTION_UNSPECIFIED:
+                        default:
+                            // No cache action - execute normally
+                            ScheduledQueue.TaskInfo scheduledTaskNone = new ScheduledQueue.TaskInfo(
+                                    unscheduledTask.getTuple(),
+                                    unscheduledTask.getModuleId(),
+                                    CloudSim.clock(),
+                                    "fallback-node",
+                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
+                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000),
+                                    false, // No cache
+                                    null); // No cache key
+                            
+                            scheduledQueue.addTask(scheduledTaskNone);
+                            logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue (no cache)");
+                            break;
                     }
                 }
             } else {

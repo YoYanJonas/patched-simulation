@@ -8,6 +8,7 @@ import org.patch.models.ScheduledQueue;
 import org.patch.client.SchedulerClient;
 import org.patch.client.AllocationClient;
 import org.patch.utils.TaskCacheManager;
+import org.patch.utils.ExtendedFogEvents;
 import org.fog.utils.TimeKeeper;
 
 import java.util.*;
@@ -120,17 +121,14 @@ public class TaskExecutionEngine {
         String taskId = taskInfo.getTaskId();
         logger.fine("Processing task: " + taskId + " on device: " + fogDevice.getName());
 
-        // Check cache first if enabled
-        if (cacheEnabled) {
-            TaskCacheManager.CacheResult cacheResult = cacheManager.checkCache(taskId);
-            if (cacheResult == TaskCacheManager.CacheResult.HIT_VALID) {
-                return handleCachedTask(taskInfo);
-            } else if (cacheResult == TaskCacheManager.CacheResult.HIT_INVALID) {
-                cacheManager.invalidateCache(taskId);
-            }
+        // Scheduler is the source of truth for caching decisions
+        // If scheduler says task is cached, handle it immediately
+        if (taskInfo.isCachedTask() && cacheEnabled) {
+            logger.info("Task " + taskId + " is cached according to scheduler");
+            return handleCachedTask(taskInfo);
         }
 
-        // Execute the task
+        // Execute the task (scheduler already determined it's not cached)
         return executeTask(taskInfo);
     }
 
@@ -209,9 +207,11 @@ public class TaskExecutionEngine {
             // Report task completion to RL agents
             reportTaskCompletion(taskInfo, result, executionTime);
 
-            // Store in cache if needed
-            if (taskInfo.isCachedTask() && cacheEnabled) {
-                storeTaskResult(taskId, result);
+            // Store in cache if scheduler provided a cache key (for STORE action)
+            String cacheKey = taskInfo.getCacheKey();
+            if (cacheKey != null && !cacheKey.isEmpty() && cacheEnabled && cacheManager != null) {
+                cacheManager.storeInCache(cacheKey, result);
+                logger.fine("Task result stored in cache with key: " + cacheKey);
             }
 
             // Clean up
@@ -413,10 +413,12 @@ public class TaskExecutionEngine {
         Tuple tuple = taskInfo.getTuple();
         boolean success = result.isSuccess();
 
-        // Report to grpc-task-scheduler (if available)
+        // Determine if this is an external task (sent from cloud via allocator)
+        boolean isExternalTask = isExternalTask(tuple);
+
+        // Report to grpc-task-scheduler (for ALL tasks - both external and internal)
         if (schedulerClient != null && schedulerClient.isConnected()) {
             try {
-                // Use the existing reportTaskCompletion method from RLFogDevice
                 if (fogDevice instanceof org.patch.devices.RLFogDevice) {
                     ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
                             tuple, success, executionTime);
@@ -427,24 +429,45 @@ public class TaskExecutionEngine {
             }
         }
 
-        // Report to go-grpc-server allocator (if available)
-        if (fogDevice instanceof org.patch.devices.RLCloudDevice) {
+        // Report to go-grpc-server allocator (ONLY for external tasks)
+        if (isExternalTask && fogDevice instanceof org.patch.devices.RLFogDevice) {
             try {
-                org.patch.devices.RLCloudDevice cloudDevice = (org.patch.devices.RLCloudDevice) fogDevice;
-                cloudDevice.reportTaskOutcome(tuple, success, executionTime);
-                logger.fine("Task completion reported to allocator: " + taskId);
+                // For external tasks, we need to notify the cloud device to report to allocator
+                // The cloud device will handle the actual gRPC call to go-grpc-server
+                org.patch.devices.RLFogDevice fogDeviceImpl = (org.patch.devices.RLFogDevice) fogDevice;
+
+                // Send event to cloud device (ID 3 is cloud in RL3FogSimulation)
+                int cloudId = 3; // Cloud device ID
+                CloudSim.send(fogDeviceImpl.getId(), cloudId, 0, ExtendedFogEvents.ALLOC_OUTCOME_REPORT,
+                        new Object[] { tuple, success, executionTime });
+
+                logger.fine("External task completion sent to cloud for allocator reporting: " + taskId);
             } catch (Exception e) {
-                logger.log(Level.WARNING, "Failed to report task completion to allocator: " + taskId, e);
+                logger.log(Level.WARNING, "Failed to report external task completion to cloud: " + taskId, e);
             }
         }
     }
 
     /**
-     * Store task result in cache
+     * Check if task is external (came from cloud via allocator)
+     * 
+     * @param tuple The task tuple
+     * @return true if external, false if internal
+     */
+    private boolean isExternalTask(Tuple tuple) {
+        // External tasks are identified by their tuple type
+        String tupleType = tuple.getTupleType();
+        return tupleType != null && tupleType.equals("external_task");
+    }
+
+    /**
+     * Store task result in cache (deprecated - now using scheduler's cache key)
      * 
      * @param taskId The task ID
      * @param result The processing result
+     * @deprecated Use cacheManager.storeInCache() with scheduler's cache key directly
      */
+    @Deprecated
     private void storeTaskResult(String taskId, RLTupleProcessingResult result) {
         if (cacheEnabled && cacheManager != null) {
             cacheManager.storeInCache(taskId, result);
