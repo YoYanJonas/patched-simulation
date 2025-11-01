@@ -31,8 +31,14 @@ public class ReportGenerator {
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss");
         this.timestamp = now.format(formatter);
 
-        // Determine reports directory path (in project root/out directory)
-        this.reportsDirPath = "reports";
+        // Determine reports directory path - check REPORT_DIR env var first
+        String reportDir = System.getenv("REPORT_DIR");
+        if (reportDir != null && !reportDir.isEmpty()) {
+            this.reportsDirPath = reportDir;
+            logger.info("Using REPORT_DIR environment variable: " + reportDir);
+        } else {
+            this.reportsDirPath = "reports";
+        }
     }
 
     /**

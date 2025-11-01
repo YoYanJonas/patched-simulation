@@ -23,11 +23,21 @@ import (
 func main() {
 	log := logger.NewLogger()
 
-	// Load configuration
-	cfg, err := grpcConfig.LoadConfig("")
+	// Load configuration - check for CONFIG_PATH env var
+	configPath := os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		configPath = "" // Empty string triggers auto-discovery
+	}
+	cfg, err := grpcConfig.LoadConfig(configPath)
 	if err != nil {
 		log.Error("Failed to load configuration", err)
 		return
+	}
+
+	// Override model save path if MODEL_PATH env var is set
+	if modelPath := os.Getenv("MODEL_PATH"); modelPath != "" {
+		cfg.RL.ModelSavePath = modelPath
+		log.Info(fmt.Sprintf("Model save path overridden by MODEL_PATH env var: %s", modelPath))
 	}
 
 	// Create a TCP listener on configured host and port

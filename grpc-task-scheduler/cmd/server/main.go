@@ -13,14 +13,24 @@ import (
 )
 
 func main() {
-	// Load configuration - Fix: Pass config file path
-	err := config.LoadConfig(os.Getenv("CONFIG_FILE_PATH")) // or "" for auto-discovery
+	// Load configuration - check for CONFIG_PATH env var first, then CONFIG_FILE_PATH for backwards compatibility
+	configPath := os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		configPath = os.Getenv("CONFIG_FILE_PATH") // Fallback to old env var name
+	}
+	err := config.LoadConfig(configPath) // or "" for auto-discovery
 	if err != nil {
 		panic("Failed to load configuration: " + err.Error())
 	}
 
 	// Get the loaded config
 	cfg := config.GetConfig()
+
+	// Override models path if MODELS_PATH env var is set
+	if modelsPath := os.Getenv("MODELS_PATH"); modelsPath != "" {
+		cfg.ModelPersistence.ModelsPath = modelsPath
+		fmt.Printf("Models path overridden by MODELS_PATH env var: %s\n", modelsPath)
+	}
 
 	// Validate enhanced RL configuration sections
 	if cfg.RL.Enabled {
