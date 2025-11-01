@@ -137,3 +137,16 @@ config/**/secrets.yaml
 # Development documentation
 dev-mds/
 
+# Reports directory (generated per run)
+reports/*
+!reports/.gitkeep
+
+# Model files (generated during training)
+models/**/*.json
+models/**/*.hybrid
+models/**/*.pb
+models/**/*.h5
+models/**/*.pkl
+!models/.gitkeep
+!models/*/.gitkeep
+

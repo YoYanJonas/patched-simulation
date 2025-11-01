@@ -1,0 +1,293 @@
+# Server configuration
+server:
+  host: '0.0.0.0'
+  port: 50052 # Unique port for node3 (same port as node1 since different containers)
+  max_concurrent_streams: 1000
+  keepalive:
+    time: 30s
+    timeout: 5s
+  shutdown_timeout: 30s
+
+# gRPC specific settings
+grpc:
+  reflection_enabled: true
+  health_check_enabled: true
+  max_recv_msg_size: 4194304 # 4MB
+  max_send_msg_size: 4194304 # 4MB
+
+# Logging configuration
+logging:
+  level: 'info'
+  format: 'json'
+  output: 'stdout'
+
+# Model persistence configuration
+model_persistence:
+  enabled: true
+  model_name: 'task_scheduler_v1'
+  save_interval: '10m'
+  save_on_shutdown: true
+  backup_count: 3
+  models_path: '/app/models' # Will be overridden by MODELS_PATH env var if set
+
+# Metrics configuration
+metrics:
+  enabled: true
+  port: 9090
+  path: '/metrics'
+  in_memory_only: true
+
+# RL Agent configuration (legacy - kept for compatibility)
+rl_agent:
+  enabled: false
+  algorithm: 'dqn'
+  learning_rate: 0.001
+  batch_size: 32
+  memory_size: 10000
+
+# Reinforcement Learning configuration - FULL FEATURES ENABLED
+rl:
+  enabled: true
+  algorithm: 'qlearning' # qlearning, sarsa, dqn
+  learning_rate: 0.1
+  discount_factor: 0.95
+  exploration_rate: 0.3
+  exploration_decay: 0.995
+  min_exploration: 0.05
+  experience_size: 10000
+  batch_size: 32
+
+  # Learning behavior configuration
+  learning:
+    immediate_updates: true # Update Q-table immediately after reward calculation
+    batch_learning: false # No batch learning - immediate processing everywhere
+
+  # Episode configuration
+  episode_config:
+    type: 'task_based' # task_based or time_based
+    tasks_per_episode: 20 # Number of tasks per episode (when type is task_based)
+    time_per_episode_minutes: 5 # Minutes per episode (when type is time_based)
+    reset_on_episode_end: false # Whether to reset learning parameters on episode end
+
+  # State discretization configuration
+  state_discretization:
+    enabled: true
+    cpu_utilization:
+      categories: ['low', 'medium', 'high', 'critical']
+      boundaries: [0.3, 0.6, 0.85] # Values between boundaries define categories
+    memory_utilization:
+      categories: ['low', 'medium', 'high', 'critical']
+      boundaries: [0.4, 0.7, 0.9]
+    queue_length:
+      categories: ['empty', 'light', 'moderate', 'heavy']
+      boundaries: [2, 5, 10] # Absolute queue lengths
+    system_load:
+      categories: ['idle', 'normal', 'busy', 'overloaded']
+      boundaries: [0.25, 0.65, 0.9]
+    task_priority:
+      categories: ['low', 'normal', 'high', 'critical']
+      boundaries: [3, 6, 8] # Priority levels 1-10
+    cache_ratio:
+      categories: ['none', 'low', 'medium', 'high', 'very_high']
+      boundaries: [0.0, 0.2, 0.5, 0.8] # Repeated task ratio boundaries
+
+  # Memory management configuration
+  memory_management:
+    enabled: true
+    cleanup_strategy: 'stability_based' # stability_based, age_based, size_based
+    stability_threshold: 0.01 # Q-value change threshold to consider stable
+    stability_window: 20 # Episodes to monitor for stability
+    max_experiences: 100000 # Maximum experiences to keep in memory
+    cleanup_interval_episodes: 5 # Clean up every N episodes
+    preserve_recent_episodes: 6 # Always preserve last N episodes
+
+    # Enhanced memory management settings
+    experience_timeout_minutes: '10m' # Timeout for incomplete experiences
+    estimated_bytes_per_experience: 2400 # Memory estimation per complete experience
+    estimated_bytes_per_incomplete_experience: 1200 # Memory estimation per incomplete experience
+    emergency_cleanup_threshold_mb: 100 # Emergency cleanup threshold in MB
+    min_history_size: 6 # Minimum Q-value history size to maintain
+    state_key_overhead: 16 # Estimated overhead per state key in bytes
+    stability_tracker_overhead_bytes: 200 # Estimated overhead per stability tracker entry
+    unused_history_cleanup_hours: 2 # Hours after which unused Q-value history is cleaned
+
+  # Multi-Objective Configuration - ENABLED
+  multi_objective:
+    enabled: true
+    active_profile: 'balanced' # Current active objective profile
+    scalarization_method: 'weighted_sum' # weighted_sum, tchebycheff, augmented_tchebycheff
+    adaptation_enabled: true # Allow dynamic objective weight adaptation
+    adaptation_window: 50 # Episodes to consider for adaptation
+
+    # Objective Profiles - Predefined objective combinations
+    profiles:
+      latency_focused:
+        description: 'Minimize response time and latency'
+        weights:
+          latency: 0.6
+          throughput: 0.1
+          resource_efficiency: 0.1
+          fairness: 0.1
+          deadline_miss: 0.1
+          energy_efficiency: 0.0
+
+      throughput_focused:
+        description: 'Maximize system throughput'
+        weights:
+          latency: 0.1
+          throughput: 0.6
+          resource_efficiency: 0.2
+          fairness: 0.05
+          deadline_miss: 0.05
+          energy_efficiency: 0.0
+
+      energy_focused:
+        description: 'Optimize energy consumption'
+        weights:
+          latency: 0.1
+          throughput: 0.1
+          resource_efficiency: 0.2
+          fairness: 0.1
+          deadline_miss: 0.1
+          energy_efficiency: 0.4
+
+      balanced:
+        description: 'Balanced multi-objective optimization'
+        weights:
+          latency: 0.25
+          throughput: 0.25
+          resource_efficiency: 0.2
+          fairness: 0.15
+          deadline_miss: 0.1
+          energy_efficiency: 0.05
+
+      deadline_critical:
+        description: 'Critical deadline adherence'
+        weights:
+          latency: 0.2
+          throughput: 0.1
+          resource_efficiency: 0.1
+          fairness: 0.1
+          deadline_miss: 0.4
+          energy_efficiency: 0.1
+
+  # Default reward weights (used when multi-objective is disabled)
+  reward_weights:
+    latency: 0.4
+    throughput: 0.3
+    resource_efficiency: 0.2
+    fairness: 0.1
+    deadline_miss: 0.0
+    energy_efficiency: 0.0
+
+# Single node configuration
+single_node:
+  node_id: 'fog_node_003' # node3
+  node_name: 'Fog Node 3'
+  max_concurrent_tasks: 8
+  default_algorithm: 'qlearning' # Use RL algorithm
+  default_objective: 'balanced' # References multi_objective profiles
+
+# Task queue configuration
+queue:
+  max_queue_size: 500
+  task_timeout: '5m'
+  cleanup_interval: '1h'
+  retry_attempts: 3
+  # Periodic queue resorting configuration
+  resort_interval_ms: 100 # Configurable period for queue resorting
+  enable_periodic_resort: true # Enable periodic queue resorting
+
+# Algorithm Manager Configuration
+algorithm_manager:
+  default_algorithm: 'qlearning' # fcfs, sjf, priority, edf, qlearning, sarsa
+  fallback_algorithm: 'priority' # fallback when RL fails
+  rl_enabled: true # RL enabled
+  auto_switch: false # auto-switch based on performance
+  performance_window: 100 # episodes to track performance
+  switch_threshold: 0.05 # performance improvement threshold for switching
+  evaluation_interval: '5m' # how often to evaluate algorithm performance
+
+  # Multi-Objective Algorithm Selection
+  objective_aware_selection: true # Enable objective-based algorithm selection
+
+  qlearning_config:
+    enabled: true
+    algorithm: 'qlearning'
+    learning_rate: 0.1
+    discount_factor: 0.95
+    exploration_rate: 0.3
+    exploration_decay: 0.995
+    min_exploration: 0.05
+    experience_size: 10000
+    batch_size: 32
+    multi_objective:
+      enabled: true
+      active_profile: 'balanced'
+      scalarization_method: 'weighted_sum'
+      adaptation_enabled: true
+      adaptation_window: 50
+      profiles: {} # Profiles will be loaded from the main RL multi-objective section
+    reward_weights:
+      latency: 0.4
+      throughput: 0.3
+      resource_efficiency: 0.2
+      fairness: 0.1
+      deadline_miss: 0.0
+      energy_efficiency: 0.0
+
+  # Default reward weights for the algorithm manager
+  reward_weights:
+    latency: 0.4
+    throughput: 0.3
+    resource_efficiency: 0.2
+    fairness: 0.1
+    deadline_miss: 0.0
+    energy_efficiency: 0.0
+
+  # Fitness scores of different algorithms for various objectives
+  algorithm_objective_fitness:
+    fcfs:
+      latency: 0.3
+      throughput: 0.7
+      resource_efficiency: 0.5
+      fairness: 0.9
+      deadline_miss: 0.4
+      energy_efficiency: 0.6
+    sjf:
+      latency: 0.8
+      throughput: 0.6
+      resource_efficiency: 0.7
+      fairness: 0.3
+      deadline_miss: 0.5
+      energy_efficiency: 0.7
+    priority:
+      latency: 0.6
+      throughput: 0.5
+      resource_efficiency: 0.6
+      fairness: 0.4
+      deadline_miss: 0.8
+      energy_efficiency: 0.6
+    edf:
+      latency: 0.7
+      throughput: 0.4
+      resource_efficiency: 0.5
+      fairness: 0.5
+      deadline_miss: 0.9
+      energy_efficiency: 0.5
+    qlearning:
+      latency: 0.9
+      throughput: 0.8
+      resource_efficiency: 0.9
+      fairness: 0.7
+      deadline_miss: 0.8
+      energy_efficiency: 0.8
+
+# Task caching configuration - ENABLED
+caching:
+  enabled: true
+  repeat_threshold: 2 # Consider cached after 2nd occurrence
+  cache_ttl_hours: 24 # Cache validity in hours
+  max_tracked_tasks: 1000 # Maximum task fingerprints to track
+  cleanup_interval_minutes: 60 # How often to cleanup old entries
+

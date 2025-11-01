@@ -1,0 +1,390 @@
+# iFogSim gRPC Integration Configuration
+# Scenario: rl-full-feature
+# This configuration enables full RL features for both fog nodes and cloud device
+
+# Application Information
+application:
+  name: ifogsim-grpc-integration
+  version: 1.0.0
+  environment: ${APP_ENV:production}
+
+# gRPC Configuration
+grpc:
+  # Global gRPC settings
+  global:
+    connection:
+      timeout: 5000
+      timeout-unit: MILLISECONDS
+      use-plaintext: true
+
+    retry:
+      max-attempts: 3
+      delay: 1000
+      max-delay: 30000
+      enabled: true
+
+    circuit-breaker:
+      failure-threshold: 5
+      open-duration: 30000
+      enabled: true
+
+    keep-alive:
+      enabled: true
+      time: 30
+      timeout: 10
+      without-calls: true
+
+    message:
+      max-inbound-size: 4194304 # 4MB
+      max-outbound-size: 4194304 # 4MB
+
+    load-balancing:
+      policy: round_robin
+
+    reconnection:
+      max-attempts: 3
+      enabled: true
+
+    fallback:
+      enabled: true
+      node-id: fallback-node-1
+      execution-time: 5000
+      scheduling-delay: 1000
+
+# Scheduler Services Configuration
+# Each fog node connects to a specific scheduler instance (1:1 mapping)
+schedulers:
+  # Scheduler instances (3 instances for 3 fog nodes)
+  instances:
+    scheduler-1:
+      host: ${SCHEDULER_1_HOST:scheduler-1}
+      port: ${SCHEDULER_1_PORT:50052}
+      name: grpc-task-scheduler-1
+      max-fog-nodes: 1 # Handles fog node 1
+
+    scheduler-2:
+      host: ${SCHEDULER_2_HOST:scheduler-2}
+      port: ${SCHEDULER_2_PORT:50052}
+      name: grpc-task-scheduler-2
+      max-fog-nodes: 1 # Handles fog node 2
+
+    scheduler-3:
+      host: ${SCHEDULER_3_HOST:scheduler-3}
+      port: ${SCHEDULER_3_PORT:50052}
+      name: grpc-task-scheduler-3
+      max-fog-nodes: 1 # Handles fog node 3
+
+  # Fog node to scheduler mapping (1:1)
+  fog-node-mapping:
+    1: scheduler-1 # Fog node 1 -> Scheduler 1
+    2: scheduler-2 # Fog node 2 -> Scheduler 2
+    3: scheduler-3 # Fog node 3 -> Scheduler 3
+
+  # Scheduler-specific settings
+  settings:
+    health-check:
+      enabled: true
+      interval: 30000
+      timeout: 5000
+
+    fallback:
+      enabled: true
+      algorithm: round_robin
+      execution-time-default: 5000
+      scheduling-delay: 1000
+
+    node-selection:
+      strategy: first_available
+      timeout: 10000
+
+    cache:
+      enabled: true # Cache enabled for RL-full-feature scenario
+      max-size: 1000
+      ttl: 300000
+
+    performance:
+      monitoring-enabled: true
+      metrics-interval: 60000
+
+# External Task Generation Configuration
+external-tasks:
+  # Task generation settings
+  generation:
+    enabled: true
+    default-rate: 2.0 # tasks per second
+    initial-delay: 1000 # milliseconds before first task
+
+  # Task parameters
+  parameters:
+    app-id: 1
+    user-id: 1
+    number-of-pes: 1
+
+    # CPU requirements (MIPS)
+    cpu:
+      min: 1000
+      max: 10000
+
+    # Memory requirements (bytes)
+    memory:
+      min: 100
+      max: 1000
+
+    # Output size (bytes)
+    output:
+      min: 50
+      max: 500
+
+  # Task properties
+  properties:
+    tuple-type: 'EXTERNAL'
+    module-name: 'external_task'
+    direction: 'DOWN' # Coming from cloud
+
+# RL Configuration - FULL FEATURES ENABLED
+rl:
+  # RL server configurations
+  servers:
+    cloud:
+      host: ${CLOUD_RL_SERVER_HOST:allocator}
+      port: ${CLOUD_RL_SERVER_PORT:50051}
+      enabled: true # RL enabled for cloud
+    external-task:
+      host: ${EXTERNAL_TASK_SERVER_HOST:allocator}
+      port: ${EXTERNAL_TASK_SERVER_PORT:50051}
+      enabled: true
+    placement:
+      host: ${PLACEMENT_RL_SERVER_HOST:allocator}
+      port: ${PLACEMENT_RL_SERVER_PORT:50051}
+      enabled: true
+
+  # RL algorithm settings
+  algorithm:
+    learning-rate: 0.1
+    exploration-rate: 0.1
+    discount-factor: 0.95
+    batch-size: 32
+    memory-size: 10000
+
+  # RL training settings
+  training:
+    enabled: true
+    update-interval: 1000
+    experience-replay: true
+    target-network-update: 1000
+    epsilon-decay: 0.995
+    min-epsilon: 0.01
+
+  # RL performance settings
+  performance:
+    monitoring-enabled: true
+    metrics-interval: 60000
+    reward-calculation:
+      energy-weight: 0.4
+      latency-weight: 0.3
+      cost-weight: 0.3
+
+# Allocation Service Configuration (go-grpc-server)
+allocation:
+  service:
+    host: ${ALLOCATION_HOST:allocator}
+    port: ${ALLOCATION_PORT:50051}
+    name: go-grpc-server
+
+  health-check:
+    enabled: true
+    interval: 30000
+    timeout: 5000
+
+  fallback:
+    enabled: true
+    node-id: fallback-node-1
+    execution-time: 5000
+    allocation-delay: 1000
+
+  load-balancing:
+    strategy: round_robin
+    weights-enabled: false
+
+  resource-requirements:
+    cpu-default: 1.0
+    memory-default: 1024
+    bandwidth-default: 100
+
+  performance:
+    monitoring-enabled: true
+    metrics-interval: 60000
+    threshold:
+      cpu: 0.8
+      memory: 0.8
+
+  rl-agent:
+    enabled: true # RL enabled for allocator
+    learning-rate: 0.1
+    exploration-rate: 0.1
+    update-interval: 1000
+
+# Device Configuration
+devices:
+  # Fog device settings
+  fog:
+    default-mips: 1000
+    default-ram: 1024
+    default-uplink-bw: 100.0
+    default-downlink-bw: 100.0
+    default-rate-per-mips: 1.0
+    default-busy-power: 100.0
+    default-idle-power: 10.0
+
+  # Cloud device settings
+  cloud:
+    default-mips: 2000
+    default-ram: 2048
+    default-uplink-bw: 1000.0
+    default-downlink-bw: 1000.0
+    default-rate-per-mips: 1.0
+    default-busy-power: 200.0
+    default-idle-power: 20.0
+
+# Placement Configuration
+placement:
+  # RL placement settings
+  rl:
+    enabled: true # RL enabled for placement
+    update-interval: 60.0
+    decision-timeout: 5000
+
+  # Placement scoring weights
+  scoring:
+    cpu-weight: 0.4
+    ram-weight: 0.3
+    bandwidth-weight: 0.3
+
+  # Fallback placement
+  fallback:
+    strategy: round_robin
+    enabled: true
+
+# Simulation Configuration
+simulation:
+  # Task allocation settings
+  allocation:
+    default-deadline: 30000 # 30 seconds in milliseconds
+    default-priority: 1
+    default-bandwidth: 0.0
+    fallback-node-id: fallback-node-1
+
+  # Energy calculation parameters
+  energy:
+    base-allocation: 0.001 # Base energy per allocation (J)
+    complexity-factor: 0.000001 # Energy per MIPS (J)
+    latency-factor: 0.00001 # Energy per ms (J)
+    base-execution: 0.0001 # Base energy per execution (J)
+
+  # Cost calculation parameters
+  cost:
+    base-allocation: 0.0001 # Base cost per allocation ($)
+    complexity-factor: 0.0000001 # Cost per MIPS ($)
+    latency-factor: 0.000001 # Cost per ms ($)
+    base-execution: 0.00001 # Base cost per execution ($)
+
+  # External tasks configuration
+  external-tasks:
+    enabled: true # External tasks enabled for RL-full-feature
+    generation-rate: 2.0 # tasks per second
+    initial-delay: 1000 # milliseconds
+
+  # Statistics tracking
+  statistics:
+    reset-interval: 60000 # Reset statistics every minute
+    percentage-calculation: 100 # For percentage calculations
+
+  # Performance baseline metrics
+  performance:
+    baseline-throughput: 10.0 # Baseline throughput in decisions per second
+
+# Performance Configuration
+performance:
+  # Monitoring settings
+  monitoring:
+    enabled: true
+    interval: 60000
+    metrics-retention: 3600000 # 1 hour
+
+  # Thresholds
+  thresholds:
+    cpu-utilization: 0.8
+    memory-utilization: 0.8
+    bandwidth-utilization: 0.8
+
+  # Optimization
+  optimization:
+    enabled: true
+    auto-scaling: true
+    load-balancing: true
+
+# Logging Configuration
+logging:
+  # Log levels
+  level:
+    root: INFO
+    org.patch: DEBUG
+    org.patch.client: DEBUG
+    org.patch.config: DEBUG
+    org.patch.devices: INFO
+    org.patch.utils: INFO
+    org.patch.core: INFO
+
+  # Log format
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
+
+  # File management
+  directory: ${LOGGING_DIRECTORY:/app/logs}
+  json:
+    format: ${LOGGING_JSON_FORMAT:false}
+  correlation:
+    enabled: ${LOGGING_CORRELATION_ENABLED:true}
+  performance:
+    enabled: ${LOGGING_PERFORMANCE_ENABLED:true}
+    threshold: 1000
+
+  # File rotation settings
+  file:
+    size: ${LOGGING_FILE_SIZE:10485760} # 10MB
+    count: ${LOGGING_FILE_COUNT:5}
+    cleanup:
+      enabled: ${LOGGING_CLEANUP_ENABLED:true}
+
+  # Component-specific logging
+  components:
+    application:
+      level: INFO
+      enabled: true
+    grpc:
+      level: INFO
+      enabled: true
+      requests: true
+      responses: true
+      errors: true
+      performance: true
+    performance:
+      level: INFO
+      enabled: true
+      metrics: true
+    errors:
+      level: SEVERE
+      enabled: true
+      detailed: true
+      stack-trace: true
+    debug:
+      level: FINE
+      enabled: false
+
+  # Simulation logging
+  simulation:
+    milestones: true
+    performance: true
+    errors: true
+    correlation: true
