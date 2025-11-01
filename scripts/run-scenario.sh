@@ -1,16 +1,130 @@
 #!/bin/bash
 # run-scenario.sh: Orchestrate N runs of a scenario
-# Usage: run-scenario.sh [SCENARIO_NAME] [NUM_RUNS]
-#   SCENARIO_NAME: Name of scenario (default: rl-full-feature)
-#   NUM_RUNS: Number of runs to execute (default: 1)
+# Usage: 
+#   Interactive: ./run-scenario.sh
+#   With args:   ./run-scenario.sh [SCENARIO_NAME] [NUM_RUNS]
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SCENARIO_NAME="${1:-rl-full-feature}"
-NUM_RUNS="${2:-1}"
+# Discover available scenarios from config directory
+discover_scenarios() {
+    local config_dir="$PROJECT_ROOT/config"
+    if [ ! -d "$config_dir" ]; then
+        echo "Error: Config directory not found: $config_dir"
+        return 1
+    fi
+    
+    # Find directories that contain both allocator/ and simulation/ subdirectories
+    local scenarios=()
+    for dir in "$config_dir"/*; do
+        if [ -d "$dir" ] && [ -d "$dir/allocator" ] && [ -d "$dir/simulation" ]; then
+            scenarios+=("$(basename "$dir")")
+        fi
+    done
+    
+    printf '%s\n' "${scenarios[@]}"
+}
+
+# Interactive scenario selection
+select_scenario_interactive() {
+    local scenarios
+    readarray -t scenarios < <(discover_scenarios)
+    
+    if [ ${#scenarios[@]} -eq 0 ]; then
+        echo "Error: No valid scenarios found in config/ directory"
+        exit 1
+    fi
+    
+    echo "Available scenarios:"
+    echo "==================="
+    local i=1
+    for scenario in "${scenarios[@]}"; do
+        echo "  $i) $scenario"
+        ((i++))
+    done
+    echo ""
+    
+    while true; do
+        read -p "Select scenario (1-${#scenarios[@]} or name): " choice
+        if [ -z "$choice" ]; then
+            echo "Invalid choice. Please try again."
+            continue
+        fi
+        
+        # Check if it's a number
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if [ "$choice" -ge 1 ] && [ "$choice" -le ${#scenarios[@]} ]; then
+                echo "${scenarios[$((choice-1))]}"
+                return 0
+            else
+                echo "Invalid number. Please select 1-${#scenarios[@]}."
+                continue
+            fi
+        else
+            # Check if it's a valid scenario name
+            for scenario in "${scenarios[@]}"; do
+                if [ "$scenario" = "$choice" ]; then
+                    echo "$choice"
+                    return 0
+                fi
+            done
+            echo "Scenario '$choice' not found. Please try again."
+            continue
+        fi
+    done
+}
+
+# Get number of runs interactively
+get_num_runs_interactive() {
+    while true; do
+        read -p "Number of runs (default: 1): " num_runs
+        if [ -z "$num_runs" ]; then
+            echo "1"
+            return 0
+        fi
+        
+        if [[ "$num_runs" =~ ^[0-9]+$ ]] && [ "$num_runs" -gt 0 ]; then
+            echo "$num_runs"
+            return 0
+        else
+            echo "Invalid number. Please enter a positive integer."
+            continue
+        fi
+    done
+}
+
+# Parse arguments or use interactive mode
+if [ $# -ge 1 ]; then
+    # Command-line mode
+    SCENARIO_NAME="$1"
+    NUM_RUNS="${2:-1}"
+    
+    # Validate scenario exists
+    if [ ! -d "$PROJECT_ROOT/config/$SCENARIO_NAME" ]; then
+        echo "Error: Scenario '$SCENARIO_NAME' not found in config/ directory"
+        echo "Available scenarios:"
+        discover_scenarios | sed 's/^/  - /'
+        exit 1
+    fi
+    
+    # Validate NUM_RUNS
+    if ! [[ "$NUM_RUNS" =~ ^[0-9]+$ ]] || [ "$NUM_RUNS" -lt 1 ]; then
+        echo "Error: Number of runs must be a positive integer"
+        exit 1
+    fi
+else
+    # Interactive mode
+    echo "================================================================================"
+    echo "Scenario Selection"
+    echo "================================================================================"
+    SCENARIO_NAME=$(select_scenario_interactive)
+    echo ""
+    NUM_RUNS=$(get_num_runs_interactive)
+    echo ""
+fi
 
 echo "================================================================================"
 echo "Running scenario: $SCENARIO_NAME"
