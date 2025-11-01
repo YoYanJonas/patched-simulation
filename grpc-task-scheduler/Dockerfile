@@ -3,7 +3,12 @@ FROM golang:1.23.3
 # Install protoc and required packages
 RUN apt-get update && apt-get install -y \
     protobuf-compiler \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install gRPC health probe
+RUN curl -L https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.24/grpc_health_probe-linux-amd64 -o /usr/local/bin/grpc_health_probe && \
+    chmod +x /usr/local/bin/grpc_health_probe
 
 
 ENV GOPROXY=https://proxy.golang.org,direct

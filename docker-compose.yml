@@ -1,0 +1,189 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # Allocator Service (go-grpc-server)
+  # ============================================================
+  allocator:
+    build:
+      context: ./go-grpc-server
+      dockerfile: Dockerfile
+    container_name: allocator
+    hostname: allocator
+    networks:
+      - simulation-network
+    ports:
+      - '50051:50051'
+    volumes:
+      # Config volume (read-only) - will be overridden by override file
+      - ./config/${SCENARIO_NAME:-rl-full-feature}/allocator:/config:ro
+      # Model storage (persistent)
+      - ./models/allocator:/app/models:rw
+      # Reports (per-run)
+      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/allocator:/reports:rw
+    environment:
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - MODEL_PATH=${MODEL_PATH:-/app/models}
+      - REPORT_PATH=${REPORT_PATH:-/reports}
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=50051
+    command: ['./server']
+    restart: 'no' # Don't restart automatically - controlled by scripts
+    healthcheck:
+      test: ['CMD', 'grpc_health_probe', '-addr=:50051']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================
+  # Scheduler Services (grpc-task-scheduler) - 3 instances
+  # ============================================================
+  scheduler-1:
+    build:
+      context: ./grpc-task-scheduler
+      dockerfile: Dockerfile
+    container_name: scheduler-1
+    hostname: scheduler-1
+    networks:
+      - simulation-network
+    ports:
+      - '50052:50052'
+    volumes:
+      # Config volume (read-only)
+      - ./config/${SCENARIO_NAME:-rl-full-feature}/scheduler/node1:/config:ro
+      # Model storage (persistent)
+      - ./models/scheduler-node1:/app/models:rw
+      # Reports (per-run)
+      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node1:/reports:rw
+    environment:
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - MODELS_PATH=${MODELS_PATH:-/app/models}
+      - REPORT_PATH=${REPORT_PATH:-/reports}
+      - INSTANCE_ID=node1
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=50052
+    command: ['./server']
+    restart: 'no'
+    depends_on:
+      allocator:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'grpc_health_probe', '-addr=:50052']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  scheduler-2:
+    build:
+      context: ./grpc-task-scheduler
+      dockerfile: Dockerfile
+    container_name: scheduler-2
+    hostname: scheduler-2
+    networks:
+      - simulation-network
+    ports:
+      - '50053:50052'
+    volumes:
+      - ./config/${SCENARIO_NAME:-rl-full-feature}/scheduler/node2:/config:ro
+      - ./models/scheduler-node2:/app/models:rw
+      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node2:/reports:rw
+    environment:
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - MODELS_PATH=${MODELS_PATH:-/app/models}
+      - REPORT_PATH=${REPORT_PATH:-/reports}
+      - INSTANCE_ID=node2
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=50052
+    command: ['./server']
+    restart: 'no'
+    depends_on:
+      scheduler-1:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'grpc_health_probe', '-addr=:50052']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  scheduler-3:
+    build:
+      context: ./grpc-task-scheduler
+      dockerfile: Dockerfile
+    container_name: scheduler-3
+    hostname: scheduler-3
+    networks:
+      - simulation-network
+    ports:
+      - '50054:50052'
+    volumes:
+      - ./config/${SCENARIO_NAME:-rl-full-feature}/scheduler/node3:/config:ro
+      - ./models/scheduler-node3:/app/models:rw
+      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node3:/reports:rw
+    environment:
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - MODELS_PATH=${MODELS_PATH:-/app/models}
+      - REPORT_PATH=${REPORT_PATH:-/reports}
+      - INSTANCE_ID=node3
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=50052
+    command: ['./server']
+    restart: 'no'
+    depends_on:
+      scheduler-2:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'grpc_health_probe', '-addr=:50052']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================
+  # iFogSim Simulation (short-lived, runs to completion)
+  # ============================================================
+  ifogsim:
+    build:
+      context: ./ifogsim
+      dockerfile: Dockerfile
+    container_name: ifogsim
+    hostname: ifogsim
+    networks:
+      - simulation-network
+    volumes:
+      # Config volume (read-only)
+      - ./config/${SCENARIO_NAME:-rl-full-feature}/simulation:/config:ro
+      # Reports (per-run)
+      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/simulation:/app/reports:rw
+      # Logs
+      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/simulation:/app/logs:rw
+    environment:
+      - CONFIG_DIR=${CONFIG_DIR:-/config}
+      - REPORT_DIR=${REPORT_DIR:-/app/reports}
+      - ALLOCATION_HOST=allocator
+      - ALLOCATION_PORT=50051
+      - SCHEDULER_1_HOST=scheduler-1
+      - SCHEDULER_1_PORT=50052
+      - SCHEDULER_2_HOST=scheduler-2
+      - SCHEDULER_2_PORT=50052
+      - SCHEDULER_3_HOST=scheduler-3
+      - SCHEDULER_3_PORT=50052
+      - JAVA_OPTS=-Xmx2g -Xms1g -Djava.awt.headless=true
+    command:
+      [
+        'java',
+        '-cp',
+        'target/classes:target/dependency/*',
+        'scenarios.RL3FogSimulation',
+      ]
+    restart: 'no'
+    depends_on:
+      scheduler-3:
+        condition: service_healthy
+
+networks:
+  simulation-network:
+    driver: bridge
+    name: simulation-network
