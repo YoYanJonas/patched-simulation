@@ -32,8 +32,18 @@ export SCENARIO_NAME
 export RUN_ID
 
 # Start servers (allocator and schedulers) first
-echo "Starting servers (allocator, scheduler-1, scheduler-2, scheduler-3)..."
-docker compose up -d allocator scheduler-1 scheduler-2 scheduler-3
+# Build Go binaries locally first (faster, uses local Go cache)
+echo "Building Go server binaries locally..."
+if [ -f "$PROJECT_ROOT/scripts/build-go-servers.sh" ]; then
+    "$PROJECT_ROOT/scripts/build-go-servers.sh" || {
+        echo "Warning: Local build failed, Docker will build from source"
+    }
+fi
+
+# Use --build to ensure code changes are picked up
+# Docker will use layer caching: go.mod/go.sum layer cached, only source rebuilt
+echo "Building and starting servers (allocator, scheduler-1, scheduler-2, scheduler-3)..."
+docker compose up -d --build allocator scheduler-1 scheduler-2 scheduler-3
 
 # Wait for all servers to be healthy
 echo "Waiting for servers to be healthy..."
@@ -97,32 +107,28 @@ export EXTERNAL_TASK_SERVER_PORT=50051
 export PLACEMENT_RL_SERVER_HOST=localhost
 export PLACEMENT_RL_SERVER_PORT=50051
 
-# Log file in project root
-LOG_FILE="$PROJECT_ROOT/x.log"
-echo "Logs will be captured to: $LOG_FILE"
+# Note: Most configuration now comes from YAML files (config/rl-full-feature/simulation/application.yml)
+# Environment variables below are for runtime-specific settings only (hostnames, ports, paths)
 
-# Run ifogsim locally using Maven with log capture
+# Run ifogsim locally using Maven
 cd "$PROJECT_ROOT/ifogsim"
 
-# Run simulation and capture both stdout and stderr to x.log using tee
-# This preserves console output while also saving to file
+# Run simulation (output goes to stdout/stderr, no file logging)
 mvn exec:java -Dexec.mainClass="scenarios.RL3FogSimulation" \
     -Dexec.args="" \
-    -Dexec.classpathScope=compile \
-    2>&1 | tee "$LOG_FILE"
+    -Dexec.classpathScope=compile
 
-# Check exit code (Maven exit code, not tee)
-EXIT_CODE=${PIPESTATUS[0]}
+# Check exit code
+EXIT_CODE=$?
+
 if [ $EXIT_CODE -eq 0 ]; then
     echo "================================================================================"
     echo "Simulation completed successfully"
     echo "================================================================================"
-    echo "Logs saved to: $LOG_FILE"
 else
     echo "================================================================================"
     echo "Simulation exited with error code: $EXIT_CODE"
     echo "================================================================================"
-    echo "Check logs in: $LOG_FILE"
     exit $EXIT_CODE
 fi
 

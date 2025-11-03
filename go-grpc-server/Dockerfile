@@ -16,9 +16,15 @@ RUN go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
 WORKDIR /app
 
+# Stage 1: Build dependencies (cached if go.mod/go.sum don't change)
+# This layer is cached and dependencies are NOT re-downloaded if go.mod/go.sum unchanged
 COPY go.mod go.sum ./
-RUN go mod tidy
+RUN go mod download
 
+# Stage 2: Build binary (only rebuilds if source code changes)
+# Docker layer caching means:
+# - go.mod/go.sum layer is cached (dependencies not re-downloaded)
+# - Source code layer only rebuilds if files change
 COPY . .
 
 ENV GOPROXY=https://proxy.golang.org,direct
@@ -32,4 +38,6 @@ RUN chmod +x scripts/generate_stubs.sh
 # Generate protobuf code during build
 RUN ./scripts/generate_stubs.sh
 
+# Build binary - this step uses cached dependencies from go mod download
+# Dependencies are already downloaded in earlier layer, so this is fast
 RUN go build -o server ./cmd/grpc-server/main.go
