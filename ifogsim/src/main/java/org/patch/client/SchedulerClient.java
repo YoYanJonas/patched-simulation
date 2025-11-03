@@ -125,6 +125,14 @@ public class SchedulerClient implements AutoCloseable {
      * Add a single task to the queue with graceful degradation
      */
     public AddTaskToQueueResponse addTaskToQueue(Task task, List<FogNode> availableNodes, SchedulingPolicy policy) {
+        return addTaskToQueue(task, availableNodes, policy, null);
+    }
+
+    /**
+     * Add a single task to the queue with QueueContext
+     */
+    public AddTaskToQueueResponse addTaskToQueue(Task task, List<FogNode> availableNodes, SchedulingPolicy policy,
+            QueueContext queueContext) {
         // Record start time for performance measurement
         long startTime = System.currentTimeMillis();
 
@@ -143,13 +151,16 @@ public class SchedulerClient implements AutoCloseable {
             // This implements graceful degradation when the service is down
             boolean isConnected = baseClient.isConnected();
             boolean isServiceAvailable = baseClient.isServiceAvailable();
-            
-            logger.info(String.format("[IFOGSIM-SCHED-CONN] Connection check before sending task: TaskID=%s, isConnected=%s, isServiceAvailable=%s",
+
+            logger.info(String.format(
+                    "[IFOGSIM-SCHED-CONN] Connection check before sending task: TaskID=%s, isConnected=%s, isServiceAvailable=%s",
                     task.getTaskId(), isConnected, isServiceAvailable));
-            
+
             if (!isServiceAvailable) {
-                logger.warning(String.format("[IFOGSIM-SCHED-FALLBACK] Scheduler service unavailable, using fallback scheduling for TaskID=%s", task.getTaskId()));
-                
+                logger.warning(String.format(
+                        "[IFOGSIM-SCHED-FALLBACK] Scheduler service unavailable, using fallback scheduling for TaskID=%s",
+                        task.getTaskId()));
+
                 Map<String, Object> fallbackFields = new HashMap<>();
                 fallbackFields.put("reason", "service_unavailable");
                 fallbackFields.put("task_id", task.getTaskId());
@@ -157,23 +168,35 @@ public class SchedulerClient implements AutoCloseable {
                 structuredLogger.warning("Scheduler service unavailable, using fallback scheduling", fallbackFields);
                 return createFallbackAddTaskToQueueResponse(task, availableNodes);
             }
-            
+
             logger.info(String.format("[IFOGSIM-SCHED-CALL] Calling gRPC addTaskToQueue: TaskID=%s", task.getTaskId()));
 
-            AddTaskToQueueRequest request = AddTaskToQueueRequest.newBuilder()
+            // Note: QueueContext should be set by caller via overloaded method
+            AddTaskToQueueRequest.Builder requestBuilder = AddTaskToQueueRequest.newBuilder()
                     .setTask(task)
                     .addAllAvailableNodes(availableNodes)
-                    .setPolicy(policy)
-                    .build();
+                    .setPolicy(policy);
+
+            // Add QueueContext if provided
+            if (queueContext != null) {
+                requestBuilder.setQueueContext(queueContext);
+            }
+
+            AddTaskToQueueRequest request = requestBuilder.build();
 
             AddTaskToQueueResponse response = schedulerStub.addTaskToQueue(request);
             long duration = System.currentTimeMillis() - startTime;
 
-            logger.info(String.format("[IFOGSIM-SCHED-SEND] Time: %.2f - Sending task to scheduler: TaskID=%s, Priority=%d, CPU=%d, Mem=%d",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getPriority(), task.getCpuRequirement(), task.getMemoryRequirement()));
-            
-            logger.info(String.format("[IFOGSIM-SCHED-RESP] Time: %.2f - Received scheduler response: TaskID=%s, Success=%s, Position=%d, Wait=%dms, Cached=%s, Duration=%dms",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), response.getTaskId(), response.getSuccess(), response.getQueuePosition(), response.getEstimatedWaitTimeMs(), response.getIsCachedTask(), duration));
+            logger.info(String.format(
+                    "[IFOGSIM-SCHED-SEND] Time: %.2f - Sending task to scheduler: TaskID=%s, Priority=%d, CPU=%d, Mem=%d",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getPriority(),
+                    task.getCpuRequirement(), task.getMemoryRequirement()));
+
+            logger.info(String.format(
+                    "[IFOGSIM-SCHED-RESP] Time: %.2f - Received scheduler response: TaskID=%s, Success=%s, Position=%d, Wait=%dms, Cached=%s, Duration=%dms",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), response.getTaskId(), response.getSuccess(),
+                    response.getQueuePosition(), response.getEstimatedWaitTimeMs(), response.getIsCachedTask(),
+                    duration));
 
             Map<String, Object> successFields = new HashMap<>();
             successFields.put("task_id", task.getTaskId());
@@ -242,11 +265,19 @@ public class SchedulerClient implements AutoCloseable {
      */
     public List<AddTaskToQueueResponse> addTasksToQueue(List<Task> tasks, List<FogNode> availableNodes,
             SchedulingPolicy policy) {
+        return addTasksToQueue(tasks, availableNodes, policy, null);
+    }
+
+    /**
+     * Add multiple tasks to queue with QueueContext
+     */
+    public List<AddTaskToQueueResponse> addTasksToQueue(List<Task> tasks, List<FogNode> availableNodes,
+            SchedulingPolicy policy, QueueContext queueContext) {
         List<AddTaskToQueueResponse> responses = new ArrayList<>();
 
         for (Task task : tasks) {
             try {
-                AddTaskToQueueResponse response = addTaskToQueue(task, availableNodes, policy);
+                AddTaskToQueueResponse response = addTaskToQueue(task, availableNodes, policy, queueContext);
                 responses.add(response);
             } catch (Exception e) {
                 logger.log(Level.WARNING, "Failed to add task to queue: " + task.getTaskId(), e);
