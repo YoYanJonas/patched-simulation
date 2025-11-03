@@ -85,7 +85,7 @@ public class ReportGenerator {
             List<Map<String, Object>> fogDevicesData,
             double simulationTime)
             throws IOException {
-        String filename = reportsDirPath + "/report-" + timestamp + HUMAN_REPORT_EXT;
+        String filename = reportsDirPath + "/report" + HUMAN_REPORT_EXT;
         File file = new File(filename);
 
         try (FileWriter writer = new FileWriter(file)) {
@@ -212,7 +212,7 @@ public class ReportGenerator {
     private void generateJsonReport(Map<String, Object> cloudDeviceData,
             List<Map<String, Object>> fogDevicesData,
             double simulationTime) throws IOException {
-        String filename = reportsDirPath + "/report-" + timestamp + JSON_REPORT_EXT;
+        String filename = reportsDirPath + "/report" + JSON_REPORT_EXT;
         File file = new File(filename);
 
         // Build complete report from provided data
