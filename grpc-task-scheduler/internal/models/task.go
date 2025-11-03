@@ -31,6 +31,11 @@ type TaskEntry struct {
 	EstimatedEnd time.Time  `json:"estimated_end"`
 	ActualEnd    *time.Time `json:"actual_end,omitempty"`
 	ErrorMessage string     `json:"error_message,omitempty"`
+	
+	// Cache information (stored separately, will be added to Task metadata when returning)
+	IsCached   bool              `json:"is_cached"`
+	CacheKey   string            `json:"cache_key"`
+	CacheAction pb.CacheAction   `json:"cache_action"`
 }
 
 // NewTaskEntry creates a new task entry from a protobuf task

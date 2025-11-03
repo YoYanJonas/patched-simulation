@@ -8,6 +8,7 @@ import (
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // TaskCacheEntry represents a cached task fingerprint
@@ -39,13 +40,16 @@ func NewTaskCacheManager(cfg config.CachingConfig) *TaskCacheManager {
 }
 
 // GenerateTaskFingerprint creates a unique fingerprint for a task
+// NOTE: This is used for identification, not cache decision (RL agent decides cache)
 func (tcm *TaskCacheManager) GenerateTaskFingerprint(task *pb.Task) string {
 	if task == nil {
 		return ""
 	}
 
-	// Create fingerprint: task_type + cpu + memory + execution_time
-	data := fmt.Sprintf("%d_%d_%d_%d",
+	// Create fingerprint: task_id + task_type + cpu + memory + execution_time
+	// Include task_id to make it unique per task (not just requirements)
+	data := fmt.Sprintf("%s_%d_%d_%d_%d",
+		task.TaskId,  // Include task_id for uniqueness
 		task.TaskType,
 		task.CpuRequirement,
 		task.MemoryRequirement,
@@ -87,14 +91,28 @@ func (tcm *TaskCacheManager) ProcessTask(task *pb.Task) (bool, string, pb.CacheA
 	}
 
 	// Task seen before
+	lastSeenBefore := entry.LastSeen // Save before updating
 	entry.LastSeen = now
 	entry.SeenCount++
 	tcm.repeatedTasks++
 
+	// [DEBUG] Log cache decision details
+	logger.GetLogger().Debugf("[CACHE-DEBUG] Processing task with fingerprint %s: SeenCount=%d, FirstSeen=%v, LastSeen(before)=%v, Now=%v", 
+		fingerprint, entry.SeenCount, entry.FirstSeen, lastSeenBefore, now)
+
 	// Check if cache is still valid (simple time-based invalidation)
-	timeSinceLastSeen := now.Sub(entry.LastSeen)
-	if timeSinceLastSeen > time.Duration(tcm.config.CacheTTLHours)*time.Hour {
+	// CRITICAL FIX: Check time since FIRST SEEN, not last seen (last seen was just updated!)
+	timeSinceFirstSeen := now.Sub(entry.FirstSeen)
+	cacheTTL := time.Duration(tcm.config.CacheTTLHours) * time.Hour
+	
+	// [DEBUG] Log TTL check
+	logger.GetLogger().Debugf("[CACHE-DEBUG] TTL check: timeSinceFirstSeen=%v, cacheTTL=%v, expired=%t",
+		timeSinceFirstSeen, cacheTTL, timeSinceFirstSeen > cacheTTL)
+	
+	if timeSinceFirstSeen > cacheTTL {
 		// Cache expired - invalidate
+		logger.GetLogger().Infof("[CACHE-EXPIRE] Cache expired for fingerprint %s after %v (TTL=%v)",
+			fingerprint, timeSinceFirstSeen, cacheTTL)
 		entry.LastAction = pb.CacheAction_CACHE_ACTION_INVALIDATE
 		return false, fingerprint, pb.CacheAction_CACHE_ACTION_INVALIDATE
 	}

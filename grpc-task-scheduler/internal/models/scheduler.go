@@ -82,34 +82,13 @@ func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *co
 		}
 		engine.agent = rl.NewAgent(agentConfig)
 
-		// Set cache manager in RL algorithms
-		engine.setCacheManagerInRLAlgorithms()
+		// Note: Cache manager no longer used in scheduling RL (cache has its own agent)
 	}
 
 	return engine
 }
 
-// setCacheManagerInRLAlgorithms sets the cache manager in all RL algorithms
-func (se *SchedulerEngine) setCacheManagerInRLAlgorithms() {
-	if se.agent == nil {
-		return
-	}
-
-	// Get the algorithm manager from the agent
-	algorithmManager := se.agent.GetAlgorithmManager()
-	if algorithmManager == nil {
-		return
-	}
-
-	// Set cache manager in Q-learning algorithm
-	if qlearning := algorithmManager.GetQLearningAlgorithm(); qlearning != nil {
-		if setter, ok := qlearning.(interface {
-			SetCacheManager(interface{})
-		}); ok {
-			setter.SetCacheManager(se.cacheManager)
-		}
-	}
-}
+// setCacheManagerInRLAlgorithms removed - cache features no longer used in scheduling RL
 
 func (se *SchedulerEngine) Start(ctx context.Context) {
 	// Start periodic queue resorting if enabled
@@ -334,33 +313,35 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64,
 	var cacheKey string
 	var cacheAction pb.CacheAction
 
-	if se.agent != nil && se.agent.IsEnabled() && se.cacheManager != nil {
-		// RL algorithm enabled - use cache
+	// Cache decision (fingerprint-based only)
+	if se.cacheManager != nil && se.cacheManager.config.Enabled {
 		isCached, cacheKey, cacheAction = se.cacheManager.ProcessTask(task)
-		
-		// If task is cached and should use cache, return immediately
-		if isCached && cacheAction == pb.CacheAction_CACHE_ACTION_USE {
-			// For cached tasks, we still need to track them for delayed rewards
-			taskEntry := NewTaskEntry(task)
-			se.mu.Lock()
-			se.scheduledTasks[task.TaskId] = taskEntry
-			se.mu.Unlock()
-			
-			// Return cached result (immediate scheduling)
-			return 0, 0, true, cacheKey, cacheAction, nil // Position 0, no wait time for cached tasks
-		}
 	} else {
-		// Traditional algorithm - no cache
+		// Cache disabled
 		isCached = false
 		cacheKey = ""
 		cacheAction = pb.CacheAction_CACHE_ACTION_NONE
 	}
 
-	// Create task entry
-	taskEntry := NewTaskEntry(task)
+	// [DEBUG] Log cache decision
+	if isCached && cacheAction == pb.CacheAction_CACHE_ACTION_USE {
+		logger.GetLogger().Infof("[SCHEDULER-CACHE-DEBUG] Task %s is CACHED (cacheKey=%s) - Adding to queue with cache flag",
+			task.TaskId, cacheKey)
+	} else {
+		logger.GetLogger().Infof("[SCHEDULER-CACHE-DEBUG] Task %s is NOT cached (isCached=%t, action=%v) - Adding to queue",
+			task.TaskId, isCached, cacheAction)
+	}
 
-	// Add to queue
+	// Create task entry WITH cache information
+	// IMPORTANT: ALL tasks (cached or not) go through the queue
+	taskEntry := NewTaskEntry(task)
+	taskEntry.IsCached = isCached
+	taskEntry.CacheKey = cacheKey
+	taskEntry.CacheAction = cacheAction
+
+	// Add to queue (ALL tasks go through queue, cache decision is made during execution)
 	if err := se.queue.Enqueue(taskEntry); err != nil {
+		logger.GetLogger().Errorf("[SCHEDULER-CACHE-DEBUG] Failed to enqueue task %s: %v", task.TaskId, err)
 		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, err
 	}
 
@@ -368,6 +349,10 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64,
 	se.mu.Lock()
 	se.scheduledTasks[task.TaskId] = taskEntry
 	se.mu.Unlock()
+
+	// [DEBUG] Log queue state after adding
+	logger.GetLogger().Debugf("[SCHEDULER-CACHE-DEBUG] Task %s added to queue (isCached=%t, cacheAction=%v). Queue size=%d, scheduledTasks size=%d",
+		task.TaskId, isCached, cacheAction, se.queue.Size(), len(se.scheduledTasks))
 
 	// Calculate queue position and estimated wait time
 	queuePosition := int64(se.getTaskQueuePosition(task.TaskId))
@@ -383,6 +368,8 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64,
 
 	return queuePosition, estimatedWait, isCached, cacheKey, cacheAction, nil
 }
+
+
 
 // REMOVED: schedulerLoop() - No periodic task execution in scheduler
 
@@ -631,11 +618,48 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 	// Get all tasks from queue
 	allTasks := se.queue.GetAll()
 	
-	// Convert to proto tasks
+	// [DEBUG] Log queue state
+	logger.GetLogger().Debugf("[SCHEDULER-QUEUE-DEBUG] GetSortedQueue called: queue size=%d, scheduledTasks map size=%d",
+		len(allTasks), len(se.scheduledTasks))
+	
+	// Log which tasks are in queue vs in scheduledTasks map
+	taskIdsInQueue := make([]string, 0, len(allTasks))
+	for _, taskEntry := range allTasks {
+		taskIdsInQueue = append(taskIdsInQueue, taskEntry.GetTaskID())
+	}
+	logger.GetLogger().Debugf("[SCHEDULER-QUEUE-DEBUG] Tasks in queue: %v", taskIdsInQueue)
+	
+	scheduledTaskIds := make([]string, 0, len(se.scheduledTasks))
+	for taskId := range se.scheduledTasks {
+		scheduledTaskIds = append(scheduledTaskIds, taskId)
+	}
+	logger.GetLogger().Debugf("[SCHEDULER-QUEUE-DEBUG] Tasks in scheduledTasks map: %v", scheduledTaskIds)
+	
+	// [DEBUG] Check if tasks are in scheduledTasks but not in queue (cached tasks)
+	for taskId := range se.scheduledTasks {
+		foundInQueue := false
+		for _, taskEntry := range allTasks {
+			if taskEntry.GetTaskID() == taskId {
+				foundInQueue = true
+				break
+			}
+		}
+		if !foundInQueue {
+			logger.GetLogger().Infof("[SCHEDULER-QUEUE-DEBUG] Task %s is in scheduledTasks map but NOT in queue (likely cached and removed from queue)",
+				taskId)
+		}
+	}
+	
+	// Convert to proto tasks WITH cache information in metadata
 	protoTasks := make([]*pb.Task, 0, len(allTasks))
 	for _, taskEntry := range allTasks {
-		protoTasks = append(protoTasks, taskEntry.Task)
+		protoTask := se.taskEntryToProtoTaskWithCache(taskEntry)
+		protoTasks = append(protoTasks, protoTask)
 	}
+
+	// [DEBUG] Log response details
+	logger.GetLogger().Infof("[SCHEDULER-QUEUE-DEBUG] GetSortedQueue returning %d tasks (algorithm=%s, nodeId=%s)",
+		len(protoTasks), se.algorithm.String(), se.nodeManager.NodeID)
 
 	// Build response
 	response := &pb.GetSortedQueueResponse{
@@ -662,18 +686,63 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 	return response
 }
 
+// taskEntryToProtoTaskWithCache converts TaskEntry to proto Task with cache info in metadata
+func (se *SchedulerEngine) taskEntryToProtoTaskWithCache(taskEntry *TaskEntry) *pb.Task {
+	// Create a copy of the task with cache info in metadata
+	taskCopy := &pb.Task{
+		TaskId:          taskEntry.Task.TaskId,
+		TaskName:        taskEntry.Task.TaskName,
+		TaskType:        taskEntry.Task.TaskType,
+		CpuRequirement:  taskEntry.Task.CpuRequirement,
+		MemoryRequirement: taskEntry.Task.MemoryRequirement,
+		ExecutionTime:   taskEntry.Task.ExecutionTime,
+		Priority:        taskEntry.Task.Priority,
+		Deadline:        taskEntry.Task.Deadline,
+		Dependencies:    taskEntry.Task.Dependencies,
+	}
+	
+	// Copy existing metadata if any
+	if taskEntry.Task.Metadata != nil {
+		taskCopy.Metadata = make(map[string]string)
+		for k, v := range taskEntry.Task.Metadata {
+			taskCopy.Metadata[k] = v
+		}
+	} else {
+		taskCopy.Metadata = make(map[string]string)
+	}
+	
+	// Add cache information to metadata
+	if taskEntry.IsCached {
+		taskCopy.Metadata["is_cached"] = "true"
+	} else {
+		taskCopy.Metadata["is_cached"] = "false"
+	}
+	taskCopy.Metadata["cache_key"] = taskEntry.CacheKey
+	taskCopy.Metadata["cache_action"] = taskEntry.CacheAction.String()
+	
+	return taskCopy
+}
+
 // GetQueueUpdateResponse creates a queue update response for streaming
 func (se *SchedulerEngine) GetQueueUpdateResponse(updateReason string, includeMetadata bool) *pb.QueueUpdateResponse {
+	// CRITICAL: Resort queue FIRST to ensure latest sorted order before sending
+	// This coordinates resorting with streaming to guarantee latest queue order
+	// Note: resortQueue() acquires its own lock, so we call it before acquiring our lock
+	if se.config.Queue.EnablePeriodicResort {
+		se.resortQueue() // This will lock internally
+	}
+	
 	se.mu.RLock()
 	defer se.mu.RUnlock()
 
-	// Get all tasks from queue
+	// Get all tasks from queue (now freshly resorted)
 	allTasks := se.queue.GetAll()
 	
-	// Convert to proto tasks
+	// Convert to proto tasks WITH cache information in metadata
 	protoTasks := make([]*pb.Task, 0, len(allTasks))
 	for _, taskEntry := range allTasks {
-		protoTasks = append(protoTasks, taskEntry.Task)
+		protoTask := se.taskEntryToProtoTaskWithCache(taskEntry)
+		protoTasks = append(protoTasks, protoTask)
 	}
 
 	// Calculate confidence score (simplified)
