@@ -21,10 +21,25 @@ import org.fog.placement.Controller;
 import org.patch.proto.IfogsimAllocation.*;
 import org.patch.proto.IfogsimCommon.*;
 
+import org.cloudbus.cloudsim.Host;
+import org.cloudbus.cloudsim.Pe;
+import org.cloudbus.cloudsim.Storage;
+import org.cloudbus.cloudsim.VmAllocationPolicy;
+import org.cloudbus.cloudsim.provisioners.RamProvisionerSimple;
+import org.cloudbus.cloudsim.sdn.overbooking.BwProvisionerOverbooking;
+import org.cloudbus.cloudsim.sdn.overbooking.PeProvisionerOverbooking;
+import org.fog.entities.FogDeviceCharacteristics;
+import org.cloudbus.cloudsim.power.PowerHost;
+import org.fog.policy.AppModuleAllocationPolicy;
+import org.fog.scheduler.StreamOperatorScheduler;
+import org.fog.utils.Config;
+import org.fog.utils.FogUtils;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.logging.Level;
 
 /**
@@ -68,14 +83,86 @@ public class RLCloudDevice extends FogDevice {
     private double totalAllocationLatency = 0.0;
     private double simulationTime = 0.0;
 
+    // Debug counter for task forwarding
+    private int forwardTaskCount = 0;
+
+    /**
+     * Wrapper class to hold device components for initialization
+     */
+    private static class DeviceComponents {
+        final FogDeviceCharacteristics characteristics;
+        final VmAllocationPolicy vmAllocationPolicy;
+        final LinkedList<Storage> storageList;
+
+        DeviceComponents(FogDeviceCharacteristics characteristics,
+                VmAllocationPolicy vmAllocationPolicy,
+                LinkedList<Storage> storageList) {
+            this.characteristics = characteristics;
+            this.vmAllocationPolicy = vmAllocationPolicy;
+            this.storageList = storageList;
+        }
+    }
+
+    /**
+     * Helper method to create host and characteristics for proper initialization
+     */
+    private static DeviceComponents createDeviceComponents(String name, long mips, int ram, PowerModel powerModel) {
+        List<Pe> peList = new ArrayList<Pe>();
+        peList.add(new Pe(0, new PeProvisionerOverbooking(mips)));
+
+        int hostId = FogUtils.generateEntityId();
+        long storage = 1000000;
+        int bw = 10000;
+
+        PowerHost host = new PowerHost(
+                hostId,
+                new RamProvisionerSimple(ram),
+                new BwProvisionerOverbooking(bw),
+                storage,
+                peList,
+                new StreamOperatorScheduler(peList),
+                powerModel);
+
+        List<Host> hostList = new ArrayList<Host>();
+        hostList.add(host);
+
+        VmAllocationPolicy vmAllocationPolicy = new AppModuleAllocationPolicy(hostList);
+
+        String arch = Config.FOG_DEVICE_ARCH;
+        String os = Config.FOG_DEVICE_OS;
+        String vmm = Config.FOG_DEVICE_VMM;
+        double time_zone = Config.FOG_DEVICE_TIMEZONE;
+        double cost = Config.FOG_DEVICE_COST;
+        double costPerMem = Config.FOG_DEVICE_COST_PER_MEMORY;
+        double costPerStorage = Config.FOG_DEVICE_COST_PER_STORAGE;
+        double costPerBw = Config.FOG_DEVICE_COST_PER_BW;
+
+        FogDeviceCharacteristics characteristics = new FogDeviceCharacteristics(
+                arch, os, vmm, host, time_zone, cost, costPerMem,
+                costPerStorage, costPerBw);
+
+        LinkedList<Storage> storageList = new LinkedList<Storage>();
+
+        return new DeviceComponents(characteristics, vmAllocationPolicy, storageList);
+    }
+
     /**
      * Constructor matching the parent FogDevice constructor
+     * Creates host and characteristics first, then calls full FogDevice constructor
      */
     public RLCloudDevice(String name, long mips, int ram,
             double uplinkBandwidth, double downlinkBandwidth,
             double ratePerMips, PowerModel powerModel,
             String allocationHost, int allocationPort) throws Exception {
-        super(name, mips, ram, uplinkBandwidth, downlinkBandwidth, ratePerMips, powerModel);
+        // Call full FogDevice constructor - super() must be first, so we inline the
+        // helper call
+        super(name,
+                createDeviceComponents(name, mips, ram, powerModel).characteristics,
+                createDeviceComponents(name, mips, ram, powerModel).vmAllocationPolicy,
+                createDeviceComponents(name, mips, ram, powerModel).storageList,
+                10.0, // schedulingInterval
+                uplinkBandwidth, downlinkBandwidth, 0.0, // uplinkLatency default
+                ratePerMips);
 
         // Store connection details
         this.allocationHost = allocationHost;
@@ -98,13 +185,25 @@ public class RLCloudDevice extends FogDevice {
 
     /**
      * Constructor with busy/idle power
+     * Creates host and characteristics first, then calls full FogDevice constructor
      */
     public RLCloudDevice(String name, long mips, int ram,
             double uplinkBandwidth, double downlinkBandwidth,
             double ratePerMips, double busyPower, double idlePower,
             String allocationHost, int allocationPort) throws Exception {
-        super(name, mips, ram, uplinkBandwidth, downlinkBandwidth, ratePerMips,
-                new org.cloudbus.cloudsim.power.models.PowerModelLinear(busyPower, idlePower));
+        // Call full FogDevice constructor - super() must be first, so everything is
+        // inlined
+        super(name,
+                createDeviceComponents(name, mips, ram,
+                        new org.cloudbus.cloudsim.power.models.PowerModelLinear(busyPower, idlePower)).characteristics,
+                createDeviceComponents(name, mips, ram,
+                        new org.cloudbus.cloudsim.power.models.PowerModelLinear(busyPower,
+                                idlePower)).vmAllocationPolicy,
+                createDeviceComponents(name, mips, ram,
+                        new org.cloudbus.cloudsim.power.models.PowerModelLinear(busyPower, idlePower)).storageList,
+                10.0, // schedulingInterval
+                uplinkBandwidth, downlinkBandwidth, 0.0, // uplinkLatency default
+                ratePerMips);
 
         // Store connection details
         this.allocationHost = allocationHost;
@@ -393,12 +492,23 @@ public class RLCloudDevice extends FogDevice {
      * @param allocatedNodeId The allocated fog node ID
      */
     private void forwardTaskToFogNode(Tuple task, String allocatedNodeId) {
+        forwardTaskCount++;
+
         try {
             // Find fog node by ID
             int fogNodeId = findFogNodeById(allocatedNodeId);
             if (fogNodeId > 0) {
                 // Send task to fog node's unscheduled queue
                 send(fogNodeId, 0, FogEvents.TUPLE_ARRIVAL, task);
+
+                // Log forwarding (first 100, then every 50th)
+                if (forwardTaskCount <= 100 || forwardTaskCount % 50 == 0) {
+                    System.out.println(String.format(
+                            "[CLOUD-FORWARD] Cloud (ID:%d) - Task %d forwarded to fog node %d (allocated: %s) at time %.2f (Total forwarded: %d)",
+                            getId(), task.getCloudletId(), fogNodeId, allocatedNodeId, CloudSim.clock(),
+                            forwardTaskCount));
+                }
+
                 logger.info("Task " + task.getCloudletId() + " forwarded to fog node " + fogNodeId + " (allocated: "
                         + allocatedNodeId + ")");
 

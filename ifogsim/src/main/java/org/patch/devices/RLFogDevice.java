@@ -16,6 +16,7 @@ import org.patch.integration.StreamingQueueObserver;
 import org.patch.processing.TaskExecutionEngine;
 import org.patch.processing.TaskCompletionDetector;
 import org.patch.utils.TupleFactory;
+import org.cloudbus.cloudsim.power.models.PowerModel;
 import org.cloudbus.cloudsim.power.models.PowerModelLinear;
 import org.fog.utils.FogEvents;
 import org.fog.utils.Logger;
@@ -24,7 +25,24 @@ import org.fog.application.AppModule;
 import org.patch.proto.IfogsimScheduler.*;
 import org.patch.proto.IfogsimCommon.*;
 
+import org.cloudbus.cloudsim.Host;
+import org.cloudbus.cloudsim.Pe;
+import org.cloudbus.cloudsim.Storage;
+import org.cloudbus.cloudsim.VmAllocationPolicy;
+import org.cloudbus.cloudsim.provisioners.RamProvisionerSimple;
+import org.cloudbus.cloudsim.sdn.overbooking.BwProvisionerOverbooking;
+import org.cloudbus.cloudsim.sdn.overbooking.PeProvisionerOverbooking;
+import org.fog.entities.FogDeviceCharacteristics;
+import org.cloudbus.cloudsim.power.PowerHost;
+import org.fog.policy.AppModuleAllocationPolicy;
+import org.fog.scheduler.StreamOperatorScheduler;
+import org.fog.utils.Config;
+import org.fog.utils.FogUtils;
+
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -68,18 +86,94 @@ public class RLFogDevice extends FogDevice {
     private int cacheHitCount = 0; // Track cache performance metrics
     private int cacheMissCount = 0; // Track cache performance metrics
 
+    // Debug counters for task tracking
+    private int internalTaskCount = 0;
+    private int externalTaskCount = 0;
+
     // RL metrics tracking - now using centralized statistics manager
     // Note: Individual device metrics are tracked via RLStatisticsManager
 
     /**
+     * Wrapper class to hold device components for initialization
+     */
+    private static class DeviceComponents {
+        final FogDeviceCharacteristics characteristics;
+        final VmAllocationPolicy vmAllocationPolicy;
+        final LinkedList<Storage> storageList;
+
+        DeviceComponents(FogDeviceCharacteristics characteristics,
+                VmAllocationPolicy vmAllocationPolicy,
+                LinkedList<Storage> storageList) {
+            this.characteristics = characteristics;
+            this.vmAllocationPolicy = vmAllocationPolicy;
+            this.storageList = storageList;
+        }
+    }
+
+    /**
+     * Helper method to create host and characteristics for proper initialization
+     */
+    private static DeviceComponents createDeviceComponents(String name, long mips, int ram,
+            PowerModelLinear powerModel) {
+        List<Pe> peList = new ArrayList<Pe>();
+        peList.add(new Pe(0, new PeProvisionerOverbooking(mips)));
+
+        int hostId = FogUtils.generateEntityId();
+        long storage = 1000000;
+        int bw = 10000;
+
+        PowerHost host = new PowerHost(
+                hostId,
+                new RamProvisionerSimple(ram),
+                new BwProvisionerOverbooking(bw),
+                storage,
+                peList,
+                new StreamOperatorScheduler(peList),
+                powerModel);
+
+        List<Host> hostList = new ArrayList<Host>();
+        hostList.add(host);
+
+        VmAllocationPolicy vmAllocationPolicy = new AppModuleAllocationPolicy(hostList);
+
+        String arch = Config.FOG_DEVICE_ARCH;
+        String os = Config.FOG_DEVICE_OS;
+        String vmm = Config.FOG_DEVICE_VMM;
+        double time_zone = Config.FOG_DEVICE_TIMEZONE;
+        double cost = Config.FOG_DEVICE_COST;
+        double costPerMem = Config.FOG_DEVICE_COST_PER_MEMORY;
+        double costPerStorage = Config.FOG_DEVICE_COST_PER_STORAGE;
+        double costPerBw = Config.FOG_DEVICE_COST_PER_BW;
+
+        FogDeviceCharacteristics characteristics = new FogDeviceCharacteristics(
+                arch, os, vmm, host, time_zone, cost, costPerMem,
+                costPerStorage, costPerBw);
+
+        LinkedList<Storage> storageList = new LinkedList<Storage>();
+
+        return new DeviceComponents(characteristics, vmAllocationPolicy, storageList);
+    }
+
+    /**
      * Constructor matching the parent FogDevice constructor
+     * Creates host and characteristics first, then calls full FogDevice constructor
      */
     public RLFogDevice(String name, long mips, int ram,
             double uplinkBandwidth, double downlinkBandwidth,
             double ratePerMips, double busyPower, double idlePower,
             String rlServerHost, int rlServerPort) throws Exception {
-        super(name, mips, ram, uplinkBandwidth, downlinkBandwidth, ratePerMips,
-                new PowerModelLinear(busyPower, idlePower));
+        // Call full FogDevice constructor - super() must be first, so everything is
+        // inlined
+        super(name,
+                createDeviceComponents(name, mips, ram,
+                        new PowerModelLinear(busyPower, idlePower)).characteristics,
+                createDeviceComponents(name, mips, ram,
+                        new PowerModelLinear(busyPower, idlePower)).vmAllocationPolicy,
+                createDeviceComponents(name, mips, ram,
+                        new PowerModelLinear(busyPower, idlePower)).storageList,
+                10.0, // schedulingInterval
+                uplinkBandwidth, downlinkBandwidth, 0.0, // uplinkLatency default
+                ratePerMips);
 
         // Initialize two-queue system
         this.unscheduledQueue = new UnscheduledQueue();
@@ -249,7 +343,7 @@ public class RLFogDevice extends FogDevice {
     }
 
     /**
-     * Override processOtherEvent to intercept tuple arrivals
+     * Override processOtherEvent to intercept tuple arrivals and module deployment
      */
     @Override
     protected void processOtherEvent(SimEvent ev) {
@@ -260,6 +354,14 @@ public class RLFogDevice extends FogDevice {
                 } else {
                     super.processOtherEvent(ev);
                 }
+                break;
+            case FogEvents.LAUNCH_MODULE:
+                // Explicitly handle LAUNCH_MODULE to ensure processModuleArrival is called
+                processModuleArrival(ev);
+                break;
+            case FogEvents.APP_SUBMIT:
+                // Explicitly handle APP_SUBMIT to ensure processAppSubmit is called
+                processAppSubmit(ev);
                 break;
             case RL_STATE_REPORT:
                 if (rlEnabled) {
@@ -304,6 +406,18 @@ public class RLFogDevice extends FogDevice {
      */
     protected void processTupleArrivalRL(SimEvent ev) {
         Tuple tuple = (Tuple) ev.getData();
+        String sourceName = CloudSim.getEntityName(ev.getSource());
+        boolean isFromCloud = sourceName != null && sourceName.contains("cloud");
+        boolean isFromSensor = sourceName != null && sourceName.contains("sensor");
+
+        // Log task arrival (every 10th task or first 20 to avoid log bloat)
+        if ((isFromCloud && (externalTaskCount < 20 || externalTaskCount % 10 == 0)) ||
+                (isFromSensor && (internalTaskCount < 20 || internalTaskCount % 10 == 0))) {
+            System.out.println(String.format(
+                    "[TASK-FLOW] FogNode %s (ID:%d) - Received task %d at time %.2f - Source: %s (Cloud:%s, Sensor:%s)",
+                    getName(), getId(), tuple.getCloudletId(), CloudSim.clock(), sourceName, isFromCloud,
+                    isFromSensor));
+        }
 
         // Send ACK back to source
         send(ev.getSource(), CloudSim.getMinTimeBetweenEvents(), FogEvents.TUPLE_ACK);
@@ -319,13 +433,32 @@ public class RLFogDevice extends FogDevice {
             return;
         }
 
-        // Check if this is an external task from cloud (no specific module destination)
-        if (tuple.getDestModuleName() == null || tuple.getDestModuleName().isEmpty()) {
+        // Check if this is an external task from cloud
+        // External tasks have destModuleName="external_task" or tupleType="EXTERNAL"
+        // OR if destModuleName is null/empty and source is cloud
+        boolean isExternalTask = (tuple.getTupleType() != null && tuple.getTupleType().equals("EXTERNAL")) ||
+                (tuple.getDestModuleName() != null && tuple.getDestModuleName().equals("external_task")) ||
+                ((tuple.getDestModuleName() == null || tuple.getDestModuleName().isEmpty()) && isFromCloud);
+
+        if (isExternalTask) {
+            externalTaskCount++;
             processExternalTaskArrival(ev);
             return;
         }
 
         // Check if this tuple's destination module is on this device
+        // Debug: Log module matching for internal tasks
+        boolean appIdInMap = appToModulesMap.containsKey(tuple.getAppId());
+        boolean moduleInApp = appIdInMap && appToModulesMap.get(tuple.getAppId()).contains(tuple.getDestModuleName());
+
+        if (isFromSensor && (internalTaskCount <= 20 || internalTaskCount % 10 == 0)) {
+            System.out.println(String.format(
+                    "[MODULE-MATCH] FogNode %s (ID:%d) - Task %d: AppId='%s', DestModule='%s', AppIdInMap=%s, ModuleInApp=%s, AppModules=%s",
+                    getName(), getId(), tuple.getCloudletId(), tuple.getAppId(), tuple.getDestModuleName(),
+                    appIdInMap, moduleInApp,
+                    appIdInMap ? appToModulesMap.get(tuple.getAppId()).toString() : "N/A"));
+        }
+
         if (appToModulesMap.containsKey(tuple.getAppId()) &&
                 appToModulesMap.get(tuple.getAppId()).contains(tuple.getDestModuleName())) {
 
@@ -337,6 +470,12 @@ public class RLFogDevice extends FogDevice {
 
             if (vmId < 0 || (tuple.getModuleCopyMap().containsKey(tuple.getDestModuleName()) &&
                     tuple.getModuleCopyMap().get(tuple.getDestModuleName()) != vmId)) {
+                // Log why VM matching failed
+                if (isFromSensor && (internalTaskCount <= 20 || internalTaskCount % 10 == 0)) {
+                    System.out.println(String.format(
+                            "[MODULE-MATCH] FogNode %s (ID:%d) - Task %d: VM matching FAILED - vmId=%d, ModuleCopyMap=%s",
+                            getName(), getId(), tuple.getCloudletId(), vmId, tuple.getModuleCopyMap()));
+                }
                 return;
             }
 
@@ -344,7 +483,15 @@ public class RLFogDevice extends FogDevice {
             updateTimingsOnReceipt(tuple);
 
             // Add to unscheduled queue (waiting for scheduler)
+            internalTaskCount++;
             unscheduledQueue.addTask(tuple, vmId, CloudSim.clock());
+
+            // Log unscheduled queue state (every 10th task or first 20)
+            if (internalTaskCount <= 20 || internalTaskCount % 10 == 0) {
+                System.out.println(String.format(
+                        "[UNSCHEDULED-QUEUE] FogNode %s (ID:%d) - Added internal task %d to unscheduled queue. Queue size: %d, Total internal tasks: %d",
+                        getName(), getId(), tuple.getCloudletId(), unscheduledQueue.size(), internalTaskCount));
+            }
 
             // Send tasks to scheduler gRPC server (non-blocking)
             schedulerIntegration.sendTasksToScheduler();
@@ -354,6 +501,12 @@ public class RLFogDevice extends FogDevice {
                 schedule(getId(), 0, RL_PROCESS_NEXT_TASK);
             }
         } else if (tuple.getDestModuleName() != null) {
+            // Module not found on this device - forward it
+            if (isFromSensor && (internalTaskCount <= 20 || internalTaskCount % 10 == 0)) {
+                System.out.println(String.format(
+                        "[MODULE-MATCH] FogNode %s (ID:%d) - Task %d: Module '%s' NOT on this device, FORWARDING (dir=%d)",
+                        getName(), getId(), tuple.getCloudletId(), tuple.getDestModuleName(), tuple.getDirection()));
+            }
             if (tuple.getDirection() == Tuple.UP)
                 sendUp(tuple);
             else if (tuple.getDirection() == Tuple.DOWN) {
@@ -361,6 +514,11 @@ public class RLFogDevice extends FogDevice {
                     sendDown(tuple, childId);
             }
         } else {
+            if (isFromSensor && (internalTaskCount <= 20 || internalTaskCount % 10 == 0)) {
+                System.out.println(String.format(
+                        "[MODULE-MATCH] FogNode %s (ID:%d) - Task %d: DestModuleName is NULL, sending UP",
+                        getName(), getId(), tuple.getCloudletId()));
+            }
             sendUp(tuple);
         }
     }
@@ -866,6 +1024,72 @@ public class RLFogDevice extends FogDevice {
         schedule(getId(), 100, RL_UPDATE_SCHEDULED_QUEUE);
 
         logger.info("External task " + externalTask.getCloudletId() + " added to unscheduled queue");
+    }
+
+    /**
+     * Override processModuleArrival to ensure proper VM creation and
+     * appToModulesMap population
+     * Verifies VM allocation success and adds debug logging
+     */
+    @Override
+    protected void processModuleArrival(SimEvent ev) {
+        AppModule module = (AppModule) ev.getData();
+        String appId = module.getAppId();
+
+        // Check for duplicate modules before creating
+        if (appToModulesMap.containsKey(appId) &&
+                appToModulesMap.get(appId).contains(module.getName())) {
+            logger.warning("Module " + module.getName() + " already deployed on " + getName());
+            System.out.println(String.format(
+                    "[MODULE-DEPLOY] Device %s (ID:%d) - Module '%s' already exists for AppId='%s'",
+                    getName(), getId(), module.getName(), appId));
+            return;
+        }
+
+        // Initialize appToModulesMap if needed
+        if (!appToModulesMap.containsKey(appId)) {
+            appToModulesMap.put(appId, new ArrayList<String>());
+        }
+        appToModulesMap.get(appId).add(module.getName());
+
+        // Call parent's processVmCreate
+        processVmCreate(ev, false);
+
+        // Verify VM allocation succeeded
+        boolean vmAllocated = getVmAllocationPolicy().allocateHostForVm(module);
+
+        if (vmAllocated) {
+            // Verify VM is in the VM list
+            if (!getHost().getVmList().contains(module)) {
+                getHost().getVmList().add(module);
+            }
+
+            if (module.isBeingInstantiated()) {
+                module.setBeingInstantiated(false);
+            }
+
+            initializePeriodicTuples(module);
+
+            module.updateVmProcessing(CloudSim.clock(), getVmAllocationPolicy().getHost(module).getVmScheduler()
+                    .getAllocatedMipsForVm(module));
+
+            // Debug log to confirm module deployment and appToModulesMap population
+            System.out.println(String.format(
+                    "[MODULE-DEPLOY] Device %s (ID:%d) - Module '%s' arrived for AppId='%s'. appToModulesMap: %s",
+                    getName(), getId(), module.getName(), appId, appToModulesMap.toString()));
+            logger.info("Module " + module.getName() + " successfully deployed on " + getName() + " (VM ID: "
+                    + module.getId() + ")");
+        } else {
+            logger.severe("VM allocation failed for module " + module.getName() + " on " + getName());
+            System.out.println(String.format(
+                    "[MODULE-DEPLOY] Device %s (ID:%d) - Module '%s' VM allocation FAILED for AppId='%s'",
+                    getName(), getId(), module.getName(), appId));
+            // Remove from appToModulesMap since VM creation failed
+            appToModulesMap.get(appId).remove(module.getName());
+            if (appToModulesMap.get(appId).isEmpty()) {
+                appToModulesMap.remove(appId);
+            }
+        }
     }
 
     /**
