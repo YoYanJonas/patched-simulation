@@ -161,16 +161,28 @@ public class StreamingQueueObserver {
             try {
                 // Check if simulation is still running first
                 // CloudSim.clock() might return stale values after simulation ends
-                if (!CloudSim.running()) {
+                // NOTE: CloudSim.running() returns false BEFORE simulation starts, so we check
+                // if the clock has advanced to determine if simulation has actually started
+                double currentTime = CloudSim.clock();
+                if (!CloudSim.running() && currentTime > 0.0) {
+                    // Simulation was running but has now stopped (clock > 0 means it started)
                     logger.info(String.format(
-                            "Stopping streaming loop for device %d - Simulation is no longer running",
-                            deviceId));
+                            "Stopping streaming loop for device %d - Simulation is no longer running (time: %.2f)",
+                            deviceId, currentTime));
                     shouldStop.set(true);
                     break;
                 }
+                
+                // If simulation hasn't started yet (clock == 0), wait a bit before checking again
+                if (!CloudSim.running() && currentTime == 0.0) {
+                    logger.fine(String.format(
+                            "Waiting for simulation to start (device %d)...",
+                            deviceId));
+                    Thread.sleep(100); // Short wait before retrying
+                    continue;
+                }
 
                 // Check if simulation has ended
-                double currentTime = CloudSim.clock();
                 double maxSimulationTime = Config.MAX_SIMULATION_TIME;
 
                 // Safety check: if currentTime is abnormally large, simulation might have ended
@@ -415,7 +427,26 @@ public class StreamingQueueObserver {
                 return null;
             }
 
-            // Create TaskInfo with default values (proto doesn't have all fields)
+            // Extract cache information from Task metadata
+            boolean isCached = false;
+            String cacheKey = "";
+            
+            if (task.getMetadataMap() != null) {
+                String isCachedStr = task.getMetadataMap().get("is_cached");
+                if (isCachedStr != null && isCachedStr.equals("true")) {
+                    isCached = true;
+                }
+                cacheKey = task.getMetadataMap().getOrDefault("cache_key", "");
+            }
+            
+            // [DEBUG] Log cache info extraction
+            if (isCached) {
+                System.out.println(String.format(
+                        "[FLOW-QUEUE-OBSERVER] Time: %.2f - FogNode (ID:%d) - Task %s has cache info: isCached=true, cacheKey=%s",
+                        CloudSim.clock(), deviceId, task.getTaskId(), cacheKey));
+            }
+
+            // Create TaskInfo with cache information from metadata
             return new ScheduledQueue.TaskInfo(
                     tuple,
                     0, // moduleId - will be set by tuple processing
@@ -423,8 +454,8 @@ public class StreamingQueueObserver {
                     (long) CloudSim.clock(), // estimatedStartTime - use simulation time
                     (long) (CloudSim.clock() + task.getExecutionTime()), // estimatedCompletionTime - use simulation
                                                                          // time
-                    false, // isCached
-                    "" // cacheKey
+                    isCached, // isCached - from metadata
+                    cacheKey  // cacheKey - from metadata
             );
 
         } catch (Exception e) {
