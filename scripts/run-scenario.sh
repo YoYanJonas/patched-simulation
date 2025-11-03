@@ -164,7 +164,6 @@ for i in $(seq 1 $NUM_RUNS); do
     else
         FAILED_COUNT=$((FAILED_COUNT + 1))
         echo "✗ Run $i simulation failed"
-        # Still try to finish (stop containers)
         "$SCRIPT_DIR/finish-run.sh" "$SCENARIO_NAME" "$RUN_ID" || true
     fi
     
