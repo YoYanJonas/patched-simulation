@@ -80,12 +80,26 @@
             <artifactId>grpc-stub</artifactId>
             <version>1.56.0</version>
         </dependency>
+        
+        <!-- PerfMark (required by gRPC for performance tracking) -->
+        <dependency>
+            <groupId>io.perfmark</groupId>
+            <artifactId>perfmark-api</artifactId>
+            <version>0.25.0</version>
+        </dependency>
 
         <!-- dotenv -->
         <dependency>
             <groupId>io.github.cdimascio</groupId>
             <artifactId>dotenv-java</artifactId>
             <version>2.2.4</version>
+        </dependency>
+        
+        <!-- SnakeYAML for YAML parsing -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
         </dependency>
     </dependencies>
 
