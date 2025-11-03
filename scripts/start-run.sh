@@ -73,21 +73,56 @@ wait_for_services() {
 
 wait_for_services || echo "Proceeding anyway (some services may not be healthy)"
 
-# Start iFogSim simulation (this will block until completion)
-echo "Starting iFogSim simulation..."
+# Start iFogSim simulation locally (not in Docker)
+echo "Starting iFogSim simulation locally..."
 echo "--- Simulation output ---"
-docker compose up ifogsim
 
-# Check exit code
-EXIT_CODE=$?
+# Set environment variables for local execution
+export CONFIG_DIR="$PROJECT_ROOT/config/${SCENARIO_NAME}/simulation"
+export REPORT_DIR="$REPORT_DIR/simulation"
+export ALLOCATION_HOST=localhost
+export ALLOCATION_PORT=50051
+export SCHEDULER_1_HOST=localhost
+export SCHEDULER_1_PORT=50052
+export SCHEDULER_2_HOST=localhost
+export SCHEDULER_2_PORT=50053
+export SCHEDULER_3_HOST=localhost
+export SCHEDULER_3_PORT=50054
+
+# Additional environment variables for configuration
+export CLOUD_RL_SERVER_HOST=localhost
+export CLOUD_RL_SERVER_PORT=50051
+export EXTERNAL_TASK_SERVER_HOST=localhost
+export EXTERNAL_TASK_SERVER_PORT=50051
+export PLACEMENT_RL_SERVER_HOST=localhost
+export PLACEMENT_RL_SERVER_PORT=50051
+
+# Log file in project root
+LOG_FILE="$PROJECT_ROOT/x.log"
+echo "Logs will be captured to: $LOG_FILE"
+
+# Run ifogsim locally using Maven with log capture
+cd "$PROJECT_ROOT/ifogsim"
+
+# Run simulation and capture both stdout and stderr to x.log using tee
+# This preserves console output while also saving to file
+mvn exec:java -Dexec.mainClass="scenarios.RL3FogSimulation" \
+    -Dexec.args="" \
+    -Dexec.classpathScope=compile \
+    2>&1 | tee "$LOG_FILE"
+
+# Check exit code (Maven exit code, not tee)
+EXIT_CODE=${PIPESTATUS[0]}
 if [ $EXIT_CODE -eq 0 ]; then
     echo "================================================================================"
     echo "Simulation completed successfully"
     echo "================================================================================"
+    echo "Logs saved to: $LOG_FILE"
 else
     echo "================================================================================"
     echo "Simulation exited with error code: $EXIT_CODE"
     echo "================================================================================"
+    echo "Check logs in: $LOG_FILE"
     exit $EXIT_CODE
 fi
 

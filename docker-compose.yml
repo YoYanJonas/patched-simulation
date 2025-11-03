@@ -142,46 +142,9 @@ services:
       start_period: 10s
 
   # ============================================================
-  # iFogSim Simulation (short-lived, runs to completion)
+  # iFogSim Simulation - NOW RUNS LOCALLY (not in Docker)
+  # Removed from docker-compose - see scripts/start-run.sh for local execution
   # ============================================================
-  ifogsim:
-    build:
-      context: ./ifogsim
-      dockerfile: Dockerfile
-    container_name: ifogsim
-    hostname: ifogsim
-    networks:
-      - simulation-network
-    volumes:
-      # Config volume (read-only)
-      - ./config/${SCENARIO_NAME:-rl-full-feature}/simulation:/config:ro
-      # Reports (per-run)
-      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/simulation:/app/reports:rw
-      # Logs
-      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/simulation:/app/logs:rw
-    environment:
-      - CONFIG_DIR=${CONFIG_DIR:-/config}
-      - REPORT_DIR=${REPORT_DIR:-/app/reports}
-      - ALLOCATION_HOST=allocator
-      - ALLOCATION_PORT=50051
-      - SCHEDULER_1_HOST=scheduler-1
-      - SCHEDULER_1_PORT=50052
-      - SCHEDULER_2_HOST=scheduler-2
-      - SCHEDULER_2_PORT=50052
-      - SCHEDULER_3_HOST=scheduler-3
-      - SCHEDULER_3_PORT=50052
-      - JAVA_OPTS=-Xmx2g -Xms1g -Djava.awt.headless=true
-    command:
-      [
-        'java',
-        '-cp',
-        'target/classes:target/dependency/*',
-        'scenarios.RL3FogSimulation',
-      ]
-    restart: 'no'
-    depends_on:
-      scheduler-3:
-        condition: service_healthy
 
 networks:
   simulation-network:

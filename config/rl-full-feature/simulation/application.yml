@@ -57,20 +57,20 @@ schedulers:
   # Scheduler instances (3 instances for 3 fog nodes)
   instances:
     scheduler-1:
-      host: ${SCHEDULER_1_HOST:scheduler-1}
+      host: ${SCHEDULER_1_HOST:localhost}
       port: ${SCHEDULER_1_PORT:50052}
       name: grpc-task-scheduler-1
       max-fog-nodes: 1 # Handles fog node 1
 
     scheduler-2:
-      host: ${SCHEDULER_2_HOST:scheduler-2}
-      port: ${SCHEDULER_2_PORT:50052}
+      host: ${SCHEDULER_2_HOST:localhost}
+      port: ${SCHEDULER_2_PORT:50053}
       name: grpc-task-scheduler-2
       max-fog-nodes: 1 # Handles fog node 2
 
     scheduler-3:
-      host: ${SCHEDULER_3_HOST:scheduler-3}
-      port: ${SCHEDULER_3_PORT:50052}
+      host: ${SCHEDULER_3_HOST:localhost}
+      port: ${SCHEDULER_3_PORT:50054}
       name: grpc-task-scheduler-3
       max-fog-nodes: 1 # Handles fog node 3
 
@@ -146,15 +146,15 @@ rl:
   # RL server configurations
   servers:
     cloud:
-      host: ${CLOUD_RL_SERVER_HOST:allocator}
+      host: ${CLOUD_RL_SERVER_HOST:localhost}
       port: ${CLOUD_RL_SERVER_PORT:50051}
       enabled: true # RL enabled for cloud
     external-task:
-      host: ${EXTERNAL_TASK_SERVER_HOST:allocator}
+      host: ${EXTERNAL_TASK_SERVER_HOST:localhost}
       port: ${EXTERNAL_TASK_SERVER_PORT:50051}
       enabled: true
     placement:
-      host: ${PLACEMENT_RL_SERVER_HOST:allocator}
+      host: ${PLACEMENT_RL_SERVER_HOST:localhost}
       port: ${PLACEMENT_RL_SERVER_PORT:50051}
       enabled: true
 
@@ -187,7 +187,7 @@ rl:
 # Allocation Service Configuration (go-grpc-server)
 allocation:
   service:
-    host: ${ALLOCATION_HOST:allocator}
+    host: ${ALLOCATION_HOST:localhost}
     port: ${ALLOCATION_PORT:50051}
     name: go-grpc-server
 
