@@ -24,6 +24,7 @@ type Config struct {
 	Queue            QueueConfig            `mapstructure:"queue"`
 	AlgorithmManager AlgorithmManagerConfig `mapstructure:"algorithm_manager"`
 	Caching          CachingConfig          `mapstructure:"caching"`
+	CacheAgent       CacheAgentConfig       `mapstructure:"cache_agent"`
 }
 
 // ServerConfig contains server-related settings
@@ -268,11 +269,22 @@ type AlgorithmManagerConfig struct {
 
 // CachingConfig contains task caching settings
 type CachingConfig struct {
-	Enabled                bool `mapstructure:"enabled"`
-	RepeatThreshold        int  `mapstructure:"repeat_threshold"`
-	CacheTTLHours          int  `mapstructure:"cache_ttl_hours"`
-	MaxTrackedTasks        int  `mapstructure:"max_tracked_tasks"`
-	CleanupIntervalMinutes int  `mapstructure:"cleanup_interval_minutes"`
+	Enabled                bool    `mapstructure:"enabled"`
+	RepeatThreshold        int     `mapstructure:"repeat_threshold"`
+	CacheTTLHours          float64 `mapstructure:"cache_ttl_hours"` // Allow fractional hours (e.g., 0.05 = 3 minutes)
+	MaxTrackedTasks        int     `mapstructure:"max_tracked_tasks"`
+	CleanupIntervalMinutes int     `mapstructure:"cleanup_interval_minutes"`
+}
+
+// CacheAgentConfig contains cache RL agent settings
+type CacheAgentConfig struct {
+	Enabled         bool    `mapstructure:"enabled"`
+	Algorithm       string  `mapstructure:"algorithm"` // "qlearning"
+	LearningRate    float64 `mapstructure:"learning_rate"`
+	DiscountFactor  float64 `mapstructure:"discount_factor"`
+	ExplorationRate float64 `mapstructure:"exploration_rate"`
+	MinExploration  float64 `mapstructure:"min_exploration"`
+	ExplorationDecay float64 `mapstructure:"exploration_decay"`
 }
 
 var AppConfig Config
@@ -952,6 +964,49 @@ func CreateDirectories() error {
 	return nil
 }
 
+// ValidateCacheAgentConfiguration validates cache agent configuration
+func ValidateCacheAgentConfiguration(config *CacheAgentConfig) error {
+	if !config.Enabled {
+		return nil // No validation needed if cache agent is disabled
+	}
+
+	// Validate algorithm
+	if config.Algorithm != "qlearning" {
+		return fmt.Errorf("invalid cache agent algorithm: %s (only 'qlearning' supported)", config.Algorithm)
+	}
+
+	// Validate learning rate
+	if config.LearningRate <= 0 || config.LearningRate > 1 {
+		return fmt.Errorf("invalid cache agent learning rate: %f (must be 0 < lr <= 1)", config.LearningRate)
+	}
+
+	// Validate discount factor
+	if config.DiscountFactor <= 0 || config.DiscountFactor > 1 {
+		return fmt.Errorf("invalid cache agent discount factor: %f (must be 0 < gamma <= 1)", config.DiscountFactor)
+	}
+
+	// Validate exploration rate
+	if config.ExplorationRate < 0 || config.ExplorationRate > 1 {
+		return fmt.Errorf("invalid cache agent exploration rate: %f (must be 0 <= epsilon <= 1)", config.ExplorationRate)
+	}
+
+	// Validate min exploration
+	if config.MinExploration < 0 || config.MinExploration > 1 {
+		return fmt.Errorf("invalid cache agent min exploration: %f (must be 0 <= min_epsilon <= 1)", config.MinExploration)
+	}
+
+	if config.MinExploration > config.ExplorationRate {
+		return fmt.Errorf("min_exploration (%f) must be <= exploration_rate (%f)", config.MinExploration, config.ExplorationRate)
+	}
+
+	// Validate exploration decay
+	if config.ExplorationDecay <= 0 || config.ExplorationDecay > 1 {
+		return fmt.Errorf("invalid cache agent exploration decay: %f (must be 0 < decay <= 1)", config.ExplorationDecay)
+	}
+
+	return nil
+}
+
 // ValidateCachingConfiguration validates cache configuration
 func ValidateCachingConfiguration(config *CachingConfig) error {
 	if !config.Enabled {
@@ -967,13 +1022,13 @@ func ValidateCachingConfiguration(config *CachingConfig) error {
 		return fmt.Errorf("repeat_threshold too high (max 100), got: %d", config.RepeatThreshold)
 	}
 
-	// Validate cache TTL
-	if config.CacheTTLHours < 1 {
-		return fmt.Errorf("cache_ttl_hours must be at least 1, got: %d", config.CacheTTLHours)
+	// Validate cache TTL (allow fractional hours, e.g., 0.05 for 3 minutes)
+	if config.CacheTTLHours <= 0 {
+		return fmt.Errorf("cache_ttl_hours must be positive, got: %f", config.CacheTTLHours)
 	}
 
 	if config.CacheTTLHours > 168 { // 1 week max
-		return fmt.Errorf("cache_ttl_hours too high (max 168 hours), got: %d", config.CacheTTLHours)
+		return fmt.Errorf("cache_ttl_hours too high (max 168 hours), got: %f", config.CacheTTLHours)
 	}
 
 	// Validate max tracked tasks

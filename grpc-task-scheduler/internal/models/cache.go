@@ -11,13 +11,12 @@ import (
 	"scheduler-grpc-server/pkg/logger"
 )
 
-// TaskCacheEntry represents a cached task fingerprint
+// TaskCacheEntry represents a cached task fingerprint (minimal memory structure)
+// NOTE: Fingerprint is stored as map key, not duplicated here
 type TaskCacheEntry struct {
-	TaskFingerprint string         `json:"task_fingerprint"`
-	FirstSeen       time.Time      `json:"first_seen"`
-	LastSeen        time.Time      `json:"last_seen"`
-	SeenCount       int            `json:"seen_count"`
-	LastAction      pb.CacheAction `json:"last_action"`
+	FirstSeen int64 `json:"first_seen"` // Unix timestamp (not time.Time to save 16 bytes)
+	SeenCount int   `json:"seen_count"` // Task frequency
+	// Total: 16 bytes per entry (excluding map key overhead)
 }
 
 // TaskCacheManager manages task fingerprinting and cache decisions
@@ -29,6 +28,10 @@ type TaskCacheManager struct {
 	repeatedTasks int64
 	cacheHits     int64
 	cacheMisses   int64
+	
+	// Periodic cleanup
+	cleanupTicker *time.Ticker
+	cleanupStop   chan struct{}
 }
 
 // NewTaskCacheManager creates a new cache manager
@@ -80,46 +83,31 @@ func (tcm *TaskCacheManager) ProcessTask(task *pb.Task) (bool, string, pb.CacheA
 	if !exists {
 		// First time seeing this task
 		tcm.entries[fingerprint] = &TaskCacheEntry{
-			TaskFingerprint: fingerprint,
-			FirstSeen:       now,
-			LastSeen:        now,
-			SeenCount:       1,
-			LastAction:      pb.CacheAction_CACHE_ACTION_NONE,
+			FirstSeen: now.Unix(),
+			SeenCount: 1,
 		}
 		tcm.cacheMisses++
 		return false, fingerprint, pb.CacheAction_CACHE_ACTION_STORE
 	}
 
-	// Task seen before
-	lastSeenBefore := entry.LastSeen // Save before updating
-	entry.LastSeen = now
+	// Task seen before - update SeenCount
 	entry.SeenCount++
 	tcm.repeatedTasks++
 
-	// [DEBUG] Log cache decision details
-	logger.GetLogger().Debugf("[CACHE-DEBUG] Processing task with fingerprint %s: SeenCount=%d, FirstSeen=%v, LastSeen(before)=%v, Now=%v", 
-		fingerprint, entry.SeenCount, entry.FirstSeen, lastSeenBefore, now)
-
-	// Check if cache is still valid (simple time-based invalidation)
-	// CRITICAL FIX: Check time since FIRST SEEN, not last seen (last seen was just updated!)
-	timeSinceFirstSeen := now.Sub(entry.FirstSeen)
+	// Check if cache is still valid (check time since FIRST SEEN)
+	firstSeenTime := time.Unix(entry.FirstSeen, 0)
+	timeSinceFirstSeen := now.Sub(firstSeenTime)
 	cacheTTL := time.Duration(tcm.config.CacheTTLHours) * time.Hour
-	
-	// [DEBUG] Log TTL check
-	logger.GetLogger().Debugf("[CACHE-DEBUG] TTL check: timeSinceFirstSeen=%v, cacheTTL=%v, expired=%t",
-		timeSinceFirstSeen, cacheTTL, timeSinceFirstSeen > cacheTTL)
 	
 	if timeSinceFirstSeen > cacheTTL {
 		// Cache expired - invalidate
 		logger.GetLogger().Infof("[CACHE-EXPIRE] Cache expired for fingerprint %s after %v (TTL=%v)",
 			fingerprint, timeSinceFirstSeen, cacheTTL)
-		entry.LastAction = pb.CacheAction_CACHE_ACTION_INVALIDATE
 		return false, fingerprint, pb.CacheAction_CACHE_ACTION_INVALIDATE
 	}
 
 	// Cache hit - use cached result
 	tcm.cacheHits++
-	entry.LastAction = pb.CacheAction_CACHE_ACTION_USE
 	return true, fingerprint, pb.CacheAction_CACHE_ACTION_USE
 }
 
@@ -150,7 +138,7 @@ func (tcm *TaskCacheManager) GetCacheStats() map[string]interface{} {
 	}
 }
 
-// getHitRate calculates cache hit rate
+// getHitRate calculates cache hit rate (internal, use GetHitRate() for external access)
 func (tcm *TaskCacheManager) getHitRate() float64 {
 	total := tcm.cacheHits + tcm.cacheMisses
 	if total == 0 {
@@ -159,21 +147,124 @@ func (tcm *TaskCacheManager) getHitRate() float64 {
 	return float64(tcm.cacheHits) / float64(total)
 }
 
-// CleanupOldEntries removes old cache entries (simple LRU)
+// GetEntry returns the cache entry for a fingerprint (if exists)
+func (tcm *TaskCacheManager) GetEntry(fingerprint string) (*TaskCacheEntry, bool) {
+	tcm.mu.RLock()
+	defer tcm.mu.RUnlock()
+	
+	entry, exists := tcm.entries[fingerprint]
+	return entry, exists
+}
+
+// RemoveEntry deletes an entry and updates counters
+func (tcm *TaskCacheManager) RemoveEntry(fingerprint string) {
+	tcm.mu.Lock()
+	defer tcm.mu.Unlock()
+	
+	entry, exists := tcm.entries[fingerprint]
+	if !exists {
+		return
+	}
+	
+	// Update counters before deleting
+	tcm.totalTasks -= int64(entry.SeenCount)
+	tcm.repeatedTasks -= int64(entry.SeenCount - 1)
+	if tcm.repeatedTasks < 0 {
+		tcm.repeatedTasks = 0
+	}
+	
+	delete(tcm.entries, fingerprint)
+	logger.GetLogger().Debugf("[CACHE-REMOVE] Deleted entry %s (seen %d times, totalTasks: %d, repeatedTasks: %d)",
+		fingerprint, entry.SeenCount, tcm.totalTasks, tcm.repeatedTasks)
+}
+
+// GetHitRate returns cache hit rate (0.0-1.0)
+func (tcm *TaskCacheManager) GetHitRate() float64 {
+	tcm.mu.RLock()
+	defer tcm.mu.RUnlock()
+	return tcm.getHitRate()
+}
+
+// Start starts periodic cleanup goroutine (100ms interval, same as queue resorting)
+// NOTE: Uses real-time (not simulation time) - see TIME_MANAGEMENT_ANALYSIS.md
+func (tcm *TaskCacheManager) Start(cleanupIntervalMs int) {
+	tcm.mu.Lock()
+	defer tcm.mu.Unlock()
+	
+	if tcm.cleanupTicker != nil {
+		return // Already started
+	}
+	
+	cleanupInterval := time.Duration(cleanupIntervalMs) * time.Millisecond
+	tcm.cleanupTicker = time.NewTicker(cleanupInterval)
+	tcm.cleanupStop = make(chan struct{})
+	
+	go func() {
+		for {
+			select {
+			case <-tcm.cleanupTicker.C:
+				tcm.CleanupOldEntries() // Runs every cleanupIntervalMs
+			case <-tcm.cleanupStop:
+				return
+			}
+		}
+	}()
+	
+	logger.GetLogger().Infof("[CACHE-START] Periodic cleanup started with interval: %v", cleanupInterval)
+}
+
+// Stop stops periodic cleanup goroutine
+func (tcm *TaskCacheManager) Stop() {
+	tcm.mu.Lock()
+	defer tcm.mu.Unlock()
+	
+	if tcm.cleanupTicker != nil {
+		tcm.cleanupTicker.Stop()
+		tcm.cleanupTicker = nil
+	}
+	if tcm.cleanupStop != nil {
+		close(tcm.cleanupStop)
+		tcm.cleanupStop = nil
+	}
+	
+	logger.GetLogger().Info("[CACHE-STOP] Periodic cleanup stopped")
+}
+
+// CleanupOldEntries removes expired cache entries (1.1 × TTL threshold)
+// Only runs if approaching memory limit (len > MaxTrackedTasks * 0.9)
 func (tcm *TaskCacheManager) CleanupOldEntries() {
 	tcm.mu.Lock()
 	defer tcm.mu.Unlock()
 
-	if len(tcm.entries) <= tcm.config.MaxTrackedTasks {
+	// Only run if approaching memory limit
+	if len(tcm.entries) <= tcm.config.MaxTrackedTasks*90/100 {
 		return
 	}
 
-	// Simple cleanup: remove oldest entries
-	cutoff := time.Now().Add(-time.Duration(tcm.config.CacheTTLHours) * time.Hour * 2)
+	now := time.Now()
+	cacheTTL := time.Duration(tcm.config.CacheTTLHours) * time.Hour
+	cutoffAge := time.Duration(float64(cacheTTL) * 1.1) // 1.1 × TTL
 
+	deletedCount := 0
 	for fingerprint, entry := range tcm.entries {
-		if entry.LastSeen.Before(cutoff) {
+		firstSeen := time.Unix(entry.FirstSeen, 0)
+		age := now.Sub(firstSeen)
+
+		if age > cutoffAge {
+			// Update counters before deleting
+			tcm.totalTasks -= int64(entry.SeenCount)
+			tcm.repeatedTasks -= int64(entry.SeenCount - 1)
+			if tcm.repeatedTasks < 0 {
+				tcm.repeatedTasks = 0
+			}
+
 			delete(tcm.entries, fingerprint)
+			deletedCount++
 		}
+	}
+
+	if deletedCount > 0 {
+		logger.GetLogger().Infof("[CACHE-CLEANUP] Deleted %d expired entries (age > %.1f×TTL)",
+			deletedCount, 1.1)
 	}
 }
