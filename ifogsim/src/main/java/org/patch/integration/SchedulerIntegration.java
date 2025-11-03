@@ -10,12 +10,12 @@ import org.fog.entities.Tuple;
 import org.cloudbus.cloudsim.core.CloudSim;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 
 /**
  * Handles integration between fog nodes and scheduler gRPC server
- * Manages non-blocking communication and queue updates
+ * Manages synchronous communication for task submission
+ * Scheduled queue updates are handled by StreamingQueueObserver via GetSortedQueue
  */
 public class SchedulerIntegration {
     private static final Logger logger = Logger.getLogger(SchedulerIntegration.class.getName());
@@ -28,6 +28,9 @@ public class SchedulerIntegration {
 
     // Configuration
     private final int maxBatchSize;
+
+    // Debug counter for tracking send attempts
+    private int sendAttemptCount = 0;
 
     /**
      * Constructor
@@ -54,43 +57,93 @@ public class SchedulerIntegration {
     }
 
     /**
-     * Send tasks to scheduler gRPC server (non-blocking)
+     * Send tasks to scheduler gRPC server (synchronous)
      * This method should be called when tasks are added to unscheduled queue
+     * Blocks until all tasks are sent to scheduler (necessary for CloudSim integration)
      */
     public void sendTasksToScheduler() {
-        if (unscheduledQueue.isEmpty()) {
+        sendAttemptCount++;
+
+        // Check scheduler client availability
+        if (schedulerClient == null) {
+            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Scheduler client is NULL",
+                    deviceId, sendAttemptCount));
+            logger.severe("Scheduler client is null - cannot send tasks to scheduler");
+            return;
+        }
+
+        int queueSize = unscheduledQueue.size();
+        if (queueSize == 0) {
+            // Only log first few empty queue cases to avoid log bloat
+            if (sendAttemptCount <= 5) {
+                System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Unscheduled queue is empty",
+                        deviceId, sendAttemptCount));
+            }
+            logger.fine("Unscheduled queue is empty - nothing to send");
             return;
         }
 
         // Get tasks to send (limit batch size)
         List<UnscheduledQueue.TaskInfo> tasksToSend = getTasksForScheduler();
         if (tasksToSend.isEmpty()) {
+            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: No tasks found after filtering (queue size: %d)",
+                    deviceId, sendAttemptCount, queueSize));
+            logger.fine("No tasks found to send (after filtering)");
             return;
         }
 
+        // Log every send attempt (first 20, then every 10th)
+        if (sendAttemptCount <= 20 || sendAttemptCount % 10 == 0) {
+            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Sending %d tasks to scheduler (queue size: %d)",
+                    deviceId, sendAttemptCount, tasksToSend.size(), queueSize));
+        }
         logger.info("Sending " + tasksToSend.size() + " tasks to scheduler");
 
-        // Send asynchronously to avoid blocking simulation
-        CompletableFuture.runAsync(() -> {
-            try {
-                // Convert tasks to proto format
-                List<Task> protoTasks = convertTasksToProto(tasksToSend);
-                List<FogNode> availableNodes = getCurrentFogNodeState();
-                SchedulingPolicy policy = createSchedulingPolicy();
+        // Check if scheduler service is available
+        if (!schedulerClient.isConnected()) {
+            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Scheduler client NOT CONNECTED",
+                    deviceId, sendAttemptCount));
+            logger.warning("Scheduler client not connected - cannot send tasks");
+            fallbackToScheduledQueue(tasksToSend);
+            return;
+        }
 
-                // Send to scheduler gRPC server
-                List<AddTaskToQueueResponse> responses = schedulerClient.addTasksToQueue(
-                        protoTasks, availableNodes, policy);
+        // SYNCHRONOUS: Block here until gRPC calls complete
+        // This is necessary for CloudSim to properly integrate with the scheduler
+        try {
+            // Convert tasks to proto format
+            List<Task> protoTasks = convertTasksToProto(tasksToSend);
+            List<FogNode> availableNodes = getCurrentFogNodeState();
+            SchedulingPolicy policy = createSchedulingPolicy();
 
-                // Process response and update scheduled queue
-                processSchedulerResponses(responses);
-
-            } catch (Exception e) {
-                logger.severe("Failed to send tasks to scheduler: " + e.getMessage());
-                // Fallback: move tasks to scheduled queue without scheduler decision
-                fallbackToScheduledQueue(tasksToSend);
+            if (sendAttemptCount <= 20 || sendAttemptCount % 10 == 0) {
+                System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Calling addTasksToQueue with %d tasks",
+                        deviceId, sendAttemptCount, protoTasks.size()));
             }
-        });
+            logger.info("Calling schedulerClient.addTasksToQueue with " + protoTasks.size() + " tasks");
+
+            // Send to scheduler gRPC server (BLOCKS until all responses received)
+            List<AddTaskToQueueResponse> responses = schedulerClient.addTasksToQueue(
+                    protoTasks, availableNodes, policy);
+
+            if (sendAttemptCount <= 20 || sendAttemptCount % 10 == 0) {
+                System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Received %d responses from scheduler",
+                        deviceId, sendAttemptCount, responses.size()));
+            }
+            logger.info("Received " + responses.size() + " responses from scheduler");
+
+            // Process responses - only remove from unscheduledQueue on success
+            // Streaming will update scheduledQueue via GetSortedQueue
+            processSchedulerResponses(responses);
+
+        } catch (Exception e) {
+            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: EXCEPTION - %s",
+                    deviceId, sendAttemptCount, e.getMessage()));
+            logger.severe("Failed to send tasks to scheduler: " + e.getMessage());
+            e.printStackTrace();
+            // Fallback: move tasks to scheduled queue without scheduler decision
+            fallbackToScheduledQueue(tasksToSend);
+        }
     }
 
     /**
@@ -179,7 +232,9 @@ public class SchedulerIntegration {
     }
 
     /**
-     * Process scheduler responses and update scheduled queue
+     * Process scheduler responses - only removes tasks from unscheduledQueue on success
+     * Scheduled queue updates are handled by StreamingQueueObserver via GetSortedQueue
+     * Cache actions and execution decisions are handled by the scheduler and reflected in the streamed queue
      * 
      * @param responses The responses from scheduler
      */
@@ -188,130 +243,57 @@ public class SchedulerIntegration {
 
         for (AddTaskToQueueResponse taskResponse : responses) {
             if (taskResponse.getSuccess()) {
-                // Remove from unscheduled queue
-                UnscheduledQueue.TaskInfo unscheduledTask = unscheduledQueue.removeTask(taskResponse.getTaskId());
+                // Task successfully sent to scheduler - remove from unscheduled queue
+                // The scheduler now owns this task and will include it in GetSortedQueue responses
+                // StreamingQueueObserver will update scheduledQueue based on scheduler's decisions
+                UnscheduledQueue.TaskInfo removedTask = unscheduledQueue.removeTask(taskResponse.getTaskId());
 
-                if (unscheduledTask != null) {
-                    // Get cache information from scheduler
+                if (removedTask != null) {
+                    logger.info("Task " + taskResponse.getTaskId() + " successfully sent to scheduler, removed from unscheduled queue");
+
+                    // Log cache information for debugging (if available)
                     CacheAction cacheAction = taskResponse.getCacheAction();
-                    String cacheKey = taskResponse.getCacheKey();
-                    
-                    // Handle based on cache action from scheduler
-                    switch (cacheAction) {
-                        case CACHE_ACTION_USE:
-                            // Scheduler says: Use cache immediately
-                            logger.info("Task " + taskResponse.getTaskId() + " served from cache");
-                            markTaskCompleted(unscheduledTask);
-                            break;
-                            
-                        case CACHE_ACTION_INVALIDATE:
-                            // Scheduler says: Cache expired, invalidate and re-execute
-                            logger.info("Task " + taskResponse.getTaskId() + " cache invalidated by scheduler, re-executing");
-                            
-                            // Invalidate local cache if it exists
-                            if (unscheduledTask.getTuple() != null) {
-                                String taskId = String.valueOf(unscheduledTask.getTuple().getCloudletId());
-                                if (cacheManager != null) {
-                                    cacheManager.invalidateCache(taskId);
-                                    logger.fine("Invalidated local cache for task " + taskId);
-                                }
-                            }
-                            
-                            // Add to queue for execution
-                            ScheduledQueue.TaskInfo scheduledTask = new ScheduledQueue.TaskInfo(
-                                    unscheduledTask.getTuple(),
-                                    unscheduledTask.getModuleId(),
-                                    CloudSim.clock(),
-                                    "fallback-node",
-                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
-                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000),
-                                    false, // Not cached (expired)
-                                    cacheKey); // Cache key for storing result
-                            
-                            scheduledQueue.addTask(scheduledTask);
-                            logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue after cache invalidation");
-                            break;
-                            
-                        case CACHE_ACTION_STORE:
-                            // Scheduler says: Execute and store result in cache
-                            logger.info("Task " + taskResponse.getTaskId() + " needs execution and caching");
-                            
-                            ScheduledQueue.TaskInfo scheduledTaskStore = new ScheduledQueue.TaskInfo(
-                                    unscheduledTask.getTuple(),
-                                    unscheduledTask.getModuleId(),
-                                    CloudSim.clock(),
-                                    "fallback-node",
-                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
-                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000),
-                                    false, // Not cached yet (will be after execution)
-                                    cacheKey); // Cache key for storing result
-                            
-                            scheduledQueue.addTask(scheduledTaskStore);
-                            logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue (will be cached)");
-                            break;
-                            
-                        case CACHE_ACTION_NONE:
-                        case CACHE_ACTION_UNSPECIFIED:
-                        default:
-                            // No cache action - execute normally
-                            ScheduledQueue.TaskInfo scheduledTaskNone = new ScheduledQueue.TaskInfo(
-                                    unscheduledTask.getTuple(),
-                                    unscheduledTask.getModuleId(),
-                                    CloudSim.clock(),
-                                    "fallback-node",
-                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs()),
-                                    (long) (CloudSim.clock() + taskResponse.getEstimatedWaitTimeMs() + 1000),
-                                    false, // No cache
-                                    null); // No cache key
-                            
-                            scheduledQueue.addTask(scheduledTaskNone);
-                            logger.info("Task " + taskResponse.getTaskId() + " added to scheduled queue (no cache)");
-                            break;
+                    if (cacheAction != null && cacheAction != CacheAction.CACHE_ACTION_UNSPECIFIED) {
+                        logger.fine("Task " + taskResponse.getTaskId() + " cache action: " + cacheAction);
                     }
+                } else {
+                    logger.warning("Task " + taskResponse.getTaskId() + " was sent to scheduler but not found in unscheduled queue");
                 }
             } else {
                 logger.warning("Scheduler failed for task " + taskResponse.getTaskId() +
                         ": " + taskResponse.getErrorMessage());
+                // Task remains in unscheduled queue for retry or fallback
             }
         }
     }
 
     /**
      * Fallback method when scheduler is unavailable
+     * Only used when scheduler service cannot be reached
      * 
      * @param tasks Tasks to move to scheduled queue
      */
     private void fallbackToScheduledQueue(List<UnscheduledQueue.TaskInfo> tasks) {
-        logger.info("Fallback: Moving " + tasks.size() + " tasks to scheduled queue");
+        logger.warning("Fallback: Scheduler unavailable, moving " + tasks.size() + " tasks directly to scheduled queue");
 
         for (UnscheduledQueue.TaskInfo taskInfo : tasks) {
             // Remove from unscheduled queue
             unscheduledQueue.removeTask(taskInfo.getTaskId());
 
-            // Add to scheduled queue with default values
+            // Add to scheduled queue with default values (fallback behavior)
             ScheduledQueue.TaskInfo scheduledTask = new ScheduledQueue.TaskInfo(
                     taskInfo.getTuple(),
                     taskInfo.getModuleId(),
                     CloudSim.clock(),
                     String.valueOf(deviceId), // Assign to this device
-                    System.currentTimeMillis(),
-                    System.currentTimeMillis() + 1000, // 1 second execution time
+                    (long) CloudSim.clock(),
+                    (long) (CloudSim.clock() + 1000), // 1 second execution time in simulation time
                     false, // Not cached
                     null // No cache key
             );
 
             scheduledQueue.addTask(scheduledTask);
         }
-    }
-
-    /**
-     * Mark a task as completed
-     * 
-     * @param taskInfo The task to mark as completed
-     */
-    private void markTaskCompleted(UnscheduledQueue.TaskInfo taskInfo) {
-        // This would typically involve updating task status and metrics
-        logger.info("Task " + taskInfo.getTaskId() + " marked as completed");
     }
 
     /**

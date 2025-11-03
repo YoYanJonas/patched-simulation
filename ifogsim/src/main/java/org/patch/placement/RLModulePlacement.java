@@ -211,21 +211,68 @@ public class RLModulePlacement extends ModulePlacement {
         Map<Integer, List<AppModule>> deviceToModuleMap = new HashMap<>();
 
         // Initialize device lists
+        List<FogDevice> fogNodeDevices = new ArrayList<>();
+        int cloudId = -1;
         for (FogDevice device : getFogDevices()) {
             deviceToModuleMap.put(device.getId(), new ArrayList<>());
+            if (device.getName().equals("cloud")) {
+                cloudId = device.getId();
+            } else {
+                fogNodeDevices.add(device);
+            }
+        }
+
+        Application application = getApplication();
+        if (application == null) {
+            return deviceToModuleMap;
+        }
+
+        // Find modules that sensors send to (modules that are destinations of SENSOR edges)
+        Set<String> sensorDestinationModules = new HashSet<>();
+        if (sensors != null && !sensors.isEmpty()) {
+            // Get sensor tuple types from sensors
+            Set<String> sensorTupleTypes = new HashSet<>();
+            for (Sensor sensor : sensors) {
+                if (sensor.getTupleType() != null) {
+                    sensorTupleTypes.add(sensor.getTupleType());
+                }
+            }
+
+            // Find which modules receive sensor tuples (destination of SENSOR edges)
+            for (org.fog.application.AppEdge edge : application.getEdges()) {
+                if (edge.getEdgeType() == org.fog.application.AppEdge.SENSOR &&
+                        sensorTupleTypes.contains(edge.getSource())) {
+                    sensorDestinationModules.add(edge.getDestination());
+                    logger.info("RL Placement: Found sensor destination module: " + edge.getDestination() +
+                            " (receives from sensor type: " + edge.getSource() + ")");
+                }
+            }
         }
 
         // Place modules using RL logic
-        Application application = getApplication();
-        if (application != null) {
-            for (AppModule module : application.getModules()) {
+        for (AppModule module : application.getModules()) {
+            boolean placed = false;
+
+            // If this module receives sensor data, place it on ALL fog nodes (even with RL enabled)
+            // This ensures sensors can send tuples to fog nodes locally
+            if (sensorDestinationModules.contains(module.getName())) {
+                for (FogDevice fogDevice : fogNodeDevices) {
+                    deviceToModuleMap.get(fogDevice.getId()).add(module);
+                    logger.info("RL Placement: Placed sensor destination module " + module.getName() +
+                            " on ALL fog nodes including fog node " + fogDevice.getId());
+                }
+                placed = true;
+            }
+
+            // For non-sensor modules, use RL logic
+            if (!placed) {
                 int bestDeviceId = placeModuleWithRL(application, module);
 
                 if (bestDeviceId > 0) {
                     deviceToModuleMap.get(bestDeviceId).add(module);
-                    logger.fine("Placed module " + module.getName() + " on device " + bestDeviceId);
+                    logger.fine("RL Placement: Placed module " + module.getName() + " on device " + bestDeviceId);
                 } else {
-                    logger.warning("Failed to place module " + module.getName() + " - no suitable device found");
+                    logger.warning("RL Placement: Failed to place module " + module.getName() + " - no suitable device found");
                 }
             }
         }
