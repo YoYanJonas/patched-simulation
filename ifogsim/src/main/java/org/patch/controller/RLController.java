@@ -15,6 +15,7 @@ import org.patch.broker.RLFogBroker;
 import org.patch.client.AllocationClient;
 import org.patch.client.SchedulerClient;
 import org.patch.devices.RLFogDevice;
+import org.patch.integration.StreamingQueueObserver;
 import org.patch.application.RLApplication;
 import org.patch.placement.RLModulePlacement;
 import org.patch.placement.RLAwarePlacementAdapter;
@@ -195,6 +196,8 @@ public class RLController extends Controller {
                 // Graceful shutdown - stop generating NEW tasks, but allow queued events to
                 // complete up to MAX_SIMULATION_TIME
                 double currentTime = CloudSim.clock();
+                double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
+
                 System.out.println(String.format(
                         "[STOP-SIMULATION] Time: %.2f - Processing STOP_SIMULATION event - Stopping NEW task generation, processing queued events...",
                         currentTime));
@@ -204,15 +207,38 @@ public class RLController extends Controller {
                         "[STOP-SIMULATION] Time: %.2f - All task generators should stop generating NEW tasks now (sensors and external tasks check SIMULATION_TIME, MAX_SIMULATION_TIME is hard cap)",
                         currentTime));
 
+                // CRITICAL: If currentTime >= MAX_SIMULATION_TIME, immediately terminate
+                // This prevents the simulation from getting stuck if events are blocked
+                if (currentTime >= maxSimulationTime) {
+                    logger.warning(String.format(
+                            "[STOP-SIMULATION] Time: %.2f >= MAX_SIMULATION_TIME (%.2f) - FORCING IMMEDIATE TERMINATION",
+                            currentTime, maxSimulationTime));
+
+                    // Force stop all streaming observers to prevent blocking gRPC calls
+                    forceStopAllStreamingObservers();
+
+                    // Force close all gRPC channels to stop blocking operations
+                    forceCloseAllGrpcChannels();
+
+                    // Immediately terminate simulation
+                    CloudSim.terminateSimulation();
+                    CloudSim.abruptallyTerminate();
+
+                    logger.warning("[STOP-SIMULATION] Simulation FORCE TERMINATED due to MAX_SIMULATION_TIME reached");
+                    return; // Exit immediately
+                }
+
                 // Set terminateAt to MAX_SIMULATION_TIME to ensure simulation stops even if
                 // event queue is not empty
                 // This provides a hard termination cap while still allowing queued events to
                 // be processed
-                double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
                 CloudSim.terminateSimulation(maxSimulationTime);
                 logger.info(String.format(
                         "[STOP-SIMULATION] Time: %.2f - Set terminateAt to %.2f - Simulation will stop at MAX_SIMULATION_TIME even if queue is not empty",
                         currentTime, maxSimulationTime));
+
+                // Stop streaming observers gracefully to prevent new blocking calls
+                stopAllStreamingObservers();
 
                 logger.info(String.format(
                         "[STOP-SIMULATION] Time: %.2f - Marking simulation for graceful shutdown - will process queued events until MAX_SIMULATION_TIME (%.2f)",
@@ -759,5 +785,113 @@ public class RLController extends Controller {
 
     public boolean isRLConfigured() {
         return rlConfigured;
+    }
+
+    /**
+     * Force stop all streaming observers immediately
+     * Called during shutdown to prevent blocking gRPC calls
+     */
+    private void forceStopAllStreamingObservers() {
+        logger.warning("[SHUTDOWN] Force stopping all streaming observers...");
+        int stoppedCount = 0;
+
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                StreamingQueueObserver observer = rlDevice.getStreamingObserver();
+                if (observer != null) {
+                    try {
+                        observer.stopStreaming();
+                        observer.cleanup(); // Force cleanup
+                        stoppedCount++;
+                        logger.info(String.format("[SHUTDOWN] Stopped streaming observer for device %d (%s)",
+                                device.getId(), device.getName()));
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING,
+                                String.format("Error stopping streaming observer for device %d", device.getId()), e);
+                    }
+                }
+            }
+        }
+
+        logger.info(String.format("[SHUTDOWN] Force stopped %d streaming observers", stoppedCount));
+    }
+
+    /**
+     * Stop all streaming observers gracefully
+     * Called during normal shutdown to prevent new blocking calls
+     */
+    private void stopAllStreamingObservers() {
+        logger.info("[SHUTDOWN] Stopping all streaming observers gracefully...");
+        int stoppedCount = 0;
+
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                StreamingQueueObserver observer = rlDevice.getStreamingObserver();
+                if (observer != null) {
+                    try {
+                        observer.stopStreaming();
+                        stoppedCount++;
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING,
+                                String.format("Error stopping streaming observer for device %d", device.getId()), e);
+                    }
+                }
+            }
+        }
+
+        logger.info(String.format("[SHUTDOWN] Stopped %d streaming observers", stoppedCount));
+    }
+
+    /**
+     * Force close all gRPC channels immediately
+     * Called during shutdown to stop blocking operations
+     */
+    private void forceCloseAllGrpcChannels() {
+        logger.warning("[SHUTDOWN] Force closing all gRPC channels...");
+        int closedCount = 0;
+
+        // Close scheduler clients
+        if (schedulerClients != null) {
+            for (SchedulerClient client : schedulerClients.values()) {
+                if (client != null) {
+                    try {
+                        client.close();
+                        closedCount++;
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING, "Error closing scheduler client", e);
+                    }
+                }
+            }
+        }
+
+        // Close allocation client
+        if (allocationClient != null) {
+            try {
+                allocationClient.close();
+                closedCount++;
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Error closing allocation client", e);
+            }
+        }
+
+        // Close gRPC clients in fog devices
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                if (rlDevice.getSchedulerClient() != null) {
+                    try {
+                        rlDevice.getSchedulerClient().close();
+                        closedCount++;
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING,
+                                String.format("Error closing scheduler client for device %d", device.getId()), e);
+                    }
+                }
+            }
+        }
+
+        logger.info(String.format("[SHUTDOWN] Force closed %d gRPC channels", closedCount));
     }
 }

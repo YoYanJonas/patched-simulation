@@ -183,13 +183,14 @@ public class StreamingQueueObserver {
                     break;
                 }
 
-                // Stop streaming when simulation time exceeds MAX_SIMULATION_TIME
-                // Add a small buffer (10 seconds) to allow final events to be processed
-                if (currentTime >= (maxSimulationTime + 10.0)) {
-                    logger.info(String.format(
-                            "Stopping streaming loop for device %d - Simulation time %.2f >= MAX_SIMULATION_TIME %.2f",
+                // CRITICAL: Stop streaming immediately when MAX_SIMULATION_TIME is reached
+                // No buffer - must stop to allow simulation to terminate
+                if (currentTime >= maxSimulationTime) {
+                    logger.warning(String.format(
+                            "[SHUTDOWN] Stopping streaming loop for device %d - Simulation time %.2f >= MAX_SIMULATION_TIME %.2f - FORCE STOPPING",
                             deviceId, currentTime, maxSimulationTime));
                     shouldStop.set(true);
+                    isStreaming.set(false);
                     break;
                 }
 
@@ -232,6 +233,17 @@ public class StreamingQueueObserver {
 
         while (retries < maxRetries && !shouldStop.get()) {
             try {
+                // CRITICAL: Check if simulation should stop before making gRPC calls
+                double currentTime = CloudSim.clock();
+                double maxSimulationTime = Config.MAX_SIMULATION_TIME;
+                if (currentTime >= maxSimulationTime || !CloudSim.running()) {
+                    logger.warning(String.format(
+                            "[SHUTDOWN] Stopping queue fetch for device %d - Simulation time %.2f >= MAX_SIMULATION_TIME %.2f or not running",
+                            deviceId, currentTime, maxSimulationTime));
+                    shouldStop.set(true);
+                    return null;
+                }
+
                 if (!schedulerClient.isConnected()) {
                     logger.warning("Scheduler client disconnected, attempting reconnection");
                     // Attempt to reconnect

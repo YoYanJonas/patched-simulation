@@ -52,9 +52,13 @@ public class ExternalTaskGenerator extends SimEntity {
 
         // Schedule task generation if rate is specified
         if (taskGenerationRate > 0) {
-            long initialDelay = EnhancedConfigurationLoader.getExternalTaskConfigLong(
+            long initialDelayMs = EnhancedConfigurationLoader.getExternalTaskConfigLong(
                     "external.tasks.generation.initial.delay", 1000);
-            schedule(getId(), initialDelay, GENERATE_EXTERNAL_TASK);
+            // Convert milliseconds to seconds for CloudSim (CloudSim uses seconds as time unit)
+            double initialDelaySeconds = initialDelayMs / 1000.0;
+            schedule(getId(), initialDelaySeconds, GENERATE_EXTERNAL_TASK);
+            logger.info(String.format("Scheduled first external task generation at time %.2f seconds (from %d ms delay)",
+                    initialDelaySeconds, initialDelayMs));
         }
 
         logger.info("External task generator created - will send tasks to cloud device " + cloudDeviceId
