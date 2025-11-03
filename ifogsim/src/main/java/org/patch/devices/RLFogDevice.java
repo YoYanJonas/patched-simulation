@@ -909,6 +909,7 @@ public class RLFogDevice extends FogDevice {
 
     /**
      * Handle cached task result - task is resolved with cached value
+     * (Legacy method - kept for compatibility)
      */
     private void handleCachedTaskResult(AddTaskToQueueResponse response) {
         String taskId = response.getTaskId();

@@ -150,9 +150,13 @@ public class TaskExecutionEngine {
         logger.fine("Processing task: " + taskId + " on device: " + fogDevice.getName());
 
         // Scheduler is the source of truth for caching decisions
-        // If scheduler says task is cached, handle it immediately
+        // Cache decision is made during task execution (not before adding to queue)
+        // ALL tasks go through the queue, but cached tasks skip execution
         if (taskInfo.isCachedTask() && cacheEnabled) {
-            logger.info("Task " + taskId + " is cached according to scheduler");
+            System.out.println(String.format(
+                    "[FLOW-FOG-EXECUTE-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s is CACHED - Skipping execution, using cached result",
+                    currentTime, fogDevice.getId(), taskId));
+            logger.info("Task " + taskId + " is cached according to scheduler - handling cached task");
             return handleCachedTask(taskInfo);
         }
 
