@@ -23,6 +23,7 @@ type SchedulerEngine struct {
 
 	// Agent integration
 	agent        *rl.Agent
+	cacheAgent   *rl.CacheAgent  // NEW: Cache RL agent
 	cacheManager *TaskCacheManager
 	config       *config.Config
 
@@ -75,14 +76,25 @@ func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *co
 	// Initialize Cache Manager
 	engine.cacheManager = NewTaskCacheManager(cfg.Caching)
 
-	// Initialize Agent if RL is enabled
+	// Initialize Scheduling Agent if RL is enabled
 	if cfg.RL.Enabled {
 		agentConfig := rl.AgentConfig{
 			AlgorithmManagerConfig: cfg.AlgorithmManager,
 		}
 		engine.agent = rl.NewAgent(agentConfig)
+	}
 
-		// Note: Cache manager no longer used in scheduling RL (cache has its own agent)
+	// Initialize Cache Agent if enabled
+	if cfg.CacheAgent.Enabled {
+		cacheAgentConfig := rl.CacheAgentConfig{
+			Enabled:         cfg.CacheAgent.Enabled,
+			LearningRate:    cfg.CacheAgent.LearningRate,
+			DiscountFactor:  cfg.CacheAgent.DiscountFactor,
+			ExplorationRate: cfg.CacheAgent.ExplorationRate,
+			MinExploration:  cfg.CacheAgent.MinExploration,
+			ExplorationDecay: cfg.CacheAgent.ExplorationDecay,
+		}
+		engine.cacheAgent = rl.NewCacheAgent(cacheAgentConfig)
 	}
 
 	return engine
@@ -95,6 +107,12 @@ func (se *SchedulerEngine) Start(ctx context.Context) {
 	if se.config.Queue.EnablePeriodicResort {
 		se.startPeriodicQueueResorting()
 	}
+	
+	// Start periodic cache cleanup if enabled
+	if se.cacheManager != nil && se.cacheManager.config.Enabled {
+		cleanupIntervalMs := se.config.Queue.ResortIntervalMs // Use same as queue resorting (100ms)
+		se.cacheManager.Start(cleanupIntervalMs)
+	}
 }
 
 func (se *SchedulerEngine) Stop() {
@@ -103,6 +121,11 @@ func (se *SchedulerEngine) Stop() {
 		se.resortTicker.Stop()
 	}
 	close(se.resortChan)
+	
+	// Stop periodic cache cleanup
+	if se.cacheManager != nil {
+		se.cacheManager.Stop()
+	}
 }
 
 // startPeriodicQueueResorting starts the periodic queue resorting
@@ -290,12 +313,14 @@ func (se *SchedulerEngine) GetAvailableObjectiveProfiles() []string {
 
 // AddTaskToQueue adds a task to the scheduling queue (legacy compatibility)
 func (se *SchedulerEngine) AddTaskToQueue(task *pb.Task) (int64, int64, error) {
-	queuePos, waitTime, _, _, _, err := se.AddTaskToQueueWithCache(task)
+	var queueContext *pb.QueueContext // nil for legacy calls
+	queuePos, waitTime, _, _, _, err := se.AddTaskToQueueWithCache(task, queueContext)
 	return queuePos, waitTime, err
 }
 
 // AddTaskToQueueWithCache adds a task to the scheduling queue with cache information
-func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64, bool, string, pb.CacheAction, error) {
+// queueContext: Queue context from iFogSim (contains total_queue_size)
+func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *pb.QueueContext) (int64, int64, bool, string, pb.CacheAction, error) {
 	if err := ValidateTask(task); err != nil {
 		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, err
 	}
@@ -308,20 +333,115 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64,
 	}
 	se.mu.RUnlock()
 
-	// CRITICAL: Only use cache for RL algorithms
+	// Step 1: Generate fingerprint
+	fingerprint := se.cacheManager.GenerateTaskFingerprint(task)
+	if fingerprint == "" {
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("failed to generate fingerprint for task %s", task.TaskId)
+	}
+
+	// Step 2: Check cache entry state (lazy cleanup)
+	var entryFirstSeen int64 = 0
+	var entrySeenCount int = 0
+	cacheExists := false
+	cacheExpired := false
+	cacheAgeCategory := "none"
+
+	if se.cacheManager != nil && se.cacheManager.config.Enabled {
+		entry, exists := se.cacheManager.GetEntry(fingerprint)
+		if exists {
+			cacheExists = true
+			entryFirstSeen = entry.FirstSeen
+			entrySeenCount = entry.SeenCount
+
+			// Calculate age and check expiration (lazy cleanup)
+			now := time.Now()
+			firstSeen := time.Unix(entry.FirstSeen, 0)
+			age := now.Sub(firstSeen)
+			ttl := time.Duration(se.cacheManager.config.CacheTTLHours) * time.Hour
+			ttlRatio := float64(age) / float64(ttl)
+
+			if ttlRatio >= 1.0 {
+				// EXPIRED - Delete immediately (lazy cleanup)
+				se.cacheManager.RemoveEntry(fingerprint)
+				cacheExists = false
+				cacheExpired = true
+				cacheAgeCategory = "expired"
+				entryFirstSeen = 0
+				entrySeenCount = 0
+			} else {
+				// Not expired - cache exists
+				cacheAgeCategory = rl.CategorizeCacheAge(ttlRatio)
+				// Note: SeenCount will be updated in ProcessTask if using fallback
+			}
+		}
+	}
+
+	// Step 3: Cache Agent Decision (if enabled)
 	var isCached bool
 	var cacheKey string
 	var cacheAction pb.CacheAction
+	var cacheState *rl.CacheStateFeatures // Store for delayed reward
+	var rlAction rl.Action                // Store for delayed reward
 
-	// Cache decision (fingerprint-based only)
-	if se.cacheManager != nil && se.cacheManager.config.Enabled {
-		isCached, cacheKey, cacheAction = se.cacheManager.ProcessTask(task)
+	if se.cacheAgent != nil && se.cacheAgent.IsEnabled() {
+		// Extract cache state features
+		hitRate := se.cacheManager.GetHitRate()
+		systemLoad := se.nodeManager.GetCurrentLoad()
+		cacheTTLHours := int(se.cacheManager.config.CacheTTLHours)
+
+		extractedState := rl.ExtractCacheStateFeatures(
+			task,
+			fingerprint,
+			queueContext, // From iFogSim
+			entryFirstSeen,
+			entrySeenCount,
+			hitRate,
+			systemLoad,
+			cacheTTLHours,
+		)
+
+		// Set cache entry state (update if not expired)
+		extractedState.CacheExists = cacheExists && !cacheExpired
+		extractedState.CacheAgeCategory = cacheAgeCategory
+
+		// Store state for delayed reward
+		cacheState = extractedState
+
+		// Cache agent decides action
+		rlAction = se.cacheAgent.SelectAction(extractedState)
+
+		// Map RL action to proto CacheAction (with expired handling)
+		cacheAction = rl.MapCacheActionToProto(
+			rlAction,
+			cacheExists && !cacheExpired,
+			cacheExpired,
+		)
+
+		// Determine isCached
+		isCached = (cacheAction == pb.CacheAction_CACHE_ACTION_USE)
+
+		// Update entry SeenCount if not expired (handled via ProcessTask for consistency)
+		// For cache agent, we track via cache manager's ProcessTask when needed
+		// Note: SeenCount is updated during state extraction above
+
 	} else {
-		// Cache disabled
-		isCached = false
-		cacheKey = ""
-		cacheAction = pb.CacheAction_CACHE_ACTION_NONE
+		// Fallback: fingerprint-based (current implementation)
+		if se.cacheManager != nil && se.cacheManager.config.Enabled {
+			isCached, cacheKey, cacheAction = se.cacheManager.ProcessTask(task)
+		} else {
+			// Cache disabled
+			isCached = false
+			cacheAction = pb.CacheAction_CACHE_ACTION_NONE
+		}
 	}
+
+	// Step 4: Handle cache invalidation if needed
+	if cacheAction == pb.CacheAction_CACHE_ACTION_INVALIDATE && cacheExists {
+		se.cacheManager.RemoveEntry(fingerprint)
+	}
+
+	// Set cacheKey (always fingerprint)
+	cacheKey = fingerprint
 
 	// [DEBUG] Log cache decision
 	if isCached && cacheAction == pb.CacheAction_CACHE_ACTION_USE {
@@ -338,6 +458,12 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task) (int64, int64,
 	taskEntry.IsCached = isCached
 	taskEntry.CacheKey = cacheKey
 	taskEntry.CacheAction = cacheAction
+	
+	// Store cache state and RL action for delayed reward (if cache agent made the decision)
+	if se.cacheAgent != nil && se.cacheAgent.IsEnabled() && cacheState != nil && rlAction.Type != 0 {
+		taskEntry.CacheState = cacheState
+		taskEntry.CacheRLAction = &rlAction
+	}
 
 	// Add to queue (ALL tasks go through queue, cache decision is made during execution)
 	if err := se.queue.Enqueue(taskEntry); err != nil {
@@ -535,10 +661,7 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 		se.totalExecutionTime += actualDuration
 	}
 
-	// **CRITICAL: Remove from scheduled tasks to prevent duplicate scheduling**
-	delete(se.scheduledTasks, req.TaskId)
-
-	// **KEY PART: Delegate to Agent for RL experience handling**
+	// **KEY PART: Delegate to Agent for RL experience handling** (before deleting from map)
 	if se.agent != nil && se.agent.IsEnabled() {
 		// The Agent should handle experience collection through AlgorithmManager
 		if err := se.reportTaskCompletionToAgent(task, req); err != nil {
@@ -546,6 +669,17 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 			fmt.Printf("Warning: Failed to report completion to RL agent: %v\n", err)
 		}
 	}
+
+	// **NEW: Process cache agent delayed reward** (before deleting from map)
+	if se.cacheAgent != nil && se.cacheAgent.IsEnabled() {
+		if err := se.reportTaskCompletionToCacheAgent(task, req); err != nil {
+			// Log error but don't fail the whole operation
+			logger.GetLogger().Warnf("Failed to report completion to cache agent: %v", err)
+		}
+	}
+
+	// **CRITICAL: Remove from scheduled tasks to prevent duplicate scheduling** (after processing rewards)
+	delete(se.scheduledTasks, req.TaskId)
 
 	return nil
 }
@@ -601,6 +735,81 @@ func (se *SchedulerEngine) reportTaskCompletionToAgent(task *TaskEntry, req *pb.
 
 	// Pass nodeManager to the agent for proper integration
 	return se.agent.ProcessTaskCompletionWithNodeManager(task, req, se.nodeManager)
+}
+
+// reportTaskCompletionToCacheAgent processes completion for cache agent delayed reward
+func (se *SchedulerEngine) reportTaskCompletionToCacheAgent(task *TaskEntry, req *pb.TaskCompletionReport) error {
+	if se.cacheAgent == nil || !se.cacheAgent.IsEnabled() {
+		return nil // Cache agent not enabled
+	}
+
+	// Check if we have cache state and action stored (cache agent made the decision)
+	if task.CacheState == nil || task.CacheRLAction == nil {
+		// Cache agent didn't make the decision (fallback mode) - skip reward update
+		return nil
+	}
+
+	// Determine if cache was actually used successfully
+	success := se.deriveTaskSuccess(req)
+	actualExecutionTimeMs := se.deriveActualExecutionTime(req)
+	
+	// Cache was successful if:
+	// 1. Task was marked as cached (IsCached = true)
+	// 2. Task completed successfully
+	// 3. Execution time is 0 or very small (instant cache hit)
+	wasCachedSuccessfully := task.IsCached && success && actualExecutionTimeMs < 100
+	// Note: If task was cached, execution time should be ~0 (instant)
+	// If task was not cached but agent said to use cache, that's a cache miss (bad decision)
+
+	// Calculate reward based on cache action and actual result
+	systemLoad := se.nodeManager.GetCurrentLoad()
+	executionTimeSaved := int64(0)
+	if task.Task != nil {
+		// Time saved = original execution time (if cache was used)
+		if wasCachedSuccessfully {
+			executionTimeSaved = task.Task.ExecutionTime
+		}
+	}
+
+	// Determine cache hit success
+	cacheHitSuccess := false
+	if task.CacheAction == pb.CacheAction_CACHE_ACTION_USE {
+		// Agent decided to use cache
+		cacheHitSuccess = wasCachedSuccessfully
+	}
+
+	// Calculate reward
+	reward := rl.CalculateCacheReward(
+		task.CacheAction,
+		executionTimeSaved,
+		cacheHitSuccess,
+		systemLoad,
+	)
+
+	// Create next state (current state after task completion)
+	// For cache agent, next state is similar to current state but with updated metrics
+	nextState := task.CacheState // Use same state (or extract new state)
+	// Note: In a full implementation, we'd extract the new state from current system metrics
+	// For now, use the same state as next state (episodic learning)
+
+	// Update cache agent with reward
+	done := true // Task is complete, episode is done
+	err := se.cacheAgent.UpdateReward(
+		task.CacheState,
+		*task.CacheRLAction,
+		reward,
+		nextState,
+		done,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to update cache agent reward: %w", err)
+	}
+
+	logger.GetLogger().Infof("[CACHE-AGENT-REWARD] Task %s: Action=%v, Reward=%.2f, CacheHitSuccess=%t, TimeSaved=%dms",
+		task.Task.TaskId, task.CacheRLAction.Type, reward, cacheHitSuccess, executionTimeSaved)
+
+	return nil
 }
 
 // GetAgent returns the RL agent for external access

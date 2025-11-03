@@ -5,6 +5,7 @@ import (
 	"time"
 
 	pb "scheduler-grpc-server/api/proto"
+	"scheduler-grpc-server/internal/rl"
 )
 
 // TaskStatus represents the current status of a task
@@ -36,6 +37,10 @@ type TaskEntry struct {
 	IsCached   bool              `json:"is_cached"`
 	CacheKey   string            `json:"cache_key"`
 	CacheAction pb.CacheAction   `json:"cache_action"`
+	
+	// Cache RL agent state (for delayed reward calculation)
+	CacheState *rl.CacheStateFeatures `json:"cache_state,omitempty"` // State when cache decision was made
+	CacheRLAction *rl.Action           `json:"cache_rl_action,omitempty"` // RL action taken
 }
 
 // NewTaskEntry creates a new task entry from a protobuf task
