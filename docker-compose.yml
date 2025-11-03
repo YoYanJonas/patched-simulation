@@ -18,7 +18,7 @@ services:
       # Model storage (persistent)
       - ./models/allocator:/app/models:rw
       # Reports (per-run)
-      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/allocator:/reports:rw
+      - ./reports/${RUN_ID}_${SCENARIO_NAME:-rl-full-feature}/allocator:/reports:rw
     environment:
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - MODEL_PATH=${MODEL_PATH:-/app/models}
@@ -53,7 +53,7 @@ services:
       # Model storage (persistent)
       - ./models/scheduler-node1:/app/models:rw
       # Reports (per-run)
-      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node1:/reports:rw
+      - ./reports/${RUN_ID}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node1:/reports:rw
     environment:
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - MODELS_PATH=${MODELS_PATH:-/app/models}
@@ -86,7 +86,7 @@ services:
     volumes:
       - ./config/${SCENARIO_NAME:-rl-full-feature}/scheduler/node2:/config:ro
       - ./models/scheduler-node2:/app/models:rw
-      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node2:/reports:rw
+      - ./reports/${RUN_ID}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node2:/reports:rw
     environment:
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - MODELS_PATH=${MODELS_PATH:-/app/models}
@@ -119,7 +119,7 @@ services:
     volumes:
       - ./config/${SCENARIO_NAME:-rl-full-feature}/scheduler/node3:/config:ro
       - ./models/scheduler-node3:/app/models:rw
-      - ./reports/${RUN_ID:-latest}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node3:/reports:rw
+      - ./reports/${RUN_ID}_${SCENARIO_NAME:-rl-full-feature}/scheduler/node3:/reports:rw
     environment:
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - MODELS_PATH=${MODELS_PATH:-/app/models}
