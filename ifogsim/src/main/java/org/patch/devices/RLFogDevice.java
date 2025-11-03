@@ -654,31 +654,53 @@ public class RLFogDevice extends FogDevice {
 
     /**
      * Report task completion for RL learning to grpc-task-scheduler
+     * 
+     * @param tuple The tuple that was processed
+     * @param success Whether the task completed successfully
+     * @param executionTime Execution time in milliseconds (0 for cached tasks)
+     * @param isCached Whether this task was served from cache (instant execution)
      */
-    public void reportTaskCompletion(Tuple tuple, boolean success, long executionTime) {
+    public void reportTaskCompletion(Tuple tuple, boolean success, long executionTime, boolean isCached) {
         if (schedulerClient == null || !schedulerClient.isConnected()) {
             return;
         }
 
         try {
+            // For cached tasks, report with executionTime = 0 to indicate instant cache hit
+            // For non-cached tasks, report actual execution time
+            long reportedExecutionTime = isCached ? 0 : executionTime;
+            
             // Report to grpc-task-scheduler for learning
             TaskCompletionReport report = TaskCompletionReport.newBuilder()
                     .setTaskId(String.valueOf(tuple.getCloudletId()))
                     .addTasks(CompletedTask.newBuilder()
                             .setTaskId(String.valueOf(tuple.getCloudletId()))
                             .setAssignedNodeId(String.valueOf(getId()))
-                            .setActualExecutionTimeMs(executionTime)
+                            .setActualExecutionTimeMs(reportedExecutionTime)
                             .setDeadlineMet(success)
                             .build())
                     .setCompletionTimestamp(System.currentTimeMillis())
                     .build();
 
             schedulerClient.reportTaskCompletion(report);
-            logger.info("Reported task completion to scheduler: " + tuple.getCloudletId());
+            
+            if (isCached) {
+                logger.info("Reported CACHED task completion to scheduler (instant): " + tuple.getCloudletId());
+            } else {
+                logger.info("Reported task completion to scheduler (executed): " + tuple.getCloudletId());
+            }
 
         } catch (Exception e) {
             logger.severe("Failed to report task completion to scheduler: " + e.getMessage());
         }
+    }
+
+    /**
+     * Report task completion for RL learning to grpc-task-scheduler (legacy method for backward compatibility)
+     * Assumes task was not cached (executionTime > 0)
+     */
+    public void reportTaskCompletion(Tuple tuple, boolean success, long executionTime) {
+        reportTaskCompletion(tuple, success, executionTime, false);
     }
 
     /**

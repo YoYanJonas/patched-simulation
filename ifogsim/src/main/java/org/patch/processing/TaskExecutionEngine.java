@@ -185,6 +185,18 @@ public class TaskExecutionEngine {
             totalTasksExecuted++;
             successfulExecutions++;
 
+            // Report completion to scheduler with isCached=true and executionTime=0
+            // This indicates a successful cache hit (instant execution)
+            if (fogDevice instanceof org.patch.devices.RLFogDevice) {
+                Tuple tuple = taskInfo.getTuple();
+                ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
+                        tuple, true, 0, true); // success=true, executionTime=0, isCached=true
+                
+                System.out.println(String.format(
+                        "[FLOW-FOG-COMPLETE-CACHE] Time: %.2f - FogNode (ID:%d) - CACHED task %s completion reported to scheduler (instant, executionTime=0)",
+                        CloudSim.clock(), fogDevice.getId(), taskId));
+            }
+
             logger.info("Cached task " + taskId + " completed successfully");
             return true;
 
@@ -480,8 +492,11 @@ public class TaskExecutionEngine {
                             "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Reporting task %s completion to SCHEDULER server (success: %s, execTime: %d ms)",
                             CloudSim.clock(), fogDevice.getId(), taskId, success, executionTime));
 
+                    // Determine if task was cached (non-cached tasks have executionTime > 0)
+                    // Cache decision is made by scheduler and stored in taskInfo.isCachedTask()
+                    boolean isCached = taskInfo.isCachedTask();
                     ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
-                            tuple, success, executionTime);
+                            tuple, success, executionTime, isCached);
 
                     System.out.println(String.format(
                             "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Task %s completion successfully reported to SCHEDULER",
