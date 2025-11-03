@@ -287,7 +287,16 @@ algorithm_manager:
 caching:
   enabled: true
   repeat_threshold: 2 # Consider cached after 2nd occurrence
-  cache_ttl_hours: 24 # Cache validity in hours
+  cache_ttl_hours: 0.05 # Cache validity in hours (3 minutes = 180 seconds, less than simulation time of 300s)
   max_tracked_tasks: 1000 # Maximum task fingerprints to track
-  cleanup_interval_minutes: 60 # How often to cleanup old entries
+  cleanup_interval_minutes: 60 # How often to cleanup old entries (not used - we use 100ms from resort_interval_ms)
 
+# Cache RL Agent configuration
+cache_agent:
+  enabled: true
+  algorithm: 'qlearning'
+  learning_rate: 0.1
+  discount_factor: 0.95
+  exploration_rate: 0.3
+  min_exploration: 0.05
+  exploration_decay: 0.995
