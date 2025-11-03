@@ -192,21 +192,31 @@ public class RLController extends Controller {
                 handleTaskComplete(ev);
                 break;
             case FogEvents.STOP_SIMULATION:
-                // Graceful shutdown - allow queued events to complete
+                // Graceful shutdown - stop generating NEW tasks, but allow queued events to
+                // complete up to MAX_SIMULATION_TIME
+                double currentTime = CloudSim.clock();
                 System.out.println(String.format(
-                        "[DEBUG] RLController.processEvent() - Processing STOP_SIMULATION event at time %.2f",
-                        CloudSim.clock()));
-                // IMPORTANT: Don't call parent's STOP_SIMULATION handler because it calls
-                // System.exit(0)
-                // Instead, mark the simulation as terminated so new events stop being generated,
-                // but allow the simulation loop to continue processing queued events until complete
-                // This ensures all queued tasks are processed before stopping
-                CloudSim.terminateSimulation();
-                CloudSim.stopSimulation();
-                // Note: terminateSimulation() sets running=false, which stops new event generation
-                // but the simulation loop continues until the event queue is empty
-                // Don't call abruptallyTerminate() - we want to process queued events
-                // Don't call System.exit(0) - let main() continue to printResults()
+                        "[STOP-SIMULATION] Time: %.2f - Processing STOP_SIMULATION event - Stopping NEW task generation, processing queued events...",
+                        currentTime));
+
+                // Log task generation status
+                logger.info(String.format(
+                        "[STOP-SIMULATION] Time: %.2f - All task generators should stop generating NEW tasks now (sensors and external tasks check SIMULATION_TIME, MAX_SIMULATION_TIME is hard cap)",
+                        currentTime));
+
+                // Set terminateAt to MAX_SIMULATION_TIME to ensure simulation stops even if
+                // event queue is not empty
+                // This provides a hard termination cap while still allowing queued events to
+                // be processed
+                double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
+                CloudSim.terminateSimulation(maxSimulationTime);
+                logger.info(String.format(
+                        "[STOP-SIMULATION] Time: %.2f - Set terminateAt to %.2f - Simulation will stop at MAX_SIMULATION_TIME even if queue is not empty",
+                        currentTime, maxSimulationTime));
+
+                logger.info(String.format(
+                        "[STOP-SIMULATION] Time: %.2f - Marking simulation for graceful shutdown - will process queued events until MAX_SIMULATION_TIME (%.2f)",
+                        currentTime, maxSimulationTime));
                 break;
             default:
                 super.processEvent(ev);
@@ -316,6 +326,28 @@ public class RLController extends Controller {
      */
     private void processRLModulePlacement(Application application, RLModulePlacement rlPlacement) {
         logger.info("Processing RL module placement for application: " + application.getAppId());
+
+        // IMPORTANT: Set application reference for sensors so they can transmit tuples
+        int sensorsSet = 0;
+        for (Sensor sensor : getSensors()) {
+            if (sensor.getAppId() != null && sensor.getAppId().equals(application.getAppId())) {
+                sensor.setApp(application);
+                sensorsSet++;
+                logger.info(String.format(
+                        "[SENSOR-APP-SET] Set application reference for sensor: %s (ID:%d), AppId:%s",
+                        sensor.getName(), sensor.getId(), application.getAppId()));
+            }
+        }
+        logger.info(String.format(
+                "[SENSOR-APP-SET] Set application reference for %d sensors (total sensors: %d) in processRLModulePlacement",
+                sensorsSet, getSensors().size()));
+
+        // Set application reference for actuators
+        for (Actuator actuator : getActuators()) {
+            if (actuator.getAppId() != null && actuator.getAppId().equals(application.getAppId())) {
+                actuator.setApp(application);
+            }
+        }
 
         // Include energy and cost in placement decisions
         includeEnergyInPlacementRequests(application);
@@ -585,6 +617,28 @@ public class RLController extends Controller {
         logger.info(CloudSim.clock() + " Submitted application " + application.getAppId());
         FogUtils.appIdToGeoCoverageMap.put(application.getAppId(), application.getGeoCoverage());
         getApplications().put(application.getAppId(), application);
+
+        // IMPORTANT: Set application reference for sensors so they can transmit tuples
+        int sensorsSet = 0;
+        for (Sensor sensor : getSensors()) {
+            if (sensor.getAppId() != null && sensor.getAppId().equals(application.getAppId())) {
+                sensor.setApp(application);
+                sensorsSet++;
+                logger.info(String.format(
+                        "[SENSOR-APP-SET] Set application reference for sensor: %s (ID:%d), AppId:%s",
+                        sensor.getName(), sensor.getId(), application.getAppId()));
+            }
+        }
+        logger.info(String.format(
+                "[SENSOR-APP-SET] Set application reference for %d sensors (total sensors: %d) in processAppSubmitInternal",
+                sensorsSet, getSensors().size()));
+
+        // Set application reference for actuators
+        for (Actuator actuator : getActuators()) {
+            if (actuator.getAppId() != null && actuator.getAppId().equals(application.getAppId())) {
+                actuator.setApp(application);
+            }
+        }
 
         ModulePlacement modulePlacement = getAppModulePlacementPolicy().get(application.getAppId());
         for (FogDevice fogDevice : getFogDevices()) {

@@ -85,6 +85,9 @@ public class RLModulePlacement extends ModulePlacement {
         // Initialize applications map
         this.applications = new HashMap<>();
 
+        // Enable RL placement by default (will be overridden if needed)
+        enableRL();
+
         // Call mapModules to initialize placement
         mapModules();
 
@@ -171,16 +174,22 @@ public class RLModulePlacement extends ModulePlacement {
             Map<Integer, List<AppModule>> deviceToModuleMap = getRLDeviceToModuleMap();
             // Store the mapping
             setDeviceToModuleMap(deviceToModuleMap);
+            logger.info("RL Placement: Mapped " + deviceToModuleMap.size() + " devices with modules");
+            for (Integer deviceId : deviceToModuleMap.keySet()) {
+                logger.info("RL Placement: Device " + deviceId + " has " +
+                        deviceToModuleMap.get(deviceId).size() + " modules");
+            }
         } else {
             // Use default placement logic - place all modules on cloud
-            placeModulesOnCloud();
+            Map<Integer, List<AppModule>> deviceToModuleMap = placeModulesOnCloud();
+            logger.info("Fallback placement: Mapped " + deviceToModuleMap.size() + " devices with modules");
         }
     }
 
     /**
      * Place all modules on cloud as fallback
      */
-    private void placeModulesOnCloud() {
+    private Map<Integer, List<AppModule>> placeModulesOnCloud() {
         Map<Integer, List<AppModule>> deviceToModuleMap = new HashMap<>();
 
         // Find cloud device
@@ -197,9 +206,14 @@ public class RLModulePlacement extends ModulePlacement {
             for (AppModule module : getApplication().getModules()) {
                 deviceToModuleMap.get(cloudId).add(module);
             }
+            logger.info("Fallback placement: Placed " + deviceToModuleMap.get(cloudId).size() +
+                    " modules on cloud device (ID: " + cloudId + ")");
+        } else {
+            logger.warning("Fallback placement: Cloud device not found! Cannot place modules.");
         }
 
         this.setDeviceToModuleMap(deviceToModuleMap);
+        return deviceToModuleMap;
     }
 
     /**
@@ -227,7 +241,8 @@ public class RLModulePlacement extends ModulePlacement {
             return deviceToModuleMap;
         }
 
-        // Find modules that sensors send to (modules that are destinations of SENSOR edges)
+        // Find modules that sensors send to (modules that are destinations of SENSOR
+        // edges)
         Set<String> sensorDestinationModules = new HashSet<>();
         if (sensors != null && !sensors.isEmpty()) {
             // Get sensor tuple types from sensors
@@ -253,7 +268,8 @@ public class RLModulePlacement extends ModulePlacement {
         for (AppModule module : application.getModules()) {
             boolean placed = false;
 
-            // If this module receives sensor data, place it on ALL fog nodes (even with RL enabled)
+            // If this module receives sensor data, place it on ALL fog nodes (even with RL
+            // enabled)
             // This ensures sensors can send tuples to fog nodes locally
             if (sensorDestinationModules.contains(module.getName())) {
                 for (FogDevice fogDevice : fogNodeDevices) {
@@ -272,7 +288,8 @@ public class RLModulePlacement extends ModulePlacement {
                     deviceToModuleMap.get(bestDeviceId).add(module);
                     logger.fine("RL Placement: Placed module " + module.getName() + " on device " + bestDeviceId);
                 } else {
-                    logger.warning("RL Placement: Failed to place module " + module.getName() + " - no suitable device found");
+                    logger.warning(
+                            "RL Placement: Failed to place module " + module.getName() + " - no suitable device found");
                 }
             }
         }

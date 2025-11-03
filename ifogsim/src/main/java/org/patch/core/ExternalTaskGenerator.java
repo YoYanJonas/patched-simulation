@@ -64,6 +64,9 @@ public class ExternalTaskGenerator extends SimEntity {
     @Override
     public void startEntity() {
         logger.info("External task generator started - generating tasks at " + taskGenerationRate + " tasks/second");
+        System.out.println(String.format(
+                "[FLOW-EXTERNAL-GEN-START] Time: %.2f - External task generator started (ID:%d) - Rate: %.2f tasks/sec, CloudDevice: %d",
+                CloudSim.clock(), getId(), taskGenerationRate, cloudDeviceId));
     }
 
     @Override
@@ -71,13 +74,22 @@ public class ExternalTaskGenerator extends SimEntity {
         switch (ev.getTag()) {
             case GENERATE_EXTERNAL_TASK:
                 double currentTime = CloudSim.clock();
+                double simulationTime = Config.SIMULATION_TIME;
                 double maxSimulationTime = Config.MAX_SIMULATION_TIME;
 
-                // Stop generating NEW tasks once we've reached MAX_SIMULATION_TIME
-                // This allows the simulation to continue processing queued events
-                if (currentTime >= maxSimulationTime) {
+                // Stop generating NEW tasks once we've reached SIMULATION_TIME
+                // MAX_SIMULATION_TIME is a hard cap (should not reach here if working correctly)
+                if (currentTime >= simulationTime) {
                     logger.info(String.format(
-                            "External task generator stopping - Current time %.2f >= MAX_SIMULATION_TIME %.2f. Generated %d tasks total.",
+                            "External task generator stopping - Current time %.2f >= SIMULATION_TIME %.2f. Generated %d tasks total.",
+                            currentTime, simulationTime, taskCounter));
+                    return;
+                }
+
+                // Safety check: Also stop if we somehow exceeded MAX_SIMULATION_TIME
+                if (currentTime >= maxSimulationTime) {
+                    logger.warning(String.format(
+                            "External task generator HARD STOP - Current time %.2f >= MAX_SIMULATION_TIME %.2f. Generated %d tasks total.",
                             currentTime, maxSimulationTime, taskCounter));
                     return;
                 }
@@ -89,13 +101,13 @@ public class ExternalTaskGenerator extends SimEntity {
                     double nextGenerationTime = 1.0 / taskGenerationRate; // Time between tasks in seconds
                     double nextEventTime = currentTime + nextGenerationTime;
 
-                    // Only schedule if the next event would occur before MAX_SIMULATION_TIME
-                    if (nextEventTime < maxSimulationTime) {
+                    // Only schedule if the next event would occur before SIMULATION_TIME
+                    if (nextEventTime < simulationTime) {
                         schedule(getId(), nextGenerationTime, GENERATE_EXTERNAL_TASK);
                     } else {
                         logger.info(String.format(
-                                "External task generator stopping scheduling - Next event time %.2f >= MAX_SIMULATION_TIME %.2f. Generated %d tasks total.",
-                                nextEventTime, maxSimulationTime, taskCounter));
+                                "External task generator stopping scheduling - Next event time %.2f >= SIMULATION_TIME %.2f. Generated %d tasks total.",
+                                nextEventTime, simulationTime, taskCounter));
                     }
                 }
                 break;
@@ -111,17 +123,35 @@ public class ExternalTaskGenerator extends SimEntity {
      * Generate a new external task and send it to cloud for allocation
      */
     private void generateExternalTask() {
+        double currentTime = CloudSim.clock();
+        
         // Create a new external task
         ExternalTask task = createRandomExternalTask();
 
         // Convert to tuple
         Tuple tuple = convertToTuple(task);
 
+        // [DEBUG] Log task generation - START of allocation flow
+        System.out.println(String.format(
+                "[FLOW-EXTERNAL-GEN-CREATE] Time: %.2f - Generated external task %d (AppId:%s, CPU:%d, Mem:%d, Out:%d) - Will send to cloud device %d (Total generated: %d)",
+                currentTime, task.getId(), task.getAppId(), task.getCloudletLength(), 
+                task.getInputSize(), task.getOutputSize(), cloudDeviceId, taskCounter));
+
+        // [DEBUG] Log before sending
+        System.out.println(String.format(
+                "[FLOW-EXTERNAL-GEN-SEND] Time: %.2f - Sending external task %d to cloud device %d for RL allocation (TaskID: %d)",
+                CloudSim.clock(), task.getId(), cloudDeviceId, task.getId()));
+
         // Send directly to cloud device for RL allocation
         sendNow(cloudDeviceId, FogEvents.TUPLE_ARRIVAL, tuple);
 
         logger.info("Generated external task " + task.getId() + " and sent to cloud device " + cloudDeviceId
                 + " for allocation");
+        
+        // [DEBUG] Confirm send - task now at cloud for allocation
+        System.out.println(String.format(
+                "[FLOW-EXTERNAL-GEN-SENT] Time: %.2f - External task %d successfully sent to cloud device %d for allocation (Total generated: %d)",
+                CloudSim.clock(), task.getId(), cloudDeviceId, taskCounter));
     }
 
     /**
