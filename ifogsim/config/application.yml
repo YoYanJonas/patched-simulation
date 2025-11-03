@@ -303,7 +303,7 @@ simulation:
 
   # External tasks configuration
   external-tasks:
-    enabled: false # Simplified for now
+    enabled: true # External tasks enabled (set to false to disable)
     generation-rate: 2.0 # tasks per second
     initial-delay: 1000 # milliseconds
 
