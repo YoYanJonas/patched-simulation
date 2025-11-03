@@ -142,10 +142,23 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		}, nil
 	}
 
+	// Extract QueueContext from request (if provided)
+	var queueContext *pb.QueueContext
+	if req.QueueContext != nil {
+		queueContext = req.QueueContext
+		logger.GetLogger().Debugf("[SCHEDULER-RECEIVE] QueueContext provided: total_queue_size=%d", queueContext.TotalQueueSize)
+	} else {
+		// Default: empty queue context (will use 0 for queue length)
+		queueContext = &pb.QueueContext{
+			TotalQueueSize: 0,
+		}
+		logger.GetLogger().Debugf("[SCHEDULER-RECEIVE] No QueueContext provided, using default (0)")
+	}
+
 	logger.GetLogger().Infof("[SCHEDULER-PROCESS] Processing task for queue: TaskID=%s", req.Task.TaskId)
 
-	// Add task to queue via scheduler engine
-	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task)
+	// Add task to queue via scheduler engine (with queue context)
+	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task, queueContext)
 	if err != nil {
 		s.metrics.IncrementFailedRequests()
 		logger.GetLogger().Errorf("[SCHEDULER-ERROR] Failed to add task to queue: TaskID=%s, Error=%v", req.Task.TaskId, err)
