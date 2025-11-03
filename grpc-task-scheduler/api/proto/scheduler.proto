@@ -108,6 +108,13 @@ message Location {
 message AddTaskToQueueRequest {
   Task task = 1;
   SchedulingPolicy policy = 2;
+  // NEW: Queue context from fog node
+  QueueContext queue_context = 3;
+}
+
+// Queue context sent from iFogSim fog node
+message QueueContext {
+  int32 total_queue_size = 1;  // unscheduled + scheduled (from iFogSim)
 }
 
 message AddTaskToQueueResponse {

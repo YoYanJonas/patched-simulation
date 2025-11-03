@@ -51,6 +51,12 @@ message AddTaskToQueueRequest {
   Task task = 1;
   repeated FogNode available_nodes = 2;
   SchedulingPolicy policy = 3;
+  QueueContext queue_context = 4;  // NEW: Queue context from fog node
+}
+
+// Queue context sent from iFogSim fog node
+message QueueContext {
+  int32 total_queue_size = 1;  // unscheduled + scheduled (from iFogSim)
 }
 
 message AddTaskToQueueResponse {
