@@ -212,9 +212,26 @@ public class RLFogDevice extends FogDevice {
         this.completionDetector = new TaskCompletionDetector(
                 this, schedulerClient, cacheManager);
 
-        // Check if global RL is enabled
-        if (RLConfig.isFogRLEnabled()) {
+        // Check if global RL is enabled - force check config
+        org.patch.config.EnhancedConfigurationLoader.initialize();
+        boolean fogRLEnabled = RLConfig.isFogRLEnabled();
+        boolean placementRLFromConfig = org.patch.config.EnhancedConfigurationLoader
+                .getRLConfigBoolean("rl.servers.placement.enabled", true);
+        
+        // Enable RL if config says so
+        if (fogRLEnabled || placementRLFromConfig) {
+            if (!fogRLEnabled && placementRLFromConfig) {
+                // Enable it now if it wasn't already
+                String placementHost = org.patch.config.EnhancedConfigurationLoader.getRLConfig("rl.servers.placement.host", rlServerHost);
+                int placementPort = org.patch.config.EnhancedConfigurationLoader.getRLConfigInt("rl.servers.placement.port", rlServerPort);
+                RLConfig.enablePlacementRL(placementHost, placementPort);
+                org.patch.utils.ServiceRegistry.setConfig(RLConfig.ENABLE_FOG_RL, true);
+                logger.info("Enabled Fog RL from config during device creation at " + placementHost + ":" + placementPort);
+            }
             enableRL();
+            logger.info("RL enabled for fog device: " + getName() + " (ID: " + getId() + ")");
+        } else {
+            logger.info("RL NOT enabled for fog device: " + getName() + " - config says disabled");
         }
     }
 
@@ -442,6 +459,14 @@ public class RLFogDevice extends FogDevice {
 
         if (isExternalTask) {
             externalTaskCount++;
+
+            // [DEBUG] Log external task arrival at fog node
+            System.out.println(String.format(
+                    "[FLOW-FOG-ARRIVAL-EXTERNAL] Time: %.2f - FogNode %s (ID:%d) received EXTERNAL task %d from cloud (TupleType:%s, DestModule:%s, Total external: %d) - Task allocated by cloud allocator",
+                    CloudSim.clock(), getName(), getId(), tuple.getCloudletId(), 
+                    tuple.getTupleType(), tuple.getDestModuleName(), externalTaskCount));
+
+            // Process external task arrival
             processExternalTaskArrival(ev);
             return;
         }
@@ -484,7 +509,13 @@ public class RLFogDevice extends FogDevice {
 
             // Add to unscheduled queue (waiting for scheduler)
             internalTaskCount++;
-            unscheduledQueue.addTask(tuple, vmId, CloudSim.clock());
+            double queueAddTime = CloudSim.clock();
+            unscheduledQueue.addTask(tuple, vmId, queueAddTime);
+
+            // [DEBUG] Log unscheduled queue addition (internal task)
+            System.out.println(String.format(
+                    "[FLOW-FOG-UNSCHEDULED] Time: %.2f - FogNode %s (ID:%d) - Added INTERNAL task %d to unscheduled queue (VM:%d). Queue size: %d, Total internal: %d",
+                    queueAddTime, getName(), getId(), tuple.getCloudletId(), vmId, unscheduledQueue.size(), internalTaskCount));
 
             // Log unscheduled queue state (every 10th task or first 20)
             if (internalTaskCount <= 20 || internalTaskCount % 10 == 0) {
@@ -493,7 +524,13 @@ public class RLFogDevice extends FogDevice {
                         getName(), getId(), tuple.getCloudletId(), unscheduledQueue.size(), internalTaskCount));
             }
 
+            // [DEBUG] Log sending to scheduler (NOTE: task stays in unscheduled queue!)
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode %s (ID:%d) - Sending INTERNAL task %d to scheduler (task REMAINS in unscheduled queue, size: %d)",
+                    CloudSim.clock(), getName(), getId(), tuple.getCloudletId(), unscheduledQueue.size()));
+
             // Send tasks to scheduler gRPC server (non-blocking)
+            // IMPORTANT: Tasks are NOT removed from unscheduled queue here!
             schedulerIntegration.sendTasksToScheduler();
 
             // Schedule task processing from scheduled queue
@@ -542,6 +579,20 @@ public class RLFogDevice extends FogDevice {
      * Process the next task from scheduled queue using TaskExecutionEngine
      */
     private void processNextTaskRL() {
+        double currentTime = CloudSim.clock();
+        
+        // [DEBUG] Log scheduled queue status before execution attempt
+        if (scheduledQueue != null) {
+            int scheduledQueueSize = scheduledQueue.size();
+            System.out.println(String.format(
+                    "[FLOW-FOG-EXECUTE-START] Time: %.2f - FogNode %s (ID:%d) - Attempting to process next task from scheduled queue (queue size: %d)",
+                    currentTime, getName(), getId(), scheduledQueueSize));
+        } else {
+            System.err.println(String.format(
+                    "[FLOW-FOG-EXECUTE-START] Time: %.2f - FogNode %s (ID:%d) - ERROR: Scheduled queue is NULL!",
+                    currentTime, getName(), getId()));
+        }
+        
         if (taskExecutionEngine == null) {
             logger.warning("TaskExecutionEngine not initialized");
             return;
@@ -999,8 +1050,14 @@ public class RLFogDevice extends FogDevice {
      */
     protected void processExternalTaskArrival(SimEvent ev) {
         Tuple externalTask = (Tuple) ev.getData();
+        double currentTime = CloudSim.clock();
 
         logger.info("Received external task " + externalTask.getCloudletId() + " from cloud");
+
+        // [DEBUG] Log external task processing start
+        System.out.println(String.format(
+                "[FLOW-FOG-EXTERNAL] Time: %.2f - FogNode %s (ID:%d) - Processing external task %d from cloud",
+                currentTime, getName(), getId(), externalTask.getCloudletId()));
 
         // Send ACK back to source
         send(ev.getSource(), CloudSim.getMinTimeBetweenEvents(), FogEvents.TUPLE_ACK);
@@ -1014,16 +1071,37 @@ public class RLFogDevice extends FogDevice {
         externalTask.setVmId(vmId);
         updateTimingsOnReceipt(externalTask);
 
+        // [DEBUG] Log before adding to unscheduled queue
+        System.out.println(String.format(
+                "[FLOW-FOG-UNSCHEDULED] Time: %.2f - FogNode %s (ID:%d) - Adding EXTERNAL task %d to unscheduled queue (VM:%d). Current queue size: %d",
+                CloudSim.clock(), getName(), getId(), externalTask.getCloudletId(), vmId, unscheduledQueue.size()));
+
         // Add to unscheduled queue
         unscheduledQueue.addTask(externalTask, vmId, CloudSim.clock());
 
+        // [DEBUG] Log after adding to unscheduled queue
+        System.out.println(String.format(
+                "[FLOW-FOG-UNSCHEDULED] Time: %.2f - FogNode %s (ID:%d) - EXTERNAL task %d added to unscheduled queue. New queue size: %d",
+                CloudSim.clock(), getName(), getId(), externalTask.getCloudletId(), unscheduledQueue.size()));
+
+        // [DEBUG] Log sending to scheduler (NOTE: task stays in unscheduled queue!)
+        System.out.println(String.format(
+                "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode %s (ID:%d) - Sending EXTERNAL task %d to scheduler (task REMAINS in unscheduled queue, size: %d)",
+                CloudSim.clock(), getName(), getId(), externalTask.getCloudletId(), unscheduledQueue.size()));
+
         // Send to scheduler gRPC server
+        // IMPORTANT: Tasks are NOT removed from unscheduled queue here!
         schedulerIntegration.sendTasksToScheduler();
 
         // Schedule queue update from scheduler
         schedule(getId(), 100, RL_UPDATE_SCHEDULED_QUEUE);
 
         logger.info("External task " + externalTask.getCloudletId() + " added to unscheduled queue");
+        
+        // [DEBUG] Confirm external task processing
+        System.out.println(String.format(
+                "[FLOW-FOG-EXTERNAL] Time: %.2f - FogNode %s (ID:%d) - EXTERNAL task %d processing complete, waiting for scheduler response",
+                CloudSim.clock(), getName(), getId(), externalTask.getCloudletId()));
     }
 
     /**

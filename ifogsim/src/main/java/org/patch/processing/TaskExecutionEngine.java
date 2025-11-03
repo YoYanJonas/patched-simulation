@@ -97,28 +97,56 @@ public class TaskExecutionEngine {
      */
     public boolean processNextTask() {
         ScheduledQueue.TaskInfo taskInfo = null;
+        double currentTime = CloudSim.clock();
 
         try {
             if (scheduledQueue == null) {
+                System.err.println(String.format(
+                        "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - ERROR: Scheduled queue is NULL!",
+                        currentTime, fogDevice.getId()));
                 logger.warning("Scheduled queue is null, cannot process tasks");
                 return false;
             }
 
             if (scheduledQueue.isEmpty()) {
+                // [DEBUG] Log empty queue (only occasionally to avoid spam)
+                if (totalTasksExecuted == 0 || totalTasksExecuted % 100 == 0) {
+                    System.out.println(String.format(
+                            "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - Scheduled queue is EMPTY (total executed: %d)",
+                            currentTime, fogDevice.getId(), totalTasksExecuted));
+                }
                 return false;
             }
+
+            // [DEBUG] Log queue status before processing
+            System.out.println(String.format(
+                    "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - Scheduled queue has %d tasks, processing next...",
+                    currentTime, fogDevice.getId(), scheduledQueue.size()));
 
             // Get the next task from the head of the queue
             taskInfo = scheduledQueue.getNextTask();
             if (taskInfo == null) {
+                System.err.println(String.format(
+                        "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - ERROR: getNextTask() returned NULL (queue size: %d)",
+                        currentTime, fogDevice.getId(), scheduledQueue.size()));
                 return false;
             }
         } catch (Exception e) {
+            System.err.println(String.format(
+                    "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - ERROR checking scheduled queue: %s",
+                    currentTime, fogDevice.getId(), e.getMessage()));
             logger.log(Level.SEVERE, "Error checking scheduled queue state", e);
             return false;
         }
 
         String taskId = taskInfo.getTaskId();
+        // currentTime already defined above, reuse it
+
+        // [DEBUG] Log task execution from scheduled queue
+        System.out.println(String.format(
+                "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - Processing task %s from SCHEDULED queue (scheduled queue size after pop: %d)",
+                currentTime, fogDevice.getId(), taskId, scheduledQueue.size()));
+
         logger.fine("Processing task: " + taskId + " on device: " + fogDevice.getName());
 
         // Scheduler is the source of truth for caching decisions
@@ -171,12 +199,18 @@ public class TaskExecutionEngine {
     private boolean executeTask(ScheduledQueue.TaskInfo taskInfo) {
         String taskId = taskInfo.getTaskId();
         Tuple tuple = taskInfo.getTuple();
+        double startTime = CloudSim.clock();
+
+        // [DEBUG] Log task execution start
+        System.out.println(String.format(
+                "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - EXECUTING task %s (tuple ID: %d, CPU: %d, Mem: %d)",
+                startTime, fogDevice.getId(), taskId, tuple.getCloudletId(),
+                tuple.getCloudletLength(), tuple.getCloudletFileSize()));
 
         logger.fine("Executing task: " + taskId + " with tuple: " + tuple.getCloudletId());
 
         try {
             // Record start time
-            double startTime = CloudSim.clock();
             taskStartTimes.put(taskId, (long) startTime);
 
             // Create execution state
@@ -186,13 +220,24 @@ public class TaskExecutionEngine {
             // Remove from scheduled queue
             scheduledQueue.removeTask(taskId);
 
+            // [DEBUG] Log removal from scheduled queue
+            System.out.println(String.format(
+                    "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - Task %s removed from scheduled queue (new size: %d)",
+                    CloudSim.clock(), fogDevice.getId(), taskId, scheduledQueue.size()));
+
             // Process tuple using RL-aware processing
             RLTupleProcessingResult result = processTupleWithRL(tuple, taskInfo);
 
             // Calculate execution metrics
-            long executionTime = (long) (CloudSim.clock() - startTime);
+            double endTime = CloudSim.clock();
+            long executionTime = (long) (endTime - startTime);
             double energyConsumed = rlTupleProcessing.getTotalEnergyConsumed();
             double cost = rlTupleProcessing.getTotalCost();
+
+            // [DEBUG] Log task execution completion
+            System.out.println(String.format(
+                    "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - Task %s EXECUTION COMPLETE (success: %s, time: %d ms, energy: %.2f J, cost: $%.4f)",
+                    endTime, fogDevice.getId(), taskId, result.isSuccess(), executionTime, energyConsumed, cost));
 
             // Update execution state
             state.setCompleted(true);
@@ -203,6 +248,12 @@ public class TaskExecutionEngine {
 
             // Update metrics
             updateExecutionMetrics(executionTime, energyConsumed, cost, result.isSuccess());
+
+            // [DEBUG] Log before reporting completion
+            boolean isExternalTask = isExternalTask(tuple);
+            System.out.println(String.format(
+                    "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Reporting task %s completion (isExternal: %s, will report to scheduler: true, will report to allocator: %s)",
+                    endTime, fogDevice.getId(), taskId, isExternalTask, isExternalTask));
 
             // Report task completion to RL agents
             reportTaskCompletion(taskInfo, result, executionTime);
@@ -420,11 +471,24 @@ public class TaskExecutionEngine {
         if (schedulerClient != null && schedulerClient.isConnected()) {
             try {
                 if (fogDevice instanceof org.patch.devices.RLFogDevice) {
+                    // [DEBUG] Log reporting to scheduler
+                    System.out.println(String.format(
+                            "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Reporting task %s completion to SCHEDULER server (success: %s, execTime: %d ms)",
+                            CloudSim.clock(), fogDevice.getId(), taskId, success, executionTime));
+
                     ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
                             tuple, success, executionTime);
+
+                    System.out.println(String.format(
+                            "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Task %s completion successfully reported to SCHEDULER",
+                            CloudSim.clock(), fogDevice.getId(), taskId));
+
                     logger.fine("Task completion reported to scheduler: " + taskId);
                 }
             } catch (Exception e) {
+                System.out.println(String.format(
+                        "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - ERROR reporting task %s to scheduler: %s",
+                        CloudSim.clock(), fogDevice.getId(), taskId, e.getMessage()));
                 logger.log(Level.WARNING, "Failed to report task completion to scheduler: " + taskId, e);
             }
         }
@@ -432,6 +496,11 @@ public class TaskExecutionEngine {
         // Report to go-grpc-server allocator (ONLY for external tasks)
         if (isExternalTask && fogDevice instanceof org.patch.devices.RLFogDevice) {
             try {
+                // [DEBUG] Log reporting to allocator for external tasks
+                System.out.println(String.format(
+                        "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Reporting EXTERNAL task %s completion to ALLOCATOR via cloud (success: %s, execTime: %d ms)",
+                        CloudSim.clock(), fogDevice.getId(), taskId, success, executionTime));
+
                 // For external tasks, we need to notify the cloud device to report to allocator
                 // The cloud device will handle the actual gRPC call to go-grpc-server
                 org.patch.devices.RLFogDevice fogDeviceImpl = (org.patch.devices.RLFogDevice) fogDevice;
@@ -441,10 +510,22 @@ public class TaskExecutionEngine {
                 CloudSim.send(fogDeviceImpl.getId(), cloudId, 0, ExtendedFogEvents.ALLOC_OUTCOME_REPORT,
                         new Object[] { tuple, success, executionTime });
 
+                System.out.println(String.format(
+                        "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - EXTERNAL task %s completion event sent to cloud (ID:%d) for allocator reporting",
+                        CloudSim.clock(), fogDevice.getId(), taskId, cloudId));
+
                 logger.fine("External task completion sent to cloud for allocator reporting: " + taskId);
             } catch (Exception e) {
+                System.out.println(String.format(
+                        "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - ERROR reporting EXTERNAL task %s to allocator: %s",
+                        CloudSim.clock(), fogDevice.getId(), taskId, e.getMessage()));
                 logger.log(Level.WARNING, "Failed to report external task completion to cloud: " + taskId, e);
             }
+        } else if (!isExternalTask) {
+            // [DEBUG] Log that we're NOT reporting to allocator for internal tasks
+            System.out.println(String.format(
+                    "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - INTERNAL task %s - NOT reporting to allocator (only scheduler)",
+                    CloudSim.clock(), fogDevice.getId(), taskId));
         }
     }
 
@@ -465,7 +546,8 @@ public class TaskExecutionEngine {
      * 
      * @param taskId The task ID
      * @param result The processing result
-     * @deprecated Use cacheManager.storeInCache() with scheduler's cache key directly
+     * @deprecated Use cacheManager.storeInCache() with scheduler's cache key
+     *             directly
      */
     @Deprecated
     private void storeTaskResult(String taskId, RLTupleProcessingResult result) {
