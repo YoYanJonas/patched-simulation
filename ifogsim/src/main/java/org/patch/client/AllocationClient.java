@@ -112,10 +112,20 @@ public class AllocationClient implements AutoCloseable {
     public TaskAllocationResponse allocateTask(String taskId, double cpuRequirement,
             double memoryRequirement, double bandwidthRequirement,
             int priority, long deadlineMs, Map<String, String> taskMetadata) {
+        long requestStartTime = System.currentTimeMillis();
+        
+        logger.info(String.format("[IFOGSIM-ALLOC-SEND] Sending allocation request: TaskID=%s, CPU=%.3f, Mem=%.3f, BW=%.2f, Priority=%d, Deadline=%d",
+                taskId, cpuRequirement, memoryRequirement, bandwidthRequirement, priority, deadlineMs));
+        
         try {
             // Check if service is available
-            if (!baseClient.isServiceAvailable()) {
-                logger.warning("Allocation service unavailable, using fallback allocation");
+            boolean isConnected = baseClient.isConnected();
+            boolean isServiceAvailable = baseClient.isServiceAvailable();
+            logger.info(String.format("[IFOGSIM-ALLOC-CONN] Connection check: isConnected=%s, isServiceAvailable=%s",
+                    isConnected, isServiceAvailable));
+            
+            if (!isServiceAvailable) {
+                logger.warning(String.format("[IFOGSIM-ALLOC-FALLBACK] Allocation service unavailable, using fallback allocation for TaskID=%s", taskId));
                 return createFallbackAllocationResponse(taskId, cpuRequirement, memoryRequirement);
             }
 
@@ -129,12 +139,21 @@ public class AllocationClient implements AutoCloseable {
                     .putAllTaskMetadata(taskMetadata)
                     .build();
 
-            return allocationStub.allocateTask(request);
+            logger.info(String.format("[IFOGSIM-ALLOC-CALL] Calling gRPC allocateTask: TaskID=%s", taskId));
+            TaskAllocationResponse response = allocationStub.allocateTask(request);
+            long latency = System.currentTimeMillis() - requestStartTime;
+            
+            logger.info(String.format("[IFOGSIM-ALLOC-RESP] Received allocation response: TaskID=%s, AllocatedNode=%s, Success=%s, Latency=%dms",
+                    response.getTaskId(), response.getAllocatedNodeId(), response.getSuccess(), latency));
+            
+            return response;
         } catch (StatusRuntimeException e) {
-            logger.log(Level.SEVERE, "Failed to allocate task: " + e.getMessage(), e);
+            long latency = System.currentTimeMillis() - requestStartTime;
+            logger.log(Level.SEVERE, String.format("[IFOGSIM-ALLOC-ERROR] Failed to allocate task: TaskID=%s, Error=%s, Latency=%dms",
+                    taskId, e.getMessage(), latency), e);
 
             // Graceful degradation: return fallback response
-            logger.warning("Using fallback allocation due to service failure");
+            logger.warning(String.format("[IFOGSIM-ALLOC-FALLBACK] Using fallback allocation due to service failure for TaskID=%s", taskId));
             return createFallbackAllocationResponse(taskId, cpuRequirement, memoryRequirement);
         }
     }
