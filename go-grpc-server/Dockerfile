@@ -29,7 +29,7 @@ COPY . .
 
 ENV GOPROXY=https://proxy.golang.org,direct
 
-RUN go install github.com/air-verse/air@1.61.1
+RUN go install github.com/air-verse/air@v1.61.1
 COPY config/air.toml /app/air.toml
 
 # Make generate script executable if it's not already

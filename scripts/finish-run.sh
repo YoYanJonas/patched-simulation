@@ -120,9 +120,9 @@ for node in node1 node2 node3; do
     # Check scheduler logs (always generated if container ran)
     if [ -f "$REPORT_DIR/scheduler/$node/logs/server.log" ]; then
         echo "✓ Scheduler $node logs: $REPORT_DIR/scheduler/$node/logs/server.log"
-        local scheduler_errors=$(grep -iE "error|fatal|panic" "$REPORT_DIR/scheduler/$node/logs/server.log" 2>/dev/null | wc -l || echo "0")
-        local scheduler_tasks=$(grep -iE "\[SCHEDULER-RECEIVE\]" "$REPORT_DIR/scheduler/$node/logs/server.log" 2>/dev/null | wc -l || echo "0")
-        local scheduler_success=$(grep -iE "\[SCHEDULER-SUCCESS\]" "$REPORT_DIR/scheduler/$node/logs/server.log" 2>/dev/null | wc -l || echo "0")
+        scheduler_errors=$(grep -iE "error|fatal|panic" "$REPORT_DIR/scheduler/$node/logs/server.log" 2>/dev/null | wc -l || echo "0")
+        scheduler_tasks=$(grep -iE "\[SCHEDULER-RECEIVE\]" "$REPORT_DIR/scheduler/$node/logs/server.log" 2>/dev/null | wc -l || echo "0")
+        scheduler_success=$(grep -iE "\[SCHEDULER-SUCCESS\]" "$REPORT_DIR/scheduler/$node/logs/server.log" 2>/dev/null | wc -l || echo "0")
         if [ "$scheduler_errors" -gt 0 ]; then
             echo "  ⚠ Scheduler $node has $scheduler_errors errors"
         fi
@@ -133,9 +133,9 @@ done
 # Check allocator logs
 if [ -f "$REPORT_DIR/allocator/logs/server.log" ]; then
     echo "✓ Allocator logs: $REPORT_DIR/allocator/logs/server.log"
-    local allocator_errors=$(grep -iE "error|fatal|panic" "$REPORT_DIR/allocator/logs/server.log" 2>/dev/null | wc -l || echo "0")
-    local allocator_tasks=$(grep -iE "\[ALLOCATOR-RECEIVE\]" "$REPORT_DIR/allocator/logs/server.log" 2>/dev/null | wc -l || echo "0")
-    local allocator_nodes=$(grep -iE "\[ALLOCATOR-NODE-REGISTERED\]" "$REPORT_DIR/allocator/logs/server.log" 2>/dev/null | wc -l || echo "0")
+    allocator_errors=$(grep -iE "error|fatal|panic" "$REPORT_DIR/allocator/logs/server.log" 2>/dev/null | wc -l || echo "0")
+    allocator_tasks=$(grep -iE "\[ALLOCATOR-RECEIVE\]" "$REPORT_DIR/allocator/logs/server.log" 2>/dev/null | wc -l || echo "0")
+    allocator_nodes=$(grep -iE "\[ALLOCATOR-NODE-REGISTERED\]" "$REPORT_DIR/allocator/logs/server.log" 2>/dev/null | wc -l || echo "0")
     if [ "$allocator_errors" -gt 0 ]; then
         echo "  ⚠ Allocator has $allocator_errors errors"
     fi

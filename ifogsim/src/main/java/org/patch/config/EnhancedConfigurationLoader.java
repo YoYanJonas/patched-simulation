@@ -230,14 +230,33 @@ public class EnhancedConfigurationLoader {
                     try {
                         String host = YamlConfigLoader.getValue("schedulers.instances." + schedulerName + ".host",
                                 null);
-                        int port = YamlConfigLoader.getInt("schedulers.instances." + schedulerName + ".port", 0);
+                        // Parse env var syntax if present (e.g., ${SCHEDULER_1_HOST:localhost})
+                        if (host != null && host.contains("${")) {
+                            host = parseEnvVarSyntax(host);
+                        }
+                        
+                        String portStr = YamlConfigLoader.getValue("schedulers.instances." + schedulerName + ".port", null);
+                        int port = 0;
+                        if (portStr != null) {
+                            // Parse env var syntax if present
+                            if (portStr.contains("${")) {
+                                portStr = parseEnvVarSyntax(portStr);
+                            }
+                            try {
+                                port = Integer.parseInt(portStr);
+                            } catch (NumberFormatException e) {
+                                // Port string contains env var syntax that wasn't parsed or is invalid
+                                port = 0;
+                            }
+                        }
+                        
                         int maxFogNodes = YamlConfigLoader
                                 .getInt("schedulers.instances." + schedulerName + ".max-fog-nodes", 1);
                         String name = YamlConfigLoader.getValue("schedulers.instances." + schedulerName + ".name",
                                 schedulerName);
 
-                        // Fall back to env vars if YAML values are missing
-                        if (host == null || host.isEmpty()) {
+                        // Fall back to env vars if YAML values are missing or invalid
+                        if (host == null || host.isEmpty() || host.contains("${")) {
                             host = getEnvString(
                                     "SCHEDULER_" + schedulerName.replace("scheduler-", "").toUpperCase() + "_HOST",
                                     "localhost");
@@ -264,12 +283,39 @@ public class EnhancedConfigurationLoader {
                 }
 
                 // Load fog node mapping from YAML
-                Map<String, Object> mapping = YamlConfigLoader.getMap("schedulers.fog-node-mapping");
-                if (!mapping.isEmpty()) {
-                    for (Map.Entry<String, Object> entry : mapping.entrySet()) {
+                // Note: YAML may parse numeric keys as Integer, not String
+                @SuppressWarnings("unchecked")
+                Map<String, Object> mappingRaw = YamlConfigLoader.getMap("schedulers.fog-node-mapping");
+                if (!mappingRaw.isEmpty()) {
+                    // Handle both Map<String, Object> and Map<Integer, Object> from YAML
+                    Map<Object, Object> mapping = new HashMap<>();
+                    for (Map.Entry<?, ?> entry : mappingRaw.entrySet()) {
+                        mapping.put(entry.getKey(), entry.getValue());
+                    }
+                    
+                    for (Map.Entry<Object, Object> entry : mapping.entrySet()) {
                         try {
-                            int fogNodeId = Integer.parseInt(entry.getKey());
-                            String schedulerName = entry.getValue().toString();
+                            // Handle both String and Integer keys from YAML
+                            int fogNodeId;
+                            Object keyObj = entry.getKey();
+                            if (keyObj instanceof String) {
+                                fogNodeId = Integer.parseInt((String) keyObj);
+                            } else if (keyObj instanceof Integer) {
+                                fogNodeId = (Integer) keyObj;
+                            } else {
+                                fogNodeId = Integer.parseInt(keyObj.toString());
+                            }
+                            
+                            // Handle both String and Integer values from YAML
+                            Object value = entry.getValue();
+                            String schedulerName;
+                            if (value instanceof String) {
+                                schedulerName = (String) value;
+                            } else if (value instanceof Integer) {
+                                schedulerName = String.valueOf(value);
+                            } else {
+                                schedulerName = value.toString();
+                            }
                             fogNodeToSchedulerMap.put(fogNodeId, schedulerName);
                             logger.fine("Mapped fog node " + fogNodeId + " to " + schedulerName);
                         } catch (Exception e) {
@@ -392,6 +438,44 @@ public class EnhancedConfigurationLoader {
             }
         }
         return defaultValue;
+    }
+
+    /**
+     * Parse environment variable syntax: ${VAR:default} or ${VAR}
+     * If VAR is set, use it; otherwise use default (or empty string if no default)
+     */
+    private static String parseEnvVarSyntax(String value) {
+        if (value == null || value.isEmpty() || !value.contains("${")) {
+            return value;
+        }
+        
+        // Pattern: ${VAR:default} or ${VAR}
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\$\\{([^:}]+)(?::([^}]*))?\\}");
+        java.util.regex.Matcher matcher = pattern.matcher(value);
+        
+        StringBuffer result = new StringBuffer();
+        while (matcher.find()) {
+            String varName = matcher.group(1);
+            String defaultValue = matcher.group(2); // May be null
+            
+            String envValue = System.getenv(varName);
+            String replacement;
+            if (envValue != null && !envValue.isEmpty()) {
+                replacement = envValue;
+            } else if (defaultValue != null) {
+                replacement = defaultValue;
+            } else {
+                replacement = ""; // No env var and no default
+            }
+            
+            // Escape special characters in replacement string for appendReplacement
+            // $ and \ need to be escaped in replacement strings
+            replacement = java.util.regex.Matcher.quoteReplacement(replacement);
+            matcher.appendReplacement(result, replacement);
+        }
+        matcher.appendTail(result);
+        
+        return result.toString();
     }
 
     // Configuration methods using environment variables and defaults
@@ -705,38 +789,61 @@ public class EnhancedConfigurationLoader {
     public static String getRLConfig(String key, String defaultValue) {
         ensureInitialized();
 
+        String value = defaultValue;
+        
         // Map RL config keys to YAML paths - YAML first, then env vars
         switch (key) {
             case "rl.servers.cloud.host":
-                return getConfigValue("rl.servers.cloud.host", "CLOUD_RL_SERVER_HOST", defaultValue);
+                value = getConfigValue("rl.servers.cloud.host", "CLOUD_RL_SERVER_HOST", defaultValue);
+                break;
             case "rl.servers.cloud.port":
-                return getConfigValue("rl.servers.cloud.port", "CLOUD_RL_SERVER_PORT", defaultValue);
+                value = getConfigValue("rl.servers.cloud.port", "CLOUD_RL_SERVER_PORT", defaultValue);
+                break;
             case "rl.servers.cloud.enabled":
-                return getConfigValue("rl.servers.cloud.enabled", "RL_SERVERS_CLOUD_ENABLED",
+                value = getConfigValue("rl.servers.cloud.enabled", "RL_SERVERS_CLOUD_ENABLED",
                         getConfigValue("rl.servers.cloud.enabled", "ENABLE_CLOUD_RL", defaultValue));
+                break;
             case "rl.servers.external-task.host":
-                return getConfigValue("rl.servers.external-task.host", "EXTERNAL_TASK_SERVER_HOST", defaultValue);
+                value = getConfigValue("rl.servers.external-task.host", "EXTERNAL_TASK_SERVER_HOST", defaultValue);
+                break;
             case "rl.servers.external-task.port":
-                return getConfigValue("rl.servers.external-task.port", "EXTERNAL_TASK_SERVER_PORT", defaultValue);
+                value = getConfigValue("rl.servers.external-task.port", "EXTERNAL_TASK_SERVER_PORT", defaultValue);
+                break;
             case "rl.servers.external-task.enabled":
-                return getConfigValue("rl.servers.external-task.enabled", "RL_SERVERS_EXTERNAL_TASK_ENABLED",
+                value = getConfigValue("rl.servers.external-task.enabled", "RL_SERVERS_EXTERNAL_TASK_ENABLED",
                         getConfigValue("rl.servers.external-task.enabled", "ENABLE_EXTERNAL_TASKS", defaultValue));
+                break;
             case "rl.servers.placement.host":
-                return getConfigValue("rl.servers.placement.host", "PLACEMENT_RL_SERVER_HOST", defaultValue);
+                value = getConfigValue("rl.servers.placement.host", "PLACEMENT_RL_SERVER_HOST", defaultValue);
+                break;
             case "rl.servers.placement.port":
-                return getConfigValue("rl.servers.placement.port", "PLACEMENT_RL_SERVER_PORT", defaultValue);
+                value = getConfigValue("rl.servers.placement.port", "PLACEMENT_RL_SERVER_PORT", defaultValue);
+                break;
             case "rl.servers.placement.enabled":
-                return getConfigValue("rl.servers.placement.enabled", "RL_SERVERS_PLACEMENT_ENABLED",
+                value = getConfigValue("rl.servers.placement.enabled", "RL_SERVERS_PLACEMENT_ENABLED",
                         getConfigValue("rl.servers.placement.enabled", "ENABLE_PLACEMENT_RL", defaultValue));
+                break;
             case "rl.algorithm.learning-rate":
-                return getConfigValue("rl.algorithm.learning-rate", "RL_LEARNING_RATE", defaultValue);
+                value = getConfigValue("rl.algorithm.learning-rate", "RL_LEARNING_RATE", defaultValue);
+                break;
             case "rl.algorithm.exploration-rate":
-                return getConfigValue("rl.algorithm.exploration-rate", "RL_EXPLORATION_RATE", defaultValue);
+                value = getConfigValue("rl.algorithm.exploration-rate", "RL_EXPLORATION_RATE", defaultValue);
+                break;
             case "rl.training.update-interval":
-                return getConfigValue("rl.training.update-interval", "RL_UPDATE_INTERVAL", defaultValue);
+                value = getConfigValue("rl.training.update-interval", "RL_UPDATE_INTERVAL", defaultValue);
+                break;
             default:
                 return defaultValue;
         }
+        
+        // Parse env var syntax if present (e.g., ${CLOUD_RL_SERVER_HOST:localhost})
+        // Note: getConfigValue already calls YamlConfigLoader.getValue() which parses env vars,
+        // but we do an extra check here in case the value still contains ${...}
+        if (value != null && value.contains("${")) {
+            value = parseEnvVarSyntax(value);
+        }
+        
+        return value;
     }
 
     public static int getRLConfigInt(String key, int defaultValue) {

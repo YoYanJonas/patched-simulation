@@ -120,10 +120,52 @@ public class YamlConfigLoader {
         }
 
         if (current != null) {
-            return current.toString();
+            String value = current.toString();
+            // Parse environment variable syntax: ${VAR:default} or ${VAR}
+            value = parseEnvironmentVariables(value);
+            return value;
         }
 
         return defaultValue;
+    }
+
+    /**
+     * Parse environment variable syntax from YAML values
+     * Supports: ${VAR:default} and ${VAR}
+     * If VAR is set, use it; otherwise use default (or empty string if no default)
+     */
+    private static String parseEnvironmentVariables(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        
+        // Pattern: ${VAR:default} or ${VAR}
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\$\\{([^:}]+)(?::([^}]*))?\\}");
+        java.util.regex.Matcher matcher = pattern.matcher(value);
+        
+        StringBuffer result = new StringBuffer();
+        while (matcher.find()) {
+            String varName = matcher.group(1);
+            String defaultValue = matcher.group(2); // May be null
+            
+            String envValue = System.getenv(varName);
+            String replacement;
+            if (envValue != null && !envValue.isEmpty()) {
+                replacement = envValue;
+            } else if (defaultValue != null) {
+                replacement = defaultValue;
+            } else {
+                replacement = ""; // No env var and no default
+            }
+            
+            // Escape special characters in replacement string for appendReplacement
+            // $ and \ need to be escaped in replacement strings
+            replacement = java.util.regex.Matcher.quoteReplacement(replacement);
+            matcher.appendReplacement(result, replacement);
+        }
+        matcher.appendTail(result);
+        
+        return result.toString();
     }
 
     /**
