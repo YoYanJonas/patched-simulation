@@ -32,9 +32,6 @@ type QLearningScheduler struct {
 	// Performance optimization: frequently accessed states cache
 	frequentStates map[string]time.Time // Track frequently accessed states
 	cacheCleanup   time.Time            // Last cache cleanup time
-
-	// Cache manager for state features
-	taskCacheManager interface{} // Generic interface to avoid circular imports
 }
 
 // Experience represents a learning experience
@@ -70,11 +67,6 @@ func NewQLearningScheduler(cfg config.RLConfig, weights config.RewardWeights) *Q
 	}
 }
 
-// SetCacheManager sets the cache manager for state feature extraction
-func (q *QLearningScheduler) SetCacheManager(cacheManager interface{}) {
-	q.taskCacheManager = cacheManager
-}
-
 // Name returns the algorithm name
 func (q *QLearningScheduler) Name() string {
 	return "Q-Learning Scheduler"
@@ -86,7 +78,7 @@ func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeM
 		return tasks
 	}
 
-	state := ExtractStateFeatures(tasks, nodeManager, q.taskCacheManager)
+	state := ExtractStateFeatures(tasks, nodeManager)
 
 	// Select action using Q-learning policy
 	action := q.SelectAction(state)
