@@ -112,10 +112,19 @@ func (s *SchedulerService) Stop() {
 
 // AddTaskToQueue adds a task to the scheduling queue
 func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskToQueueRequest) (*pb.AddTaskToQueueResponse, error) {
+	// [DEBUG] Log incoming queue request
+	if req.Task != nil {
+		logger.GetLogger().Infof("[SCHEDULER-RECEIVE] Received AddTaskToQueue request: TaskID=%s, TaskName=%s, Priority=%d, CPU=%d, Mem=%d",
+			req.Task.TaskId, req.Task.TaskName, req.Task.Priority, req.Task.CpuRequirement, req.Task.MemoryRequirement)
+	} else {
+		logger.GetLogger().Error("[SCHEDULER-RECEIVE] Received AddTaskToQueue with nil task")
+	}
+	
 	s.metrics.IncrementRequests()
 
 	if req.Task == nil {
 		s.metrics.IncrementFailedRequests()
+		logger.GetLogger().Error("[SCHEDULER-ERROR] Task is nil")
 		return &pb.AddTaskToQueueResponse{
 			TaskId:  "",
 			Success: false,
@@ -125,6 +134,7 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 
 	if req.Task.TaskId == "" {
 		s.metrics.IncrementFailedRequests()
+		logger.GetLogger().Error("[SCHEDULER-ERROR] TaskID is empty")
 		return &pb.AddTaskToQueueResponse{
 			TaskId:  "",
 			Success: false,
@@ -132,10 +142,13 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		}, nil
 	}
 
+	logger.GetLogger().Infof("[SCHEDULER-PROCESS] Processing task for queue: TaskID=%s", req.Task.TaskId)
+
 	// Add task to queue via scheduler engine
 	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task)
 	if err != nil {
 		s.metrics.IncrementFailedRequests()
+		logger.GetLogger().Errorf("[SCHEDULER-ERROR] Failed to add task to queue: TaskID=%s, Error=%v", req.Task.TaskId, err)
 		return &pb.AddTaskToQueueResponse{
 			TaskId:  req.Task.TaskId,
 			Success: false,
@@ -144,9 +157,10 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	}
 
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Task %s added to queue at position %d", req.Task.TaskId, queuePosition)
+	logger.GetLogger().Infof("[SCHEDULER-SUCCESS] Task %s added to queue at position %d (wait=%dms, cached=%t, cacheKey=%s, action=%v)",
+		req.Task.TaskId, queuePosition, estimatedWait, isCached, cacheKey, cacheAction)
 
-	return &pb.AddTaskToQueueResponse{
+	response := &pb.AddTaskToQueueResponse{
 		TaskId:              req.Task.TaskId,
 		Success:             true,
 		Message:             "task added to queue successfully",
@@ -155,7 +169,12 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		IsCachedTask:        isCached,
 		CacheKey:            cacheKey,
 		CacheAction:         cacheAction,
-	}, nil
+	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-RESPONSE] Sending queue response: TaskID=%s, Success=%t, Position=%d",
+		response.TaskId, response.Success, response.QueuePosition)
+	
+	return response, nil
 }
 
 // NEW: ReportTaskCompletion - delegates to SchedulerEngine
@@ -380,10 +399,12 @@ func (s *SchedulerService) GetAgent() *rl.Agent {
 
 // GetSortedQueue returns the current sorted queue
 func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSortedQueueRequest) (*pb.GetSortedQueueResponse, error) {
+	logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-RECEIVE] Received GetSortedQueue request: IncludeMetadata=%t", req.IncludeMetadata)
 	s.metrics.IncrementRequests()
 
 	if s.schedulerEngine == nil {
 		s.metrics.IncrementFailedRequests()
+		logger.GetLogger().Error("[SCHEDULER-GET-QUEUE-ERROR] Scheduler engine not initialized")
 		return &pb.GetSortedQueueResponse{
 			SortedTasks:   []*pb.Task{},
 			AlgorithmUsed: "unknown",
@@ -396,9 +417,33 @@ func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSorted
 	// Get sorted queue from scheduler engine
 	response := s.schedulerEngine.GetSortedQueue(req.IncludeMetadata)
 
-	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Sorted queue requested: %d tasks", len(response.SortedTasks))
+	// [DEBUG] Enhanced logging for scheduled queue on scheduler side
+	logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-RESPONSE] Returning sorted queue: Tasks=%d, Algorithm=%s, QueueSize=%d, NodeID=%s",
+		len(response.SortedTasks), response.AlgorithmUsed, response.QueueSize, response.NodeId)
+	
+	// Log task details if queue has tasks (first 10)
+	if len(response.SortedTasks) > 0 {
+		taskDetails := ""
+		maxTasks := len(response.SortedTasks)
+		if maxTasks > 10 {
+			maxTasks = 10
+		}
+		for i := 0; i < maxTasks; i++ {
+			task := response.SortedTasks[i]
+			if i > 0 {
+				taskDetails += "|"
+			}
+			taskDetails += fmt.Sprintf("ID=%s,CPU=%d,Mem=%d", task.TaskId, task.CpuRequirement, task.MemoryRequirement)
+		}
+		if len(response.SortedTasks) > 10 {
+			taskDetails += fmt.Sprintf("... (+%d more)", len(response.SortedTasks)-10)
+		}
+		logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-TASKS] Queue task details: %s", taskDetails)
+	} else {
+		logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-EMPTY] Queue is EMPTY - no tasks scheduled yet")
+	}
 
+	s.metrics.IncrementSuccessfulRequests()
 	return response, nil
 }
 
