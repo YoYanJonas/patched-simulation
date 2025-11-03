@@ -2,8 +2,10 @@ package org.patch.core;
 
 import org.cloudbus.cloudsim.core.SimEntity;
 import org.cloudbus.cloudsim.core.SimEvent;
+import org.cloudbus.cloudsim.core.CloudSim;
 import org.fog.entities.Tuple;
 import org.fog.utils.FogEvents;
+import org.fog.utils.Config;
 import org.patch.config.EnhancedConfigurationLoader;
 import org.patch.utils.TupleFactory;
 
@@ -68,11 +70,33 @@ public class ExternalTaskGenerator extends SimEntity {
     public void processEvent(SimEvent ev) {
         switch (ev.getTag()) {
             case GENERATE_EXTERNAL_TASK:
+                double currentTime = CloudSim.clock();
+                double maxSimulationTime = Config.MAX_SIMULATION_TIME;
+
+                // Stop generating NEW tasks once we've reached MAX_SIMULATION_TIME
+                // This allows the simulation to continue processing queued events
+                if (currentTime >= maxSimulationTime) {
+                    logger.info(String.format(
+                            "External task generator stopping - Current time %.2f >= MAX_SIMULATION_TIME %.2f. Generated %d tasks total.",
+                            currentTime, maxSimulationTime, taskCounter));
+                    return;
+                }
+
                 generateExternalTask();
                 // Schedule next generation based on rate
+                // CloudSim time units are in seconds, so convert tasks/sec to seconds delay
                 if (taskGenerationRate > 0) {
-                    double nextGenerationTime = 1000.0 / taskGenerationRate; // Convert to milliseconds
-                    schedule(getId(), nextGenerationTime, GENERATE_EXTERNAL_TASK);
+                    double nextGenerationTime = 1.0 / taskGenerationRate; // Time between tasks in seconds
+                    double nextEventTime = currentTime + nextGenerationTime;
+
+                    // Only schedule if the next event would occur before MAX_SIMULATION_TIME
+                    if (nextEventTime < maxSimulationTime) {
+                        schedule(getId(), nextGenerationTime, GENERATE_EXTERNAL_TASK);
+                    } else {
+                        logger.info(String.format(
+                                "External task generator stopping scheduling - Next event time %.2f >= MAX_SIMULATION_TIME %.2f. Generated %d tasks total.",
+                                nextEventTime, maxSimulationTime, taskCounter));
+                    }
                 }
                 break;
         }

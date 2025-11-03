@@ -105,6 +105,31 @@ public class RLController extends Controller {
         logger.info("RLController started: " + getName());
     }
 
+    /**
+     * Override submitApplication to immediately trigger module deployment
+     * This ensures LAUNCH_MODULE events are sent to fog devices
+     */
+    @Override
+    public void submitApplication(Application application, ModulePlacement modulePlacement) {
+        // Call parent to store application and setup sensors/actuators
+        super.submitApplication(application, modulePlacement);
+
+        // Immediately trigger module deployment
+        // Since RL is disabled for controller, use processAppSubmitInternal
+        if (rlEnabled) {
+            // Use RL placement logic
+            ModulePlacement placement = getAppModulePlacementPolicy().get(application.getAppId());
+            if (placement instanceof RLModulePlacement) {
+                processRLModulePlacement(application, (RLModulePlacement) placement);
+            } else {
+                processAppSubmitInternal(application);
+            }
+        } else {
+            // Use standard placement (calls parent Controller.processAppSubmit)
+            processAppSubmitInternal(application);
+        }
+    }
+
     @Override
     public void processEvent(SimEvent ev) {
         switch (ev.getTag()) {
@@ -165,6 +190,23 @@ public class RLController extends Controller {
                 break;
             case ExtendedFogEvents.TASK_COMPLETE:
                 handleTaskComplete(ev);
+                break;
+            case FogEvents.STOP_SIMULATION:
+                // Graceful shutdown - allow queued events to complete
+                System.out.println(String.format(
+                        "[DEBUG] RLController.processEvent() - Processing STOP_SIMULATION event at time %.2f",
+                        CloudSim.clock()));
+                // IMPORTANT: Don't call parent's STOP_SIMULATION handler because it calls
+                // System.exit(0)
+                // Instead, mark the simulation as terminated so new events stop being generated,
+                // but allow the simulation loop to continue processing queued events until complete
+                // This ensures all queued tasks are processed before stopping
+                CloudSim.terminateSimulation();
+                CloudSim.stopSimulation();
+                // Note: terminateSimulation() sets running=false, which stops new event generation
+                // but the simulation loop continues until the event queue is empty
+                // Don't call abruptallyTerminate() - we want to process queued events
+                // Don't call System.exit(0) - let main() continue to printResults()
                 break;
             default:
                 super.processEvent(ev);
