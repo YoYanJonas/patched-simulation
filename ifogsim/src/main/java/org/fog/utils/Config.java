@@ -3,6 +3,9 @@ package org.fog.utils;
 public class Config {
 
 	public static final double RESOURCE_MGMT_INTERVAL = 100;
+	// SIMULATION_TIME: When to stop generating NEW tasks (sensors, external tasks)
+	public static int SIMULATION_TIME = 300;
+	// MAX_SIMULATION_TIME: Hard termination cap (allows buffer for processing queued events)
 	public static int MAX_SIMULATION_TIME = 2000;
 	public static int RESOURCE_MANAGE_INTERVAL = 100;
 	public static String FOG_DEVICE_ARCH = "x86";
