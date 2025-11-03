@@ -7,6 +7,7 @@ import org.patch.proto.IfogsimCommon.*;
 import org.fog.entities.Tuple;
 import org.cloudbus.cloudsim.core.CloudSim;
 import org.patch.utils.TupleFactory;
+import org.fog.utils.Config;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
@@ -94,8 +95,21 @@ public class StreamingQueueObserver {
                 return false;
             }
 
+            // Wait a bit for connection to establish if not immediately ready
+            int waitAttempts = 0;
+            int maxWaitAttempts = 10; // Wait up to 1 second (10 * 100ms)
+            while (!schedulerClient.isConnected() && waitAttempts < maxWaitAttempts) {
+                try {
+                    Thread.sleep(100); // Wait 100ms between checks
+                    waitAttempts++;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
             if (!schedulerClient.isConnected()) {
-                logger.severe("Cannot start streaming: scheduler client not connected");
+                logger.severe("Cannot start streaming: scheduler client not connected after waiting");
                 return false;
             }
         } catch (Exception e) {
@@ -145,6 +159,40 @@ public class StreamingQueueObserver {
 
         while (!shouldStop.get() && isStreaming.get()) {
             try {
+                // Check if simulation is still running first
+                // CloudSim.clock() might return stale values after simulation ends
+                if (!CloudSim.running()) {
+                    logger.info(String.format(
+                            "Stopping streaming loop for device %d - Simulation is no longer running",
+                            deviceId));
+                    shouldStop.set(true);
+                    break;
+                }
+
+                // Check if simulation has ended
+                double currentTime = CloudSim.clock();
+                double maxSimulationTime = Config.MAX_SIMULATION_TIME;
+
+                // Safety check: if currentTime is abnormally large, simulation might have ended
+                // CloudSim.clock() can return inconsistent values after simulation ends
+                if (currentTime > maxSimulationTime * 100) {
+                    logger.warning(String.format(
+                            "Stopping streaming loop for device %d - Simulation time %.2f is abnormally large (expected < %.2f), simulation may have ended",
+                            deviceId, currentTime, maxSimulationTime));
+                    shouldStop.set(true);
+                    break;
+                }
+
+                // Stop streaming when simulation time exceeds MAX_SIMULATION_TIME
+                // Add a small buffer (10 seconds) to allow final events to be processed
+                if (currentTime >= (maxSimulationTime + 10.0)) {
+                    logger.info(String.format(
+                            "Stopping streaming loop for device %d - Simulation time %.2f >= MAX_SIMULATION_TIME %.2f",
+                            deviceId, currentTime, maxSimulationTime));
+                    shouldStop.set(true);
+                    break;
+                }
+
                 // Get current queue state from scheduler
                 GetSortedQueueResponse response = getSortedQueueFromScheduler();
 
@@ -196,10 +244,17 @@ public class StreamingQueueObserver {
                 }
 
                 // Request sorted queue from scheduler
+                logger.info(String.format("[IFOGSIM-QUEUE-GET] Device %d requesting sorted queue from scheduler",
+                        deviceId));
                 GetSortedQueueResponse response = schedulerClient.getSortedQueue(String.valueOf(deviceId));
 
                 if (response != null) {
+                    logger.info(String.format("[IFOGSIM-QUEUE-RESP] Device %d received queue: Tasks=%d",
+                            deviceId, response.getQueueTasksCount()));
                     return response;
+                } else {
+                    logger.warning(
+                            String.format("[IFOGSIM-QUEUE-NULL] Device %d received null queue response", deviceId));
                 }
 
             } catch (Exception e) {
@@ -229,15 +284,73 @@ public class StreamingQueueObserver {
      */
     private void processQueueUpdate(GetSortedQueueResponse response) {
         try {
+            int taskCount = response.getQueueTasksCount();
+            double currentTime = CloudSim.clock();
+
+            // [DEBUG] Log scheduled queue update from streaming endpoint - ENHANCED
+            String nodeId = response.getNodeId();
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULED-QUEUE-RECEIVE] Time: %.2f - FogNode (ID:%d) - Received scheduled queue update from streaming endpoint: Tasks=%d, NodeID=%s",
+                    currentTime, deviceId, taskCount, nodeId));
+
+            // Log task details if queue has tasks (first 10)
+            if (taskCount > 0 && taskCount <= 10) {
+                StringBuilder taskDetails = new StringBuilder();
+                java.util.List<Task> tasksList = response.getQueueTasksList();
+                for (int i = 0; i < taskCount && i < 10 && i < tasksList.size(); i++) {
+                    Task task = tasksList.get(i);
+                    if (i > 0) {
+                        taskDetails.append("|");
+                    }
+                    taskDetails.append(String.format("ID=%s,CPU=%d,Mem=%d",
+                            task.getTaskId(), task.getCpuRequirement(), task.getMemoryRequirement()));
+                }
+                logger.info(String.format("[FLOW-FOG-SCHEDULED-QUEUE-DETAILS] Device %d - Queue tasks: %s",
+                        deviceId, taskDetails.toString()));
+            }
+
             logger.fine("Processing queue update for device: " + deviceId +
-                    " with " + response.getQueueTasksCount() + " tasks");
+                    " with " + taskCount + " tasks");
 
             // Update scheduled queue with new ordering
+            int oldSize = scheduledQueue.size();
             updateScheduledQueue(response);
+            int newSize = scheduledQueue.size();
+
+            // [DEBUG] Log scheduled queue update result - ENHANCED
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULED-QUEUE-UPDATE] Time: %.2f - FogNode (ID:%d) - Scheduled queue updated: oldSize=%d, newSize=%d, QueueIsEmpty=%s (from streaming endpoint)",
+                    CloudSim.clock(), deviceId, oldSize, newSize, scheduledQueue.isEmpty() ? "YES" : "NO"));
+
+            // Log if queue went from empty to non-empty (tasks are ready to execute)
+            if (oldSize == 0 && newSize > 0) {
+                System.out.println(String.format(
+                        "[FLOW-FOG-SCHEDULED-QUEUE-READY] Time: %.2f - FogNode (ID:%d) - Scheduled queue NOW HAS TASKS! Ready for execution (queue size: %d)",
+                        CloudSim.clock(), deviceId, newSize));
+                logger.info(String.format("Scheduled queue now has %d tasks - ready for execution", newSize));
+            }
 
             logger.fine("Successfully processed queue update for device: " + deviceId);
 
+            // Trigger callback if queue has tasks to trigger task execution
+            if (queueUpdateCallback != null && !scheduledQueue.isEmpty()) {
+                System.out.println(String.format(
+                        "[FLOW-FOG-SCHEDULED-QUEUE-CALLBACK] Time: %.2f - FogNode (ID:%d) - Triggering execution callback (scheduled queue size: %d) - Tasks ready for execution",
+                        CloudSim.clock(), deviceId, scheduledQueue.size()));
+                queueUpdateCallback.accept(scheduledQueue);
+                System.out.println(String.format(
+                        "[FLOW-FOG-SCHEDULED-QUEUE-CALLBACK] Time: %.2f - FogNode (ID:%d) - Execution callback triggered (scheduled queue size: %d)",
+                        CloudSim.clock(), deviceId, scheduledQueue.size()));
+            } else if (scheduledQueue.isEmpty()) {
+                System.out.println(String.format(
+                        "[FLOW-FOG-SCHEDULED-QUEUE-EMPTY] Time: %.2f - FogNode (ID:%d) - Scheduled queue is EMPTY, no execution callback triggered",
+                        CloudSim.clock(), deviceId));
+            }
+
         } catch (Exception e) {
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULED-QUEUE] Time: %.2f - FogNode (ID:%d) - ERROR processing queue update: %s",
+                    CloudSim.clock(), deviceId, e.getMessage()));
             logger.log(Level.WARNING, "Error processing queue update", e);
         }
     }

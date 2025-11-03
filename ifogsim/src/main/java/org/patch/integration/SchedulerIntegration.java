@@ -92,12 +92,27 @@ public class SchedulerIntegration {
             return;
         }
 
+        // [DEBUG] Log sending tasks to scheduler
+        double currentTime = CloudSim.clock();
+        System.out.println(String.format(
+                "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Sending %d tasks to scheduler server (unscheduled queue size: %d, attempt: %d)",
+                currentTime, deviceId, tasksToSend.size(), queueSize, sendAttemptCount));
+
         // Log every send attempt (first 20, then every 10th)
         if (sendAttemptCount <= 20 || sendAttemptCount % 10 == 0) {
             System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Sending %d tasks to scheduler (queue size: %d)",
                     deviceId, sendAttemptCount, tasksToSend.size(), queueSize));
         }
         logger.info("Sending " + tasksToSend.size() + " tasks to scheduler");
+        
+        // [DEBUG] Log task details being sent
+        for (UnscheduledQueue.TaskInfo taskInfo : tasksToSend) {
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Task details: ID=%d, CPU=%d, Mem=%d, Out=%d",
+                    currentTime, deviceId, taskInfo.getTuple().getCloudletId(), 
+                    taskInfo.getTuple().getCloudletLength(), taskInfo.getTuple().getCloudletFileSize(),
+                    taskInfo.getTuple().getCloudletOutputSize()));
+        }
 
         // Check if scheduler service is available
         if (!schedulerClient.isConnected()) {
@@ -122,9 +137,37 @@ public class SchedulerIntegration {
             }
             logger.info("Calling schedulerClient.addTasksToQueue with " + protoTasks.size() + " tasks");
 
+            // [DEBUG] Log before gRPC call
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Calling scheduler.addTasksToQueue (BLOCKING call, %d tasks)",
+                    CloudSim.clock(), deviceId, protoTasks.size()));
+
+            // IMPORTANT: Remove tasks from unscheduled queue BEFORE sending to avoid resending
+            // Tasks will be added to scheduled queue via streaming endpoint (GetSortedQueue)
+            // We remove them now so they don't get sent again
+            List<String> taskIdsSent = new ArrayList<>();
+            for (UnscheduledQueue.TaskInfo taskInfo : tasksToSend) {
+                String taskId = String.valueOf(taskInfo.getTuple().getCloudletId());
+                UnscheduledQueue.TaskInfo removedTask = unscheduledQueue.removeTask(taskId);
+                if (removedTask != null) {
+                    taskIdsSent.add(taskId);
+                    System.out.println(String.format(
+                            "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Removed task %s from unscheduled queue BEFORE sending (unscheduled queue size: %d)",
+                            CloudSim.clock(), deviceId, taskId, unscheduledQueue.size()));
+                    logger.info("Removed task " + taskId + " from unscheduled queue before sending to scheduler");
+                } else {
+                    logger.warning("Task " + taskId + " not found in unscheduled queue before sending");
+                }
+            }
+
             // Send to scheduler gRPC server (BLOCKS until all responses received)
             List<AddTaskToQueueResponse> responses = schedulerClient.addTasksToQueue(
                     protoTasks, availableNodes, policy);
+
+            // [DEBUG] Log after gRPC call
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Received %d responses from scheduler (tasks already removed from unscheduled queue, scheduled queue will be updated via streaming endpoint)",
+                    CloudSim.clock(), deviceId, responses.size()));
 
             if (sendAttemptCount <= 20 || sendAttemptCount % 10 == 0) {
                 System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Received %d responses from scheduler",
@@ -132,9 +175,10 @@ public class SchedulerIntegration {
             }
             logger.info("Received " + responses.size() + " responses from scheduler");
 
-            // Process responses - only remove from unscheduledQueue on success
-            // Streaming will update scheduledQueue via GetSortedQueue
-            processSchedulerResponses(responses);
+            // Process responses - tasks already removed from unscheduledQueue
+            // Scheduled queue will be updated via StreamingQueueObserver (GetSortedQueue)
+            // NOTE: Responses are informational only - scheduled queue comes from streaming endpoint!
+            processSchedulerResponses(responses, taskIdsSent);
 
         } catch (Exception e) {
             System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: EXCEPTION - %s",
@@ -232,24 +276,23 @@ public class SchedulerIntegration {
     }
 
     /**
-     * Process scheduler responses - only removes tasks from unscheduledQueue on success
+     * Process scheduler responses - tasks already removed from unscheduledQueue
      * Scheduled queue updates are handled by StreamingQueueObserver via GetSortedQueue
      * Cache actions and execution decisions are handled by the scheduler and reflected in the streamed queue
      * 
      * @param responses The responses from scheduler
+     * @param taskIdsSent The task IDs that were sent (already removed from unscheduled queue)
      */
-    private void processSchedulerResponses(List<AddTaskToQueueResponse> responses) {
-        logger.info("Processing scheduler responses for " + responses.size() + " tasks");
+    private void processSchedulerResponses(List<AddTaskToQueueResponse> responses, List<String> taskIdsSent) {
+        logger.info("Processing scheduler responses for " + responses.size() + " tasks (tasks already removed from unscheduled queue)");
 
         for (AddTaskToQueueResponse taskResponse : responses) {
             if (taskResponse.getSuccess()) {
-                // Task successfully sent to scheduler - remove from unscheduled queue
+                // Task successfully sent to scheduler - already removed from unscheduled queue
                 // The scheduler now owns this task and will include it in GetSortedQueue responses
                 // StreamingQueueObserver will update scheduledQueue based on scheduler's decisions
-                UnscheduledQueue.TaskInfo removedTask = unscheduledQueue.removeTask(taskResponse.getTaskId());
-
-                if (removedTask != null) {
-                    logger.info("Task " + taskResponse.getTaskId() + " successfully sent to scheduler, removed from unscheduled queue");
+                if (taskIdsSent.contains(taskResponse.getTaskId())) {
+                    logger.info("Task " + taskResponse.getTaskId() + " successfully sent to scheduler (already removed from unscheduled queue)");
 
                     // Log cache information for debugging (if available)
                     CacheAction cacheAction = taskResponse.getCacheAction();
@@ -257,12 +300,12 @@ public class SchedulerIntegration {
                         logger.fine("Task " + taskResponse.getTaskId() + " cache action: " + cacheAction);
                     }
                 } else {
-                    logger.warning("Task " + taskResponse.getTaskId() + " was sent to scheduler but not found in unscheduled queue");
+                    logger.warning("Task " + taskResponse.getTaskId() + " response received but was not in sent list");
                 }
             } else {
                 logger.warning("Scheduler failed for task " + taskResponse.getTaskId() +
                         ": " + taskResponse.getErrorMessage());
-                // Task remains in unscheduled queue for retry or fallback
+                // Task already removed - cannot retry (would need to re-add to unscheduled queue)
             }
         }
     }
