@@ -103,11 +103,27 @@ public class Sensor extends SimEntity{
 			return;
 		}
 		
-		long cpuLength = (long) _edge.getTupleCpuLength();
-		long nwLength = (long) _edge.getTupleNwLength();
+		// Get CPU from options (if configured) or fall back to AppEdge value
+		long cpuLength = getRandomCpuFromConfig();
+		if (cpuLength == 0) {
+			cpuLength = (long) _edge.getTupleCpuLength();  // Fallback to AppEdge
+		}
+
+		// Get Memory from options (if configured) or use AppEdge network length as fallback
+		long memorySize = getRandomMemoryFromConfig();
+		if (memorySize == 0) {
+			memorySize = (long) _edge.getTupleNwLength();  // Fallback to current behavior (nwLength)
+		}
+
+		long nwLength = (long) _edge.getTupleNwLength();  // Keep network length separate
 		
-		Tuple tuple = new Tuple(getAppId(), FogUtils.generateTupleId(), Tuple.UP, cpuLength, 1, nwLength, outputSize, 
-				new UtilizationModelFull(), new UtilizationModelFull(), new UtilizationModelFull());
+		// Create Tuple: (appId, cloudletId, direction, cloudletLength, pesNumber, cloudletFileSize, cloudletOutputSize, ...)
+		Tuple tuple = new Tuple(getAppId(), FogUtils.generateTupleId(), Tuple.UP, 
+			cpuLength,      // CloudletLength = CPU (MIPS)
+			1,              // pesNumber = 1
+			memorySize,     // CloudletFileSize = Memory (bytes) - NOW FROM RANDOM OPTIONS
+			outputSize,     // CloudletOutputSize = output size (bytes) - keep from current behavior
+			new UtilizationModelFull(), new UtilizationModelFull(), new UtilizationModelFull());
 		tuple.setUserId(getUserId());
 		tuple.setTupleType(getTupleType());
 		
@@ -122,9 +138,9 @@ public class Sensor extends SimEntity{
 		
 		// [DEBUG] Log before sending
 		System.out.println(String.format(
-				"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - Sending tuple %d to GatewayDevice %d (DestModule:%s, CPU:%d, NW:%d, Latency:%.2f)",
+				"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - Sending tuple %d to GatewayDevice %d (DestModule:%s, CPU:%d, Mem:%d, NW:%d, Latency:%.2f)",
 				currentTime, getName(), getId(), tuple.getCloudletId(), gatewayDeviceId, 
-				tuple.getDestModuleName(), cpuLength, nwLength, getLatency()));
+				tuple.getDestModuleName(), cpuLength, memorySize, nwLength, getLatency()));
 		
 		send(gatewayDeviceId, getLatency(), FogEvents.TUPLE_ARRIVAL,tuple);
 		
@@ -132,6 +148,32 @@ public class Sensor extends SimEntity{
 		System.out.println(String.format(
 				"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - Tuple %d SENT successfully to device %d",
 				currentTime, getName(), getId(), tuple.getCloudletId(), gatewayDeviceId));
+	}
+
+	/**
+	 * Get random CPU value from configuration options
+	 * @return Random CPU value from options, or 0 if not configured
+	 */
+	private long getRandomCpuFromConfig() {
+		java.util.List<Long> cpuOptions = org.patch.config.EnhancedConfigurationLoader.getSensorConfigList("sensors.parameters.cpu.options");
+		if (cpuOptions != null && !cpuOptions.isEmpty()) {
+			java.util.Random random = new java.util.Random();
+			return cpuOptions.get(random.nextInt(cpuOptions.size()));
+		}
+		return 0; // Indicate not configured
+	}
+
+	/**
+	 * Get random Memory value from configuration options
+	 * @return Random Memory value from options, or 0 if not configured
+	 */
+	private long getRandomMemoryFromConfig() {
+		java.util.List<Long> memoryOptions = org.patch.config.EnhancedConfigurationLoader.getSensorConfigList("sensors.parameters.memory.options");
+		if (memoryOptions != null && !memoryOptions.isEmpty()) {
+			java.util.Random random = new java.util.Random();
+			return memoryOptions.get(random.nextInt(memoryOptions.size()));
+		}
+		return 0; // Indicate not configured
 	}
 	
 	protected int updateTimings(String src, String dest){

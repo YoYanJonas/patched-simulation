@@ -304,4 +304,77 @@ public class YamlConfigLoader {
     public static String getConfigFilePath() {
         return configFilePath;
     }
+
+    /**
+     * Get list of Long values from YAML config (e.g., for options arrays)
+     * Supports both dot notation and hyphen notation in YAML keys
+     * 
+     * @param path Dot-notation path to the list (e.g., "sensors.parameters.cpu.options")
+     * @return List of Long values, or empty list if not found
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Long> getListOfLong(String path) {
+        if (config == null) {
+            return new ArrayList<>();
+        }
+
+        String[] keys = path.split("\\.");
+        Object current = config;
+
+        for (String key : keys) {
+            if (current instanceof Map) {
+                Map<String, Object> map = (Map<String, Object>) current;
+                // Try exact key first
+                current = map.get(key);
+
+                // If not found, try variations
+                if (current == null) {
+                    String hyphenKey = key.replace("_", "-");
+                    if (!hyphenKey.equals(key)) {
+                        current = map.get(hyphenKey);
+                    }
+                }
+                if (current == null) {
+                    String underscoreKey = key.replace("-", "_");
+                    if (!underscoreKey.equals(key)) {
+                        current = map.get(underscoreKey);
+                    }
+                }
+                // Last resort: case-insensitive match
+                if (current == null) {
+                    for (Map.Entry<String, Object> entry : map.entrySet()) {
+                        if (entry.getKey().equalsIgnoreCase(key)) {
+                            current = entry.getValue();
+                            break;
+                        }
+                    }
+                }
+
+                if (current == null) {
+                    return new ArrayList<>();
+                }
+            } else {
+                return new ArrayList<>();
+            }
+        }
+
+        // Try to convert to List<Long>
+        if (current instanceof List) {
+            List<Long> result = new ArrayList<>();
+            for (Object item : (List<?>) current) {
+                if (item instanceof Number) {
+                    result.add(((Number) item).longValue());
+                } else if (item instanceof String) {
+                    try {
+                        result.add(Long.parseLong((String) item));
+                    } catch (NumberFormatException e) {
+                        logger.warning("Invalid long value in list at " + path + ": " + item);
+                    }
+                }
+            }
+            return result;
+        }
+
+        return new ArrayList<>();
+    }
 }

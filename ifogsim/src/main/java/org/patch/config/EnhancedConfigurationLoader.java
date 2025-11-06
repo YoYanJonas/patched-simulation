@@ -234,8 +234,9 @@ public class EnhancedConfigurationLoader {
                         if (host != null && host.contains("${")) {
                             host = parseEnvVarSyntax(host);
                         }
-                        
-                        String portStr = YamlConfigLoader.getValue("schedulers.instances." + schedulerName + ".port", null);
+
+                        String portStr = YamlConfigLoader.getValue("schedulers.instances." + schedulerName + ".port",
+                                null);
                         int port = 0;
                         if (portStr != null) {
                             // Parse env var syntax if present
@@ -249,7 +250,7 @@ public class EnhancedConfigurationLoader {
                                 port = 0;
                             }
                         }
-                        
+
                         int maxFogNodes = YamlConfigLoader
                                 .getInt("schedulers.instances." + schedulerName + ".max-fog-nodes", 1);
                         String name = YamlConfigLoader.getValue("schedulers.instances." + schedulerName + ".name",
@@ -292,7 +293,7 @@ public class EnhancedConfigurationLoader {
                     for (Map.Entry<?, ?> entry : mappingRaw.entrySet()) {
                         mapping.put(entry.getKey(), entry.getValue());
                     }
-                    
+
                     for (Map.Entry<Object, Object> entry : mapping.entrySet()) {
                         try {
                             // Handle both String and Integer keys from YAML
@@ -305,7 +306,7 @@ public class EnhancedConfigurationLoader {
                             } else {
                                 fogNodeId = Integer.parseInt(keyObj.toString());
                             }
-                            
+
                             // Handle both String and Integer values from YAML
                             Object value = entry.getValue();
                             String schedulerName;
@@ -448,16 +449,16 @@ public class EnhancedConfigurationLoader {
         if (value == null || value.isEmpty() || !value.contains("${")) {
             return value;
         }
-        
+
         // Pattern: ${VAR:default} or ${VAR}
         java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\$\\{([^:}]+)(?::([^}]*))?\\}");
         java.util.regex.Matcher matcher = pattern.matcher(value);
-        
+
         StringBuffer result = new StringBuffer();
         while (matcher.find()) {
             String varName = matcher.group(1);
             String defaultValue = matcher.group(2); // May be null
-            
+
             String envValue = System.getenv(varName);
             String replacement;
             if (envValue != null && !envValue.isEmpty()) {
@@ -467,14 +468,14 @@ public class EnhancedConfigurationLoader {
             } else {
                 replacement = ""; // No env var and no default
             }
-            
+
             // Escape special characters in replacement string for appendReplacement
             // $ and \ need to be escaped in replacement strings
             replacement = java.util.regex.Matcher.quoteReplacement(replacement);
             matcher.appendReplacement(result, replacement);
         }
         matcher.appendTail(result);
-        
+
         return result.toString();
     }
 
@@ -781,6 +782,28 @@ public class EnhancedConfigurationLoader {
         return Boolean.parseBoolean(value);
     }
 
+    /**
+     * Get list of Long values from YAML config for external tasks
+     * 
+     * @param yamlPath Path in YAML (e.g., "external-tasks.parameters.cpu.options")
+     * @return List of Long values, or empty list if not found
+     */
+    public static java.util.List<Long> getExternalTaskConfigList(String yamlPath) {
+        ensureInitialized();
+        return YamlConfigLoader.getListOfLong(yamlPath);
+    }
+
+    /**
+     * Get list of Long values from YAML config for sensors
+     * 
+     * @param yamlPath Path in YAML (e.g., "sensors.parameters.cpu.options")
+     * @return List of Long values, or empty list if not found
+     */
+    public static java.util.List<Long> getSensorConfigList(String yamlPath) {
+        ensureInitialized();
+        return YamlConfigLoader.getListOfLong(yamlPath);
+    }
+
     // ===== RL CONFIGURATION METHODS =====
 
     /**
@@ -790,7 +813,7 @@ public class EnhancedConfigurationLoader {
         ensureInitialized();
 
         String value = defaultValue;
-        
+
         // Map RL config keys to YAML paths - YAML first, then env vars
         switch (key) {
             case "rl.servers.cloud.host":
@@ -835,14 +858,15 @@ public class EnhancedConfigurationLoader {
             default:
                 return defaultValue;
         }
-        
+
         // Parse env var syntax if present (e.g., ${CLOUD_RL_SERVER_HOST:localhost})
-        // Note: getConfigValue already calls YamlConfigLoader.getValue() which parses env vars,
+        // Note: getConfigValue already calls YamlConfigLoader.getValue() which parses
+        // env vars,
         // but we do an extra check here in case the value still contains ${...}
         if (value != null && value.contains("${")) {
             value = parseEnvVarSyntax(value);
         }
-        
+
         return value;
     }
 

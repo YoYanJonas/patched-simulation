@@ -31,7 +31,7 @@ grpc:
       enabled: true
       time: 30
       timeout: 10
-      without-calls: true
+      without-calls: false
 
     message:
       max-inbound-size: 4194304 # 4MB
@@ -119,6 +119,18 @@ schedulers:
       monitoring-enabled: true
       metrics-interval: 60000
 
+    # Streaming queue update interval (polling)
+    streaming:
+      update-interval-ms: ${STREAMING_UPDATE_INTERVAL_MS:1000} # Interval in milliseconds for polling queue updates (default: 1000ms = 1 second)
+
+# Sensor task parameters (for dynamic CPU/Memory)
+sensors:
+  parameters:
+    cpu:
+      options: [500, 1000, 2000, 4000, 8000, 16000] # 6 options (MIPS)
+    memory:
+      options: [500, 2000] # 2 options (bytes)
+
 # External Task Generation Configuration
 external-tasks:
   # Task generation settings
@@ -135,13 +147,17 @@ external-tasks:
 
     # CPU requirements (MIPS)
     cpu:
-      min: 1000
-      max: 10000
+      options: [500, 1000, 2000, 4000, 8000, 16000] # 6 options (MIPS)
+      # Legacy support: min/max still supported for backward compatibility
+      min: 500
+      max: 16000
 
     # Memory requirements (bytes)
     memory:
-      min: 100
-      max: 1000
+      options: [500, 2000] # 2 options (bytes)
+      # Legacy support: min/max still supported for backward compatibility
+      min: 500
+      max: 2000
 
     # Output size (bytes)
     output:

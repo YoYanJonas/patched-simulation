@@ -169,17 +169,33 @@ public class ExternalTaskGenerator extends SimEntity {
         int appId = EnhancedConfigurationLoader.getExternalTaskConfigInt("external.tasks.parameters.app.id", 1);
         int userId = EnhancedConfigurationLoader.getExternalTaskConfigInt("external.tasks.parameters.user.id", 1);
 
-        // Get CPU range from configuration
-        long cpuMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.cpu.min", 1000);
-        long cpuMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.cpu.max", 10000);
-        long cloudletLength = cpuMin + (long) (Math.random() * (cpuMax - cpuMin));
+        // Try to get CPU from options first, fallback to min/max range
+        java.util.List<Long> cpuOptions = EnhancedConfigurationLoader.getExternalTaskConfigList("external-tasks.parameters.cpu.options");
+        long cloudletLength;
+        if (cpuOptions != null && !cpuOptions.isEmpty()) {
+            // Use discrete options
+            cloudletLength = cpuOptions.get(new java.util.Random().nextInt(cpuOptions.size()));
+        } else {
+            // Fallback to range-based (backward compatibility)
+            long cpuMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.cpu.min", 1000);
+            long cpuMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.cpu.max", 10000);
+            cloudletLength = cpuMin + (long) (Math.random() * (cpuMax - cpuMin));
+        }
 
-        // Get memory range from configuration
-        long memoryMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.min",
-                100);
-        long memoryMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.max",
-                1000);
-        long cloudletFileSize = memoryMin + (long) (Math.random() * (memoryMax - memoryMin));
+        // Try to get Memory from options first, fallback to min/max range
+        java.util.List<Long> memoryOptions = EnhancedConfigurationLoader.getExternalTaskConfigList("external-tasks.parameters.memory.options");
+        long cloudletFileSize;
+        if (memoryOptions != null && !memoryOptions.isEmpty()) {
+            // Use discrete options
+            cloudletFileSize = memoryOptions.get(new java.util.Random().nextInt(memoryOptions.size()));
+        } else {
+            // Fallback to range-based (backward compatibility)
+            long memoryMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.min",
+                    100);
+            long memoryMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.max",
+                    1000);
+            cloudletFileSize = memoryMin + (long) (Math.random() * (memoryMax - memoryMin));
+        }
 
         // Get output range from configuration
         long outputMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.output.min",
@@ -202,8 +218,10 @@ public class ExternalTaskGenerator extends SimEntity {
         // Get configuration values
         String tupleType = EnhancedConfigurationLoader.getExternalTaskConfig("external.tasks.properties.tuple.type",
                 "EXTERNAL");
+        // FIX: Use "processing_module" instead of "external_task" to match deployed application modules
+        // The application only has "processing_module" and "aggregation_module" deployed
         String moduleName = EnhancedConfigurationLoader.getExternalTaskConfig("external.tasks.properties.module.name",
-                "external_task");
+                "processing_module");
         String direction = EnhancedConfigurationLoader.getExternalTaskConfig("external.tasks.properties.direction",
                 "DOWN");
 
