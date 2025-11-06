@@ -124,20 +124,27 @@ func (s *Server) Start() error {
 
 	// ADD: Start scheduler service
 	s.schedulerService.Start(ctx)
+	
+	logger.GetLogger().Info("[SCHEDULER-SERVER-START] Scheduler gRPC server ready to accept connections")
+	logger.GetLogger().Infof("[SCHEDULER-SERVER-LISTEN] Starting gRPC server on %s", addr)
 
-	logger.GetLogger().Infof("Starting gRPC server on %s", addr)
-
+	// [DEBUG] About to start gRPC server
+	logger.GetLogger().Infof("[DEBUG] [SERVER-START-GRPC-BEFORE] About to start gRPC server (blocking call)")
 	// Start gRPC server (blocking call)
 	if err := s.grpcServer.Serve(listener); err != nil {
+		// [DEBUG] gRPC server failed
+		logger.GetLogger().Errorf("[DEBUG] [SERVER-START-GRPC-ERROR] gRPC server failed: %v", err)
 		return fmt.Errorf("gRPC server failed: %w", err)
 	}
+	// [DEBUG] gRPC server stopped (should not reach here normally)
+	logger.GetLogger().Infof("[DEBUG] [SERVER-START-GRPC-AFTER] gRPC server stopped")
 
 	return nil
 }
 
 // Stop gracefully stops the server
 func (s *Server) Stop(ctx context.Context) error {
-	logger.GetLogger().Info("Shutting down server...")
+	logger.GetLogger().Info("[SCHEDULER-SERVER-STOP] Shutting down scheduler gRPC server...")
 
 	// ADD: Save model on shutdown
 	if err := s.SaveModelOnShutdown(); err != nil {
@@ -186,23 +193,23 @@ func (s *Server) LoadModelOnStartup() error {
 		return nil
 	}
 
-	logger.GetLogger().Info("Loading persisted model on startup...")
+	logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Loading persisted model on startup...")
 
 	// Get the algorithm manager from the system
 	algorithmManager := s.getAlgorithmManagerFromSystem()
 	if algorithmManager == nil {
-		logger.GetLogger().Warn("Algorithm manager not available, skipping model loading")
+		logger.GetLogger().Warn("[SCHEDULER-MODEL-LOAD] Algorithm manager not available, skipping model loading")
 		return nil
 	}
 
 	// Load the model with algorithm manager
 	err := s.modelStorage.LoadModel(algorithmManager)
 	if err != nil {
-		logger.GetLogger().Warnf("Failed to load persisted model: %v", err)
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Failed to load persisted model: %v", err)
 		return nil // Don't fail startup, just log warning
 	}
 
-	logger.GetLogger().Info("Model loaded and applied successfully")
+	logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Model loaded and applied successfully")
 	return nil
 }
 
@@ -212,12 +219,12 @@ func (s *Server) SaveModelOnShutdown() error {
 		return nil
 	}
 
-	logger.GetLogger().Info("Saving model state on shutdown...")
+	logger.GetLogger().Info("[SCHEDULER-MODEL-SAVE] Saving model state on shutdown...")
 
 	// Get the algorithm manager from the system
 	algorithmManager := s.getAlgorithmManagerFromSystem()
 	if algorithmManager == nil {
-		logger.GetLogger().Warn("Algorithm manager not available, skipping model save")
+		logger.GetLogger().Warn("[SCHEDULER-MODEL-SAVE] Algorithm manager not available, skipping model save")
 		return nil
 	}
 

@@ -272,19 +272,36 @@ func (ms *ModelStorage) Initialize() error {
 	defer ms.mutex.Unlock()
 
 	modelPath := ms.getCurrentModelPath()
+	
+	// [DEBUG] Log model path configuration
+	logger.GetLogger().Infof("[MODEL-INIT] Model persistence enabled: %t", ms.config.Enabled)
+	logger.GetLogger().Infof("[MODEL-INIT] Models base path: %s", ms.config.ModelsPath)
+	logger.GetLogger().Infof("[MODEL-INIT] Model name: %s", ms.config.ModelName)
+	logger.GetLogger().Infof("[MODEL-INIT] Full model path: %s", modelPath)
 
 	// Check if model file exists
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-		logger.GetLogger().Info("No existing model found, creating default model")
+		logger.GetLogger().Infof("[MODEL-INIT] No existing model found at %s, creating default model", modelPath)
+		
+		// Ensure directory exists
+		modelDir := filepath.Dir(modelPath)
+		if err := os.MkdirAll(modelDir, 0755); err != nil {
+			logger.GetLogger().Errorf("[MODEL-INIT] Failed to create model directory %s: %v", modelDir, err)
+			return fmt.Errorf("failed to create model directory: %w", err)
+		}
+		logger.GetLogger().Infof("[MODEL-INIT] Created model directory: %s", modelDir)
+		
 		ms.modelData = ms.createDefaultModel()
 		ms.dirty = true
+		logger.GetLogger().Infof("[MODEL-INIT] Default model created, will be saved on first update")
 		return nil
 	}
 
 	// Load existing model
-	logger.GetLogger().Infof("Loading existing model from: %s", modelPath)
+	logger.GetLogger().Infof("[MODEL-LOAD] Loading existing model from: %s", modelPath)
 	data, err := os.ReadFile(modelPath)
 	if err != nil {
+		logger.GetLogger().Errorf("[MODEL-LOAD] Failed to read model file: %v", err)
 		return fmt.Errorf("failed to read model file: %w", err)
 	}
 
@@ -297,7 +314,8 @@ func (ms *ModelStorage) Initialize() error {
 	}
 
 	ms.modelData = &modelData
-	logger.GetLogger().Infof("Model loaded successfully. Version: %s, Episodes: %d, RL Components: Q-Learning=%v, MultiObj=%v",
+	logger.GetLogger().Infof("[MODEL-LOAD] Model loaded successfully from %s", modelPath)
+	logger.GetLogger().Infof("[MODEL-LOAD] Model details: Version=%s, Episodes=%d, Q-Learning=%v, MultiObj=%v",
 		modelData.Metadata.Version,
 		modelData.Metadata.TrainingEps,
 		modelData.QLearningData != nil,
@@ -440,16 +458,24 @@ func (ms *ModelStorage) saveModel() error {
 
 	// Create directory structure
 	modelDir := filepath.Join(ms.config.ModelsPath, ms.config.ModelName, "current")
+	logger.GetLogger().Infof("[MODEL-SAVE] Creating model directory: %s", modelDir)
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		logger.GetLogger().Errorf("[MODEL-SAVE] Failed to create model directory: %v", err)
 		return fmt.Errorf("failed to create model directory: %w", err)
 	}
+	logger.GetLogger().Infof("[MODEL-SAVE] Model directory ready: %s", modelDir)
 
 	// Create backup if current model exists
 	currentPath := ms.getCurrentModelPath()
 	if _, err := os.Stat(currentPath); err == nil {
+		logger.GetLogger().Infof("[MODEL-SAVE] Existing model found, creating backup before saving new model")
 		if err := ms.createBackup(currentPath); err != nil {
-			logger.GetLogger().Warnf("Failed to create backup: %v", err)
+			logger.GetLogger().Warnf("[MODEL-SAVE] Failed to create backup: %v", err)
+		} else {
+			logger.GetLogger().Infof("[MODEL-SAVE] Backup created successfully")
 		}
+	} else {
+		logger.GetLogger().Infof("[MODEL-SAVE] No existing model at %s, saving new model", currentPath)
 	}
 
 	// Marshal model data with pretty formatting for readability
@@ -471,11 +497,15 @@ func (ms *ModelStorage) saveModel() error {
 
 	// Log RL-specific save details
 	if modelData, ok := modelCopy.(*ModelData); ok {
-		logger.GetLogger().Infof("RL model saved: Episodes=%d, Q-table=%v, MultiObj=%v, Experience=%v",
+		logger.GetLogger().Infof("[MODEL-SAVE] RL model saved successfully to: %s", currentPath)
+		logger.GetLogger().Infof("[MODEL-SAVE] Model details: Episodes=%d, Q-table=%v, MultiObj=%v, Experience=%v, Size=%d bytes",
 			modelData.Metadata.TrainingEps,
 			modelData.QLearningData != nil,
 			modelData.MultiObjectiveData != nil,
-			modelData.ExperienceBufferData != nil)
+			modelData.ExperienceBufferData != nil,
+			len(data))
+	} else {
+		logger.GetLogger().Infof("[MODEL-SAVE] Model saved successfully to: %s (Size=%d bytes)", currentPath, len(data))
 	}
 
 	return nil

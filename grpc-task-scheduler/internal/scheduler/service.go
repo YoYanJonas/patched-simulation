@@ -75,7 +75,15 @@ func NewSchedulerService(metrics *metrics.InMemoryMetrics, cfg *config.Config) *
 }
 
 func (s *SchedulerService) Start(ctx context.Context) {
+	logger.GetLogger().Info("[SCHEDULER-SERVICE-START] Starting scheduler service...")
+	logger.GetLogger().Infof("[SCHEDULER-SERVICE-CONFIG] Algorithm=%s, NodeID=%s, RLEnabled=%t, CacheAgentEnabled=%t",
+		s.config.SingleNode.DefaultAlgorithm, s.config.SingleNode.NodeID,
+		s.config.RL.Enabled, s.config.CacheAgent.Enabled)
+	
 	s.schedulerEngine.Start(ctx)
+	
+	logger.GetLogger().Info("[SCHEDULER-SERVICE-STARTED] Scheduler service started successfully")
+	
 	// Initialize episode management lifecycle
 	if s.config.RL.Enabled && s.config.RL.EpisodeConfig.Type != "" {
 		logger.GetLogger().Infof("Episode management lifecycle started with type: %s", s.config.RL.EpisodeConfig.Type)
@@ -112,10 +120,24 @@ func (s *SchedulerService) Stop() {
 
 // AddTaskToQueue adds a task to the scheduling queue
 func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskToQueueRequest) (*pb.AddTaskToQueueResponse, error) {
-	// [DEBUG] Log incoming queue request
+	// [DEBUG] Enhanced logging for incoming queue request
 	if req.Task != nil {
-		logger.GetLogger().Infof("[SCHEDULER-RECEIVE] Received AddTaskToQueue request: TaskID=%s, TaskName=%s, Priority=%d, CPU=%d, Mem=%d",
-			req.Task.TaskId, req.Task.TaskName, req.Task.Priority, req.Task.CpuRequirement, req.Task.MemoryRequirement)
+		logger.GetLogger().Infof("[SCHEDULER-RECEIVE-START] Received AddTaskToQueue request: TaskID=%s, TaskName=%s, Type=%s, Priority=%d, CPU=%d, Mem=%d, ExecTime=%d",
+			req.Task.TaskId, req.Task.TaskName, req.Task.TaskType.String(), req.Task.Priority, req.Task.CpuRequirement, req.Task.MemoryRequirement, req.Task.ExecutionTime)
+		logger.GetLogger().Infof("[SCHEDULER-RECEIVE-DETAILS] Task details: MetadataCount=%d, DependenciesCount=%d",
+			len(req.Task.Metadata), len(req.Task.Dependencies))
+		
+		// Log metadata if present
+		if len(req.Task.Metadata) > 0 {
+			metadataStr := ""
+			for k, v := range req.Task.Metadata {
+				if metadataStr != "" {
+					metadataStr += ", "
+				}
+				metadataStr += fmt.Sprintf("%s=%s", k, v)
+			}
+			logger.GetLogger().Infof("[SCHEDULER-RECEIVE-METADATA] Task metadata: %s", metadataStr)
+		}
 	} else {
 		logger.GetLogger().Error("[SCHEDULER-RECEIVE] Received AddTaskToQueue with nil task")
 	}
@@ -146,22 +168,72 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	var queueContext *pb.QueueContext
 	if req.QueueContext != nil {
 		queueContext = req.QueueContext
-		logger.GetLogger().Debugf("[SCHEDULER-RECEIVE] QueueContext provided: total_queue_size=%d", queueContext.TotalQueueSize)
+		logger.GetLogger().Infof("[SCHEDULER-RECEIVE-QUEUE-CONTEXT] QueueContext provided: total_queue_size=%d (from iFogSim fog node)", queueContext.TotalQueueSize)
 	} else {
 		// Default: empty queue context (will use 0 for queue length)
 		queueContext = &pb.QueueContext{
 			TotalQueueSize: 0,
 		}
-		logger.GetLogger().Debugf("[SCHEDULER-RECEIVE] No QueueContext provided, using default (0)")
+		logger.GetLogger().Infof("[SCHEDULER-RECEIVE-QUEUE-CONTEXT] No QueueContext provided, using default (total_queue_size=0)")
 	}
 
-	logger.GetLogger().Infof("[SCHEDULER-PROCESS] Processing task for queue: TaskID=%s", req.Task.TaskId)
-
-	// Add task to queue via scheduler engine (with queue context)
-	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task, queueContext)
-	if err != nil {
+	// [DEBUG] About to process task
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-START] Processing task for queue: TaskID=%s (queue context: total_size=%d)", req.Task.TaskId, queueContext.TotalQueueSize)
+	
+	// [DEBUG] Check context state before processing
+	// Check if context is already done (timeout) before processing
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CONTEXT-CHECK] Checking context state before processing")
+	select {
+	case <-ctx.Done():
+		// [DEBUG] Context already cancelled
+		logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-TIMEOUT] Request context cancelled before processing TaskID=%s: %v", req.Task.TaskId, ctx.Err())
 		s.metrics.IncrementFailedRequests()
-		logger.GetLogger().Errorf("[SCHEDULER-ERROR] Failed to add task to queue: TaskID=%s, Error=%v", req.Task.TaskId, err)
+		return &pb.AddTaskToQueueResponse{
+			TaskId:  req.Task.TaskId,
+			Success: false,
+			Message: fmt.Sprintf("request timeout before processing: %v", ctx.Err()),
+		}, ctx.Err()
+	default:
+		// [DEBUG] Context is valid
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CONTEXT-VALID] Context is valid, proceeding with processing")
+	}
+	
+	// [DEBUG] About to call scheduler engine
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CALL] Calling schedulerEngine.AddTaskToQueueWithCache for TaskID=%s", req.Task.TaskId)
+
+	// [DEBUG] Calling AddTaskToQueueWithCache
+	// Add task to queue via scheduler engine (with queue context)
+	// IMPORTANT: Task is added to queue BEFORE building response
+	// If timeout occurs after this point, task is already in queue - no task loss
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CALL-BEFORE] About to call AddTaskToQueueWithCache")
+	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task, queueContext)
+	// [DEBUG] AddTaskToQueueWithCache returned
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CALL-AFTER] AddTaskToQueueWithCache returned")
+	
+	// [DEBUG] Log result
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-RESULT] AddTaskToQueueWithCache returned for TaskID=%s: queuePosition=%d, estimatedWait=%d, isCached=%t, cacheKey=%s, cacheAction=%s, error=%v",
+		req.Task.TaskId, queuePosition, estimatedWait, isCached, cacheKey, cacheAction.String(), err)
+	
+	// [DEBUG] Check context after task addition
+	// Check context again after task addition (in case timeout occurred during processing)
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CONTEXT-AFTER-CHECK] Checking context state after task addition")
+	if ctx.Err() != nil {
+		// [DEBUG] Context cancelled during processing
+		// Task is already in queue (added before timeout), but response cannot be sent
+		// This is acceptable - task is not lost, just client won't get confirmation
+		logger.GetLogger().Warnf("[DEBUG] [SCHEDULER-TIMEOUT-AFTER-ADD] Request timeout after adding TaskID=%s to queue - task is in queue but response cannot be sent: %v", req.Task.TaskId, ctx.Err())
+		// Task is already in queue, so return success even if context timed out
+		// The client will retry if needed, but task is safe in queue
+	} else {
+		// [DEBUG] Context still valid
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROCESS-CONTEXT-AFTER-VALID] Context is still valid after task addition")
+	}
+	
+	// [DEBUG] Check for errors
+	if err != nil {
+		// [DEBUG] Error occurred
+		logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-ERROR] Failed to add task to queue: TaskID=%s, Error=%v", req.Task.TaskId, err)
+		s.metrics.IncrementFailedRequests()
 		return &pb.AddTaskToQueueResponse{
 			TaskId:  req.Task.TaskId,
 			Success: false,
@@ -169,10 +241,13 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		}, nil
 	}
 
+	// [DEBUG] Task added successfully
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("[SCHEDULER-SUCCESS] Task %s added to queue at position %d (wait=%dms, cached=%t, cacheKey=%s, action=%v)",
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-SUCCESS] Task %s added to queue at position %d (wait=%dms, cached=%t, cacheKey=%s, action=%v)",
 		req.Task.TaskId, queuePosition, estimatedWait, isCached, cacheKey, cacheAction)
 
+	// [DEBUG] Building response
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESPONSE-BUILD-BEFORE] About to build AddTaskToQueueResponse")
 	response := &pb.AddTaskToQueueResponse{
 		TaskId:              req.Task.TaskId,
 		Success:             true,
@@ -184,8 +259,21 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		CacheAction:         cacheAction,
 	}
 	
-	logger.GetLogger().Infof("[SCHEDULER-RESPONSE] Sending queue response: TaskID=%s, Success=%t, Position=%d",
+	// [DEBUG] Response built
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESPONSE-BUILD-DONE] AddTaskToQueueResponse built successfully")
+	
+	// [DEBUG] Log response details
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESPONSE-BUILD] Built response for TaskID=%s: Success=%t, Position=%d, Cached=%t, CacheAction=%s",
+		response.TaskId, response.Success, response.QueuePosition, response.IsCachedTask, response.CacheAction.String())
+	logger.GetLogger().Infof("[SCHEDULER-RESPONSE-BUILD] Built response for TaskID=%s: Success=%t, Position=%d, Cached=%t, CacheAction=%s",
+		response.TaskId, response.Success, response.QueuePosition, response.IsCachedTask, response.CacheAction.String())
+	
+	// [DEBUG] About to return response
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESPONSE-SEND] Sending queue response back to iFogSim: TaskID=%s, Success=%t, Position=%d",
 		response.TaskId, response.Success, response.QueuePosition)
+	logger.GetLogger().Infof("[SCHEDULER-RESPONSE-SEND] Sending queue response back to iFogSim: TaskID=%s, Success=%t, Position=%d",
+		response.TaskId, response.Success, response.QueuePosition)
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESPONSE-RETURN] About to return AddTaskToQueueResponse for TaskID=%s", response.TaskId)
 	
 	return response, nil
 }
@@ -412,12 +500,15 @@ func (s *SchedulerService) GetAgent() *rl.Agent {
 
 // GetSortedQueue returns the current sorted queue
 func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSortedQueueRequest) (*pb.GetSortedQueueResponse, error) {
-	logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-RECEIVE] Received GetSortedQueue request: IncludeMetadata=%t", req.IncludeMetadata)
+	// [DEBUG] Entry point - request received
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RECEIVE-START] Received GetSortedQueue request from iFogSim: IncludeMetadata=%t", req.IncludeMetadata)
 	s.metrics.IncrementRequests()
 
+	// [DEBUG] Check scheduler engine initialization
 	if s.schedulerEngine == nil {
+		// [DEBUG] Scheduler engine is nil
+		logger.GetLogger().Error("[DEBUG] [SCHEDULER-GET-QUEUE-ERROR] Scheduler engine not initialized")
 		s.metrics.IncrementFailedRequests()
-		logger.GetLogger().Error("[SCHEDULER-GET-QUEUE-ERROR] Scheduler engine not initialized")
 		return &pb.GetSortedQueueResponse{
 			SortedTasks:   []*pb.Task{},
 			AlgorithmUsed: "unknown",
@@ -426,14 +517,56 @@ func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSorted
 			NodeId:       "unknown",
 		}, fmt.Errorf("scheduler engine not initialized")
 	}
+	// [DEBUG] Scheduler engine is initialized
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-ENGINE-CHECK] Scheduler engine is initialized, proceeding")
 
+	// [DEBUG] Check context state before processing
+	// Check if context is already done (timeout) before processing
+	select {
+	case <-ctx.Done():
+		// [DEBUG] Context already cancelled
+		logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-GET-QUEUE-TIMEOUT] Request context cancelled before processing GetSortedQueue: %v", ctx.Err())
+		s.metrics.IncrementFailedRequests()
+		return &pb.GetSortedQueueResponse{
+			SortedTasks:   []*pb.Task{},
+			AlgorithmUsed: "unknown",
+			QueueSize:     0,
+			Timestamp:     time.Now().Unix(),
+			NodeId:       "unknown",
+		}, ctx.Err()
+	default:
+		// [DEBUG] Context is valid
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-CONTEXT-CHECK] Context is valid, proceeding with processing")
+	}
+	
+	// [DEBUG] About to call scheduler engine
 	// Get sorted queue from scheduler engine
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-CALL] Calling schedulerEngine.GetSortedQueue (IncludeMetadata=%t)", req.IncludeMetadata)
 	response := s.schedulerEngine.GetSortedQueue(req.IncludeMetadata)
+	// [DEBUG] Scheduler engine returned response
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-ENGINE-RETURNED] SchedulerEngine.GetSortedQueue returned, response has %d tasks", len(response.SortedTasks))
+	
+	// [DEBUG] Check context after processing
+	// Check context again after processing (in case timeout occurred during processing)
+	if ctx.Err() != nil {
+		// [DEBUG] Context cancelled during processing
+		logger.GetLogger().Warnf("[DEBUG] [SCHEDULER-GET-QUEUE-TIMEOUT-AFTER] Request timeout after processing GetSortedQueue - response may not be sent: %v", ctx.Err())
+		// For GetSortedQueue, this is read-only, so no data loss
+		// Client will retry if needed
+	} else {
+		// [DEBUG] Context still valid
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-CONTEXT-AFTER] Context is still valid after processing")
+	}
+	
+	// [DEBUG] Log response details
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-CALL-RESULT] GetSortedQueue returned: Tasks=%d, Algorithm=%s, QueueSize=%d",
+		len(response.SortedTasks), response.AlgorithmUsed, response.QueueSize)
 
 	// [DEBUG] Enhanced logging for scheduled queue on scheduler side
-	logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-RESPONSE] Returning sorted queue: Tasks=%d, Algorithm=%s, QueueSize=%d, NodeID=%s",
-		len(response.SortedTasks), response.AlgorithmUsed, response.QueueSize, response.NodeId)
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESPONSE-BUILD] Built response: Tasks=%d, Algorithm=%s, QueueSize=%d, NodeID=%s, Timestamp=%d",
+		len(response.SortedTasks), response.AlgorithmUsed, response.QueueSize, response.NodeId, response.Timestamp)
 	
+	// [DEBUG] Log task details
 	// Log task details if queue has tasks (first 10)
 	if len(response.SortedTasks) > 0 {
 		taskDetails := ""
@@ -451,12 +584,14 @@ func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSorted
 		if len(response.SortedTasks) > 10 {
 			taskDetails += fmt.Sprintf("... (+%d more)", len(response.SortedTasks)-10)
 		}
-		logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-TASKS] Queue task details: %s", taskDetails)
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-TASKS] Queue task details: %s", taskDetails)
 	} else {
-		logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-EMPTY] Queue is EMPTY - no tasks scheduled yet")
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-EMPTY] Queue is EMPTY - no tasks scheduled yet")
 	}
 
+	// [DEBUG] About to increment success metrics and return
 	s.metrics.IncrementSuccessfulRequests()
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RETURN] About to return response with %d tasks", len(response.SortedTasks))
 	return response, nil
 }
 
