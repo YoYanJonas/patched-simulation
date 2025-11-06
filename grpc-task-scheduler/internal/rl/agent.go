@@ -121,40 +121,85 @@ func (a *Agent) Disable() {
 
 // Schedule is the main entry point that matches what scheduler.go expects
 func (a *Agent) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
-	return a.ScheduleTasks(tasks, nodeManager)
+	// [DEBUG] Entry point for Schedule (wrapper)
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-WRAPPER] Agent.Schedule called with %d tasks", len(tasks))
+	result := a.ScheduleTasks(tasks, nodeManager)
+	// [DEBUG] ScheduleTasks returned
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-WRAPPER-RETURN] Agent.Schedule returning %d tasks", len(result))
+	return result
 }
 
 // ScheduleTasks schedules tasks using the selected algorithm
 func (a *Agent) ScheduleTasks(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
+	// [DEBUG] Entry point for ScheduleTasks
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-ENTRY] Agent.ScheduleTasks called with %d tasks", len(tasks))
+	
+	// [DEBUG] About to acquire lock
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-BEFORE] About to acquire lock")
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	// [DEBUG] Lock acquired
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-ACQUIRED] Lock acquired")
+	defer func() {
+		// [DEBUG] About to release lock
+		log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-RELEASE] Releasing lock")
+		a.mu.Unlock()
+		// [DEBUG] Lock released
+		log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-RELEASED] Lock released")
+	}()
 
+	// [DEBUG] Check agent state
 	if !a.isEnabled || a.algorithmManager == nil {
+		// [DEBUG] Agent disabled or not initialized
+		log.Printf("[DEBUG] [AGENT-SCHEDULE-DISABLED] Agent disabled (enabled=%t, manager=%v)", a.isEnabled, a.algorithmManager != nil)
 		// Agent is disabled or not properly initialized
 		return tasks
 	}
+	// [DEBUG] Agent is enabled
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-ENABLED] Agent is enabled and initialized")
 
+	// [DEBUG] Record decision
 	// Record decision
 	a.stats.TotalDecisions++
 	a.stats.LastDecisionTime = time.Now()
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-DECISION] Decision recorded: TotalDecisions=%d", a.stats.TotalDecisions)
 
+	// [DEBUG] About to select algorithm
 	// Select algorithm
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-SELECT-ALG-BEFORE] About to select algorithm")
 	algorithm := a.algorithmManager.SelectAlgorithm(tasks, nodeManager)
+	// [DEBUG] Algorithm selected
 	if algorithm == nil {
+		// [DEBUG] No algorithm available
+		log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-NIL] No algorithm available for scheduling")
 		a.stats.FailedRuns++
 		log.Printf("No algorithm available for scheduling")
 		return tasks
 	}
+	// [DEBUG] Algorithm selected successfully
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-SELECTED] Algorithm selected: %s", algorithm.Name())
 
+	// [DEBUG] About to schedule tasks
 	// Schedule tasks
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-BEFORE] About to call algorithm.Schedule with %d tasks", len(tasks))
 	scheduledTasks := algorithm.Schedule(tasks, nodeManager)
+	// [DEBUG] Algorithm.Schedule returned
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-AFTER] algorithm.Schedule returned %d tasks", len(scheduledTasks))
 
+	// [DEBUG] About to record performance
 	// Record performance
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-PERF-BEFORE] About to record performance")
 	algType := a.getAlgorithmType(algorithm)
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-PERF-TYPE] Algorithm type: %s", algType)
 	a.algorithmManager.RecordPerformance(algType, nodeManager, scheduledTasks)
+	// [DEBUG] Performance recorded
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-PERF-AFTER] Performance recorded")
 
 	a.stats.SuccessfulRuns++
+	// [DEBUG] Success recorded
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-SUCCESS] Scheduling successful: SuccessfulRuns=%d", a.stats.SuccessfulRuns)
 
+	// [DEBUG] About to return
+	log.Printf("[DEBUG] [AGENT-SCHEDULE-EXIT] Agent.ScheduleTasks returning %d tasks", len(scheduledTasks))
 	return scheduledTasks
 }
 

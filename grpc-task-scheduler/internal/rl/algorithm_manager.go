@@ -162,20 +162,48 @@ func (am *AlgorithmManager) GetCurrentAlgorithm() SchedulingAlgorithm {
 }
 
 func (am *AlgorithmManager) SelectAlgorithm(tasks []TaskEntry, nodeManager SingleNodeManager) SchedulingAlgorithm {
+	// [DEBUG] Entry point for SelectAlgorithm
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-ENTRY] SelectAlgorithm called with %d tasks\n", len(tasks))
+	
+	// [DEBUG] About to acquire lock
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-BEFORE] About to acquire RLock\n")
 	am.mu.RLock()
-	defer am.mu.RUnlock()
+	// [DEBUG] Lock acquired
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-ACQUIRED] RLock acquired\n")
+	defer func() {
+		// [DEBUG] About to release lock
+		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-RELEASE] Releasing RLock\n")
+		am.mu.RUnlock()
+		// [DEBUG] Lock released
+		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-RELEASED] RLock released\n")
+	}()
 
+	// [DEBUG] About to get default algorithm
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-DEFAULT] Getting default algorithm: %s\n", am.config.DefaultAlgorithm)
 	selectedAlg := am.GetAlgorithm(AlgorithmType(am.config.DefaultAlgorithm))
 	if selectedAlg != nil {
+		// [DEBUG] Default algorithm found
+		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-DEFAULT-FOUND] Default algorithm found: %s\n", selectedAlg.Name())
 		return selectedAlg
 	}
+	// [DEBUG] Default algorithm not found
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-DEFAULT-NOT-FOUND] Default algorithm not found, trying fallback\n")
 
+	// [DEBUG] About to get fallback algorithm
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-FALLBACK] Getting fallback algorithm: %s\n", am.config.FallbackAlgorithm)
 	fallbackAlgorithm := am.GetAlgorithm(AlgorithmType(am.config.FallbackAlgorithm))
 	if fallbackAlgorithm != nil {
+		// [DEBUG] Fallback algorithm found
+		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-FALLBACK-FOUND] Fallback algorithm found: %s\n", fallbackAlgorithm.Name())
 		return fallbackAlgorithm
 	}
+	// [DEBUG] Fallback not found, using FCFS
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-FCFS] Fallback not found, using FCFS\n")
 
-	return am.traditionAlgorithms[AlgorithmFCFS]
+	result := am.traditionAlgorithms[AlgorithmFCFS]
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-EXIT] SelectAlgorithm returning: %s\n", result.Name())
+	return result
 }
 
 func (am *AlgorithmManager) setCurrentAlgorithm(algType AlgorithmType) {

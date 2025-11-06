@@ -74,80 +74,198 @@ func (q *QLearningScheduler) Name() string {
 
 // Schedule schedules tasks using Q-learning
 func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
+	// [DEBUG] Entry point for QLearning Schedule
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-ENTRY] QLearning.Schedule called with %d tasks\n", len(tasks))
+	
 	if len(tasks) <= 1 {
+		// [DEBUG] Not enough tasks
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-SKIP] Skipping (tasks <= 1: %d)\n", len(tasks))
 		return tasks
 	}
 
+	// [DEBUG] About to extract state features
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-STATE-BEFORE] About to extract state features\n")
 	state := ExtractStateFeatures(tasks, nodeManager)
+	// [DEBUG] State features extracted
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-STATE-AFTER] State features extracted: QueueLength=%d, CPUUtil=%.2f, Load=%.2f\n",
+		state.QueueLength, state.CPUUtilization, state.SystemLoad)
 
+	// [DEBUG] About to select action
 	// Select action using Q-learning policy
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-ACTION-BEFORE] About to select action\n")
 	action := q.SelectAction(state)
+	// [DEBUG] Action selected
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-ACTION-AFTER] Action selected: Type=%d, Description=%s\n", action.Type, action.Description)
 
+	// [DEBUG] About to apply action
 	// Apply the selected action
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-APPLY-BEFORE] About to apply action\n")
 	reorderedTasks := ApplyAction(action, tasks)
+	// [DEBUG] Action applied
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-APPLY-AFTER] Action applied: %d tasks reordered\n", len(reorderedTasks))
 
+	// [DEBUG] About to store experience
 	// Store experience for each task if learning is enabled
 	if q.isLearning && q.experienceManager != nil {
-		for _, task := range reorderedTasks {
+		// [DEBUG] Learning enabled, storing experiences
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EXPERIENCE-BEFORE] About to store experiences for %d tasks\n", len(reorderedTasks))
+		for i, task := range reorderedTasks {
 			q.experienceManager.StoreIncompleteExperience(task.GetTaskID(), state, action)
+			if i < 5 || i == len(reorderedTasks)-1 {
+				fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EXPERIENCE] Stored experience for task %d/%d: TaskID=%s\n", i+1, len(reorderedTasks), task.GetTaskID())
+			}
 		}
+		// [DEBUG] Experiences stored
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EXPERIENCE-AFTER] Experiences stored for %d tasks\n", len(reorderedTasks))
 
+		// [DEBUG] Update episode task count
 		// Update episode task count
+		oldTaskCount := q.episodeTaskCount
 		q.episodeTaskCount += len(tasks)
+		// [DEBUG] Episode task count updated
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EPISODE] Episode task count updated: Episode=%d, TaskCount=%d->%d (+%d tasks)\n",
+			q.currentEpisode, oldTaskCount, q.episodeTaskCount, len(tasks))
 
+		// [DEBUG] Check for episode completion
 		// Check for episode completion
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EPISODE-CHECK] About to check episode completion\n")
 		q.checkEpisodeCompletion()
+		// [DEBUG] Episode check complete
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EPISODE-CHECK-DONE] Episode check complete\n")
+	} else {
+		// [DEBUG] Learning disabled or no experience manager
+		fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EXPERIENCE-SKIP] Learning disabled (isLearning=%t, expMgr=%v)\n", q.isLearning, q.experienceManager != nil)
 	}
 
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [QLEARNING-SCHEDULE-EXIT] QLearning.Schedule returning %d tasks\n", len(reorderedTasks))
 	return reorderedTasks
 }
 
 // checkEpisodeCompletion checks if current episode should end and handles completion
 func (q *QLearningScheduler) checkEpisodeCompletion() {
+	// [DEBUG] Entry point for checkEpisodeCompletion
+	fmt.Printf("[DEBUG] [EPISODE-CHECK-ENTRY] checkEpisodeCompletion called: CurrentEpisode=%d, EpisodeTaskCount=%d, EpisodeType=%s\n",
+		q.currentEpisode, q.episodeTaskCount, q.config.EpisodeConfig.Type)
+	
 	episodeComplete := false
 
 	switch q.config.EpisodeConfig.Type {
 	case "task_based":
+		// [DEBUG] Task-based episode check
+		fmt.Printf("[DEBUG] [EPISODE-CHECK-TASK] Task-based episode: TaskCount=%d, TasksPerEpisode=%d\n",
+			q.episodeTaskCount, q.config.EpisodeConfig.TasksPerEpisode)
 		if q.episodeTaskCount >= q.config.EpisodeConfig.TasksPerEpisode {
+			// [DEBUG] Episode complete by task count
+			fmt.Printf("[DEBUG] [EPISODE-CHECK-TASK-COMPLETE] Episode complete: TaskCount=%d >= TasksPerEpisode=%d\n",
+				q.episodeTaskCount, q.config.EpisodeConfig.TasksPerEpisode)
 			episodeComplete = true
+		} else {
+			// [DEBUG] Episode not complete yet
+			fmt.Printf("[DEBUG] [EPISODE-CHECK-TASK-NOT-COMPLETE] Episode not complete: TaskCount=%d < TasksPerEpisode=%d\n",
+				q.episodeTaskCount, q.config.EpisodeConfig.TasksPerEpisode)
 		}
 	case "time_based":
+		// [DEBUG] Time-based episode check
 		episodeDuration := time.Since(q.episodeStartTime)
 		maxDuration := time.Duration(q.config.EpisodeConfig.TimePerEpisodeMinutes) * time.Minute
+		fmt.Printf("[DEBUG] [EPISODE-CHECK-TIME] Time-based episode: Duration=%.2fs, MaxDuration=%.2fs\n",
+			episodeDuration.Seconds(), maxDuration.Seconds())
 		if episodeDuration >= maxDuration {
+			// [DEBUG] Episode complete by time
+			fmt.Printf("[DEBUG] [EPISODE-CHECK-TIME-COMPLETE] Episode complete: Duration=%.2fs >= MaxDuration=%.2fs\n",
+				episodeDuration.Seconds(), maxDuration.Seconds())
 			episodeComplete = true
+		} else {
+			// [DEBUG] Episode not complete yet
+			fmt.Printf("[DEBUG] [EPISODE-CHECK-TIME-NOT-COMPLETE] Episode not complete: Duration=%.2fs < MaxDuration=%.2fs\n",
+				episodeDuration.Seconds(), maxDuration.Seconds())
 		}
+	default:
+		// [DEBUG] Unknown episode type
+		fmt.Printf("[DEBUG] [EPISODE-CHECK-UNKNOWN] Unknown episode type: %s\n", q.config.EpisodeConfig.Type)
 	}
 
 	if episodeComplete {
+		// [DEBUG] About to handle episode completion
+		fmt.Printf("[DEBUG] [EPISODE-CHECK-COMPLETE] Episode complete, calling handleEpisodeCompletion: Episode=%d\n", q.currentEpisode)
 		q.handleEpisodeCompletion()
+		// [DEBUG] Episode completion handled
+		fmt.Printf("[DEBUG] [EPISODE-CHECK-HANDLED] Episode completion handled: Episode=%d\n", q.currentEpisode)
+	} else {
+		// [DEBUG] Episode not complete
+		fmt.Printf("[DEBUG] [EPISODE-CHECK-NOT-COMPLETE] Episode not complete yet: Episode=%d, TaskCount=%d\n",
+			q.currentEpisode, q.episodeTaskCount)
 	}
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EPISODE-CHECK-EXIT] checkEpisodeCompletion returning: Episode=%d, Complete=%t\n",
+		q.currentEpisode, episodeComplete)
 }
 
 // handleEpisodeCompletion handles the completion of an episode
 func (q *QLearningScheduler) handleEpisodeCompletion() {
+	// [DEBUG] Entry point for handleEpisodeCompletion
+	fmt.Printf("[DEBUG] [EPISODE-HANDLE-ENTRY] handleEpisodeCompletion called: Episode=%d, TaskCount=%d, ResetOnEnd=%t\n",
+		q.currentEpisode, q.episodeTaskCount, q.config.EpisodeConfig.ResetOnEpisodeEnd)
+	
 	// Trigger weight adaptation if multi-objective is enabled
 	if q.multiObjectiveCalculator != nil {
+		// [DEBUG] Multi-objective calculator exists
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-MULTIOBJ] Multi-objective calculator exists, checking if enabled\n")
 		cfg := config.GetConfig()
 		if cfg.RL.MultiObjective.Enabled && cfg.RL.MultiObjective.AdaptationEnabled {
+			// [DEBUG] Multi-objective adaptation enabled
+			fmt.Printf("[DEBUG] [EPISODE-HANDLE-MULTIOBJ-ENABLED] Multi-objective adaptation enabled, calling adaptWeights\n")
 			if err := q.adaptWeights(); err != nil {
+				// [DEBUG] Weight adaptation failed
+				fmt.Printf("[DEBUG] [EPISODE-HANDLE-MULTIOBJ-ERROR] Warning: Failed to adapt weights at episode %d: %v\n", q.currentEpisode, err)
 				fmt.Printf("Warning: Failed to adapt weights at episode %d: %v\n", q.currentEpisode, err)
+			} else {
+				// [DEBUG] Weight adaptation succeeded
+				fmt.Printf("[DEBUG] [EPISODE-HANDLE-MULTIOBJ-SUCCESS] Weight adaptation succeeded: Episode=%d\n", q.currentEpisode)
 			}
+		} else {
+			// [DEBUG] Multi-objective adaptation not enabled
+			fmt.Printf("[DEBUG] [EPISODE-HANDLE-MULTIOBJ-DISABLED] Multi-objective adaptation not enabled: Enabled=%t, AdaptationEnabled=%t\n",
+				cfg.RL.MultiObjective.Enabled, cfg.RL.MultiObjective.AdaptationEnabled)
 		}
+	} else {
+		// [DEBUG] Multi-objective calculator not available
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-MULTIOBJ-NONE] Multi-objective calculator not available\n")
 	}
 
 	// Mark episode as complete in experience manager
 	if q.experienceManager != nil {
+		// [DEBUG] Experience manager exists
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-EXPMGR] Experience manager exists, marking episode complete: Episode=%d, TaskCount=%d\n",
+			q.currentEpisode, q.episodeTaskCount)
 		fmt.Printf("Episode %d completed with %d tasks\n", q.currentEpisode, q.episodeTaskCount)
 		q.experienceManager.MarkEpisodeComplete(q.currentEpisode)
+		// [DEBUG] Episode marked complete
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-EXPMGR-DONE] Episode marked complete in experience manager: Episode=%d\n", q.currentEpisode)
+	} else {
+		// [DEBUG] Experience manager not available
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-EXPMGR-NONE] Experience manager not available\n")
 	}
 
 	// Reset episode if configured
 	if q.config.EpisodeConfig.ResetOnEpisodeEnd {
+		// [DEBUG] Reset on episode end enabled
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-RESET] ResetOnEpisodeEnd=true, calling resetEpisode: Episode=%d\n", q.currentEpisode)
 		q.resetEpisode()
+		// [DEBUG] Episode reset complete
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-RESET-DONE] Episode reset complete: Episode=%d\n", q.currentEpisode)
 	} else {
+		// [DEBUG] Advance to next episode
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-ADVANCE] ResetOnEpisodeEnd=false, calling advanceEpisode: Episode=%d\n", q.currentEpisode)
 		q.advanceEpisode()
+		// [DEBUG] Episode advance complete
+		fmt.Printf("[DEBUG] [EPISODE-HANDLE-ADVANCE-DONE] Episode advance complete: Episode=%d\n", q.currentEpisode)
 	}
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EPISODE-HANDLE-EXIT] handleEpisodeCompletion returning: Episode=%d\n", q.currentEpisode)
 }
 
 // adaptWeights adapts reward weights based on recent performance
@@ -180,53 +298,123 @@ func (q *QLearningScheduler) adaptWeights() error {
 
 // resetEpisode resets the current episode (for episodic learning)
 func (q *QLearningScheduler) resetEpisode() {
+	// [DEBUG] Entry point for resetEpisode
+	fmt.Printf("[DEBUG] [EPISODE-RESET-ENTRY] resetEpisode called: Episode=%d, TaskCount=%d, ExplorationRate=%.3f\n",
+		q.currentEpisode, q.episodeTaskCount, q.config.ExplorationRate)
+	
+	oldEpisode := q.currentEpisode
+	oldTaskCount := q.episodeTaskCount
+	oldExplorationRate := q.config.ExplorationRate
+	
 	// Reset episode counters
 	q.episodeTaskCount = 0
 	q.episodeStartTime = time.Now()
 	q.lastEpisodeReset = time.Now()
+	// [DEBUG] Episode counters reset
+	fmt.Printf("[DEBUG] [EPISODE-RESET-COUNTERS] Episode counters reset: TaskCount=%d->0, StartTime=%v, LastReset=%v\n",
+		oldTaskCount, q.episodeStartTime, q.lastEpisodeReset)
 
 	// Reset exploration rate to initial value for fresh exploration
 	cfg := config.GetConfig()
 	q.config.ExplorationRate = cfg.RL.ExplorationRate
+	// [DEBUG] Exploration rate reset
+	fmt.Printf("[DEBUG] [EPISODE-RESET-EXPLORATION] Exploration rate reset: %.3f->%.3f\n",
+		oldExplorationRate, q.config.ExplorationRate)
 
 	fmt.Printf("Episode %d reset: Fresh start with exploration rate %.3f\n",
-		q.currentEpisode, q.config.ExplorationRate)
+		oldEpisode, q.config.ExplorationRate)
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EPISODE-RESET-EXIT] resetEpisode returning: Episode=%d, TaskCount=%d, ExplorationRate=%.3f\n",
+		q.currentEpisode, q.episodeTaskCount, q.config.ExplorationRate)
 }
 
 // advanceEpisode advances to the next episode without resetting learning
 func (q *QLearningScheduler) advanceEpisode() {
+	// [DEBUG] Entry point for advanceEpisode
+	fmt.Printf("[DEBUG] [EPISODE-ADVANCE-ENTRY] advanceEpisode called: Episode=%d, TaskCount=%d, ExplorationRate=%.3f\n",
+		q.currentEpisode, q.episodeTaskCount, q.config.ExplorationRate)
+	
+	oldEpisode := q.currentEpisode
+	oldTaskCount := q.episodeTaskCount
+	
+	// Advance episode
 	q.currentEpisode++
 	q.episodeTaskCount = 0
 	q.episodeStartTime = time.Now()
+	// [DEBUG] Episode advanced
+	fmt.Printf("[DEBUG] [EPISODE-ADVANCE-DONE] Episode advanced: %d->%d, TaskCount=%d->0, StartTime=%v\n",
+		oldEpisode, q.currentEpisode, oldTaskCount, q.episodeStartTime)
 
 	fmt.Printf("Advanced to episode %d (continuous learning)\n", q.currentEpisode)
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EPISODE-ADVANCE-EXIT] advanceEpisode returning: Episode=%d, TaskCount=%d, ExplorationRate=%.3f\n",
+		q.currentEpisode, q.episodeTaskCount, q.config.ExplorationRate)
 }
 
 // SelectAction selects an action with optimized Q-table access and caching
 func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
+	// [DEBUG] Entry point for SelectAction
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-ENTRY] QLearning.SelectAction called\n")
+	
+	// [DEBUG] Getting state key
 	stateKey := state.GetStateKey()
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-STATE-KEY] State key: %s\n", stateKey)
 
+	// [DEBUG] Track frequently accessed states
 	// Track frequently accessed states for optimization
 	q.frequentStates[stateKey] = time.Now()
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-FREQ-STATE] Tracked frequent state\n")
 
+	// [DEBUG] Clean up cache if needed
 	// Clean up old cache entries periodically (every 100 accesses)
 	if time.Since(q.cacheCleanup) > time.Minute {
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-CLEANUP] Cleaning up frequent states cache\n")
 		q.cleanupFrequentStatesCache()
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-CLEANUP-DONE] Cleanup complete\n")
 	}
 
+	// [DEBUG] Initialize Q-values if needed
 	// Initialize Q-values for this state if not exists
 	if _, exists := q.qTable[stateKey]; !exists {
+		// [DEBUG] Initializing Q-values for new state
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-INIT-Q] Initializing Q-values for new state: %s\n", stateKey)
 		q.initializeStateQValues(stateKey)
+		// [DEBUG] Q-values initialized
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-INIT-Q-DONE] Q-values initialized\n")
+	} else {
+		// [DEBUG] State already exists in Q-table
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-Q-EXISTS] State already exists in Q-table\n")
 	}
 
+	// [DEBUG] Epsilon-greedy action selection
 	// Epsilon-greedy action selection
-	if q.isLearning && q.rng.Float64() < q.config.ExplorationRate {
+	explorationRate := q.config.ExplorationRate
+	randomValue := q.rng.Float64()
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-EPSILON] ExplorationRate=%.3f, RandomValue=%.3f, isLearning=%t\n",
+		explorationRate, randomValue, q.isLearning)
+	
+	if q.isLearning && randomValue < explorationRate {
+		// [DEBUG] Exploring
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXPLORE] Exploring: choosing random action\n")
 		// Explore: choose random action with pre-allocated actions slice
-		return q.getRandomAction()
+		result := q.getRandomAction()
+		// [DEBUG] Random action selected
+		fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXPLORE-DONE] Random action selected: Type=%d\n", result.Type)
+		return result
 	}
 
+	// [DEBUG] Exploiting
 	// Exploit: choose best action with optimized lookup and caching
-	return q.getBestActionOptimized(stateKey)
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXPLOIT] Exploiting: choosing best action\n")
+	result := q.getBestActionOptimized(stateKey)
+	// [DEBUG] Best action selected
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXPLOIT-DONE] Best action selected: Type=%d, Description=%s\n", result.Type, result.Description)
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXIT] QLearning.SelectAction returning: Type=%d\n", result.Type)
+	return result
 }
 
 // getRandomAction returns a random action with optimized access

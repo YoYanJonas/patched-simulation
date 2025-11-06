@@ -72,8 +72,21 @@ func NewExperienceManager(scheduler *QLearningScheduler, multiObj *MultiObjectiv
 }
 
 func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *StateFeatures, action Action) {
+	// [DEBUG] Entry point for StoreIncompleteExperience
+	fmt.Printf("[DEBUG] [EXP-MGR-STORE-ENTRY] StoreIncompleteExperience called: TaskID=%s, Action=%v\n", taskID, action.Type)
+	
+	// [DEBUG] About to acquire lock
+	fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	defer em.mu.Unlock()
+	// [DEBUG] Lock acquired
+	fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-ACQUIRED] Lock acquired\n")
+	defer func() {
+		// [DEBUG] About to release lock
+		fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-RELEASE] Releasing Lock\n")
+		em.mu.Unlock()
+		// [DEBUG] Lock released
+		fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-RELEASED] Lock released\n")
+	}()
 
 	em.incompleteExperiences[taskID] = &IncompleteExperience{
 		TaskID:    taskID,
@@ -82,20 +95,42 @@ func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *Sta
 		Timestamp: time.Now(),
 		Timeout:   time.Now().Add(em.experienceTimeout),
 	}
+	// [DEBUG] Incomplete experience stored
+	fmt.Printf("[DEBUG] [EXP-MGR-STORE-AFTER] Incomplete experience stored: TaskID=%s, TotalIncomplete=%d\n",
+		taskID, len(em.incompleteExperiences))
 
 	// Update memory usage estimation
 	em.updateMemoryUsage()
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EXP-MGR-STORE-EXIT] StoreIncompleteExperience returning: TaskID=%s\n", taskID)
 }
 
 func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCompletionReport) error {
+	// [DEBUG] Entry point for CompleteExperience
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-ENTRY] CompleteExperience called: TaskID=%s\n", taskID)
+	
+	// [DEBUG] About to acquire lock
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
+	// [DEBUG] Lock acquired
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-ACQUIRED] Lock acquired\n")
 	incompleteExp := em.incompleteExperiences[taskID]
 	delete(em.incompleteExperiences, taskID)
+	// [DEBUG] About to release lock
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-RELEASE] Releasing Lock\n")
 	em.mu.Unlock()
+	// [DEBUG] Lock released
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-RELEASED] Lock released\n")
 
 	if incompleteExp == nil {
+		// [DEBUG] Task not found
+		fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-ERROR] Task %s not found in incomplete experiences\n", taskID)
 		return fmt.Errorf("task %s not found in incomplete experiences", taskID)
 	}
+	
+	// [DEBUG] Incomplete experience found
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-FOUND] Incomplete experience found: TaskID=%s\n", taskID)
 
 	reward, err := em.calculateDelayedReward(incompleteExp, report)
 	if err != nil {
@@ -112,14 +147,28 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	}
 
 	// Update Q-learning policy
+	// [DEBUG] About to update Q-learning policy
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-BEFORE] About to update Q-learning policy: TaskID=%s\n", taskID)
 	if err := em.qLearningScheduler.UpdatePolicy(experience); err != nil {
+		// [DEBUG] Error updating policy
+		fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-ERROR] Failed to update Q-learning policy: %v\n", err)
 		return err
 	}
+	// [DEBUG] Policy updated successfully
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-SUCCESS] Q-learning policy updated successfully: TaskID=%s\n", taskID)
 
 	// Store complete experience and track stability
+	// [DEBUG] About to store complete experience
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-STORE-BEFORE] About to store complete experience: TaskID=%s\n", taskID)
 	em.storeCompleteExperience(experience, taskID)
+	// [DEBUG] About to track Q-value stability
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-STABILITY-BEFORE] About to track Q-value stability: TaskID=%s\n", taskID)
 	em.trackQValueStability(incompleteExp.State, incompleteExp.Action)
+	// [DEBUG] Stability tracked
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-STABILITY-AFTER] Q-value stability tracked: TaskID=%s\n", taskID)
 
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-EXIT] CompleteExperience returning successfully: TaskID=%s\n", taskID)
 	return nil
 }
 
@@ -467,47 +516,119 @@ func (em *ExperienceManager) emergencyMemoryCleanup() {
 }
 
 func (em *ExperienceManager) Cleanup() {
+	// [DEBUG] Entry point for Cleanup
+	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-ENTRY] Cleanup called: ConfigEnabled=%t, IncompleteCount=%d, CompleteCount=%d\n",
+		em.config.Enabled, len(em.incompleteExperiences), len(em.completeExperiences))
+	
+	// [DEBUG] About to acquire lock
+	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	defer em.mu.Unlock()
+	// [DEBUG] Lock acquired
+	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-ACQUIRED] Lock acquired\n")
+	defer func() {
+		// [DEBUG] About to release lock
+		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-RELEASE] Releasing Lock\n")
+		em.mu.Unlock()
+		// [DEBUG] Lock released
+		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-RELEASED] Lock released\n")
+	}()
 
 	now := time.Now()
 
 	// Clean up timed-out incomplete experiences
+	// [DEBUG] About to clean up timed-out incomplete experiences
+	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-TIMEOUT-BEFORE] About to clean up timed-out incomplete experiences: Count=%d\n",
+		len(em.incompleteExperiences))
+	cleanedTimeout := 0
 	for taskID, exp := range em.incompleteExperiences {
 		if now.After(exp.Timeout) {
 			delete(em.incompleteExperiences, taskID)
+			cleanedTimeout++
 		}
+	}
+	// [DEBUG] Timed-out experiences cleaned
+	if cleanedTimeout > 0 {
+		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-TIMEOUT-AFTER] Cleaned up %d timed-out incomplete experiences\n", cleanedTimeout)
+	} else {
+		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-TIMEOUT-NONE] No timed-out incomplete experiences to clean\n")
 	}
 
 	// Scheduled cleanup based on episode intervals
 	if em.config.Enabled {
+		// [DEBUG] Memory management enabled
+		oldCounter := em.episodeCleanupCounter
 		em.episodeCleanupCounter++
+		// [DEBUG] Episode cleanup counter incremented
+		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-COUNTER] Episode cleanup counter: %d->%d, CleanupInterval=%d\n",
+			oldCounter, em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes {
+			// [DEBUG] Cleanup interval reached
+			fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-INTERVAL] Cleanup interval reached: Counter=%d >= Interval=%d, calling performScheduledCleanup\n",
+				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 			em.performScheduledCleanup()
 			em.episodeCleanupCounter = 0
 			em.lastCleanupTime = now
+			// [DEBUG] Scheduled cleanup performed
+			fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-INTERVAL-DONE] Scheduled cleanup performed, counter reset to 0, LastCleanupTime=%v\n",
+				em.lastCleanupTime)
+		} else {
+			// [DEBUG] Cleanup interval not reached yet
+			fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-INTERVAL-NOT-YET] Cleanup interval not reached: Counter=%d < Interval=%d\n",
+				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 		}
+	} else {
+		// [DEBUG] Memory management disabled
+		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-DISABLED] Memory management disabled, skipping scheduled cleanup\n")
 	}
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-EXIT] Cleanup returning: IncompleteCount=%d, CompleteCount=%d\n",
+		len(em.incompleteExperiences), len(em.completeExperiences))
 }
 
 // Perform scheduled cleanup
 func (em *ExperienceManager) performScheduledCleanup() {
+	// [DEBUG] Entry point for performScheduledCleanup
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-ENTRY] performScheduledCleanup called: CleanupInterval=%d episodes\n",
+		em.config.CleanupIntervalEpisodes)
 	fmt.Printf("Performing scheduled cleanup (every %d episodes)...\n",
 		em.config.CleanupIntervalEpisodes)
 
+	// [DEBUG] About to cleanup stable experiences
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-STABLE-BEFORE] About to cleanup stable experiences\n")
 	cleanedStable := em.CleanupStableExperiences()
+	// [DEBUG] Stable experiences cleaned
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-STABLE-AFTER] Cleaned %d stable experiences\n", cleanedStable)
+
+	// [DEBUG] About to enforce experience limit
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-LIMIT-BEFORE] About to enforce experience limit: CurrentCount=%d, MaxExperiences=%d\n",
+		len(em.completeExperiences), em.config.MaxExperiences)
 	cleanedLimit := em.enforceExperienceLimit()
+	// [DEBUG] Experience limit enforced
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-LIMIT-AFTER] Cleaned %d experiences due to limit\n", cleanedLimit)
 
 	// Clean up old Q-value history for unused state-action pairs
+	// [DEBUG] About to cleanup unused Q-value history
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-QHIST-BEFORE] About to cleanup unused Q-value history\n")
 	em.cleanupUnusedQValueHistory()
+	// [DEBUG] Q-value history cleaned
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-QHIST-AFTER] Unused Q-value history cleaned\n")
 
+	// [DEBUG] About to update memory usage
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-MEMORY-BEFORE] About to update memory usage\n")
 	em.updateMemoryUsage()
+	// [DEBUG] Memory usage updated
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-MEMORY-AFTER] Memory usage updated: %d KB\n", em.memoryUsageBytes/1024)
 
 	fmt.Printf("Scheduled cleanup completed: %d stable + %d limit-based experiences cleaned\n",
 		cleanedStable, cleanedLimit)
 	fmt.Printf("Memory usage: %d KB, Complete experiences: %d, Q-value entries: %d\n",
 		em.memoryUsageBytes/1024, len(em.completeExperiences), em.getQValueEntryCount())
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-EXIT] performScheduledCleanup returning: CleanedStable=%d, CleanedLimit=%d, CompleteExperiences=%d\n",
+		cleanedStable, cleanedLimit, len(em.completeExperiences))
 }
 
 // Clean up unused Q-value history
@@ -606,16 +727,40 @@ func (em *ExperienceManager) GetStats() map[string]interface{} {
 
 // FIXED MarkEpisodeComplete - compilation errors resolved
 func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
+	// [DEBUG] Entry point for MarkEpisodeComplete
+	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-ENTRY] MarkEpisodeComplete called: Episode=%d, ConfigEnabled=%t, TotalExperiences=%d\n",
+		episodeNumber, em.config.Enabled, len(em.completeExperiences))
+	
+	// [DEBUG] About to acquire lock
+	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	defer em.mu.Unlock()
+	// [DEBUG] Lock acquired
+	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-ACQUIRED] Lock acquired\n")
+	defer func() {
+		// [DEBUG] About to release lock
+		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-RELEASE] Releasing Lock\n")
+		em.mu.Unlock()
+		// [DEBUG] Lock released
+		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-RELEASED] Lock released\n")
+	}()
 
 	fmt.Printf("ExperienceManager: Episode %d marked as complete.\n", episodeNumber)
 
 	// Episode completion triggers cleanup and stability updates
 	if em.config.Enabled {
+		// [DEBUG] Memory management enabled
+		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-ENABLED] Memory management enabled, updating experience ages: TotalExperiences=%d\n",
+			len(em.completeExperiences))
+		
 		// Update ages of all complete experiences
+		updatedCount := 0
+		stableCount := 0
 		for _, exp := range em.completeExperiences {
+			oldAge := exp.Age
 			exp.Age = episodeNumber - exp.EpisodeNumber
+			if oldAge != exp.Age {
+				updatedCount++
+			}
 
 			// FIX: Declare variables in proper scope
 			stateKey := exp.Experience.State.GetStateKey()
@@ -624,18 +769,40 @@ func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
 			// Safe null check before accessing nested maps
 			if em.stabilityTracker[stateKey] != nil {
 				if stability, exists := em.stabilityTracker[stateKey][actionType]; exists && stability.IsStable {
+					wasStable := exp.IsStable
 					exp.IsStable = true
 					exp.StabilityAge = episodeNumber - stability.StableEpisode
+					if !wasStable {
+						stableCount++
+					}
 				}
 			}
 		}
+		// [DEBUG] Experience ages updated
+		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-AGES] Experience ages updated: UpdatedCount=%d, StableCount=%d\n",
+			updatedCount, stableCount)
 
 		// Check if cleanup should be triggered
+		// [DEBUG] Check cleanup counter
+		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-CLEANUP-CHECK] Cleanup counter: %d, CleanupInterval=%d\n",
+			em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes-1 {
 			// Will trigger on next Cleanup() call
+			// [DEBUG] Cleanup scheduled
+			fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-CLEANUP-SCHEDULED] Episode %d: Cleanup scheduled for next interval\n", episodeNumber)
 			fmt.Printf("Episode %d: Cleanup scheduled for next interval\n", episodeNumber)
+		} else {
+			// [DEBUG] Cleanup not scheduled yet
+			fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-CLEANUP-NOT-YET] Cleanup not scheduled yet: Counter=%d < Threshold=%d\n",
+				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes-1)
 		}
+	} else {
+		// [DEBUG] Memory management disabled
+		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-DISABLED] Memory management disabled, skipping age updates\n")
 	}
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-EXIT] MarkEpisodeComplete returning: Episode=%d\n", episodeNumber)
 }
 
 // Unsafe version for internal use (already holding mutex)

@@ -2,6 +2,7 @@ package models
 
 import (
 	"container/heap"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -34,12 +35,46 @@ func NewFIFOQueue() *FIFOQueue {
 }
 
 func (q *FIFOQueue) Enqueue(task *TaskEntry) error {
+	// [DEBUG] Entry point for Enqueue
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-ENTRY] FIFOQueue.Enqueue() called for TaskID=%s\n", task.GetTaskID())
+	
+	// [DEBUG] About to acquire write lock
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-LOCK-BEFORE] About to acquire write lock for TaskID=%s\n", task.GetTaskID())
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	// [DEBUG] Write lock acquired
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-LOCK-ACQUIRED] Write lock acquired, queue size: %d\n", len(q.tasks))
+	defer func() {
+		// [DEBUG] About to release write lock
+		fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-LOCK-RELEASE] Releasing write lock for TaskID=%s\n", task.GetTaskID())
+		q.mu.Unlock()
+		// [DEBUG] Write lock released
+		fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-LOCK-RELEASED] Write lock released\n")
+	}()
 
+	// [DEBUG] Getting current queue size
+	oldSize := len(q.tasks)
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-BEFORE] Queue size before enqueue: %d\n", oldSize)
+	
+	// [DEBUG] Setting task status
 	task.Status = TaskStatusQueued
 	task.QueuedAt = time.Now()
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-STATUS] Task %s status set to Queued, QueuedAt=%v\n", task.GetTaskID(), task.QueuedAt)
+	
+	// [DEBUG] About to append task
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-APPEND-BEFORE] About to append TaskID=%s to queue\n", task.GetTaskID())
 	q.tasks = append(q.tasks, task)
+	// [DEBUG] Task appended
+	newSize := len(q.tasks)
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-APPEND-AFTER] TaskID=%s appended to queue (size: %d -> %d)\n", task.GetTaskID(), oldSize, newSize)
+	
+	// [DEBUG] Log enqueue operation
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE] Task %s enqueued successfully (queue size: %d -> %d)\n", 
+		task.GetTaskID(), oldSize, newSize)
+	fmt.Printf("[QUEUE-ENQUEUE] Task %s enqueued successfully (queue size: %d -> %d)\n", 
+		task.GetTaskID(), oldSize, newSize)
+	
+	// [DEBUG] Enqueue complete
+	fmt.Printf("[DEBUG] [QUEUE-ENQUEUE-EXIT] FIFOQueue.Enqueue() completed successfully for TaskID=%s\n", task.GetTaskID())
 	return nil
 }
 
@@ -91,18 +126,47 @@ func (q *FIFOQueue) Remove(taskID string) *TaskEntry {
 }
 
 func (q *FIFOQueue) GetAll() []*TaskEntry {
+	// [DEBUG] Entry point for GetAll
+	fmt.Printf("[DEBUG] [QUEUE-GETALL-ENTRY] FIFOQueue.GetAll() called\n")
+	
+	// [DEBUG] About to acquire read lock
+	fmt.Printf("[DEBUG] [QUEUE-GETALL-LOCK-BEFORE] About to acquire RLock\n")
 	q.mu.RLock()
-	defer q.mu.RUnlock()
+	// [DEBUG] Read lock acquired
+	fmt.Printf("[DEBUG] [QUEUE-GETALL-LOCK-ACQUIRED] RLock acquired, queue size: %d\n", len(q.tasks))
+	defer func() {
+		// [DEBUG] About to release read lock
+		fmt.Printf("[DEBUG] [QUEUE-GETALL-LOCK-RELEASE] Releasing RLock\n")
+		q.mu.RUnlock()
+		// [DEBUG] Read lock released
+		fmt.Printf("[DEBUG] [QUEUE-GETALL-LOCK-RELEASED] RLock released\n")
+	}()
 
+	// [DEBUG] Creating result slice
 	result := make([]*TaskEntry, len(q.tasks))
+	// [DEBUG] Copying tasks
+	fmt.Printf("[DEBUG] [QUEUE-GETALL-COPY] Copying %d tasks to result slice\n", len(q.tasks))
 	copy(result, q.tasks)
+	// [DEBUG] Copy complete
+	fmt.Printf("[DEBUG] [QUEUE-GETALL-EXIT] GetAll() returning %d tasks\n", len(result))
 	return result
 }
 
 func (q *FIFOQueue) Clear() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	oldSize := len(q.tasks)
+	// [DEBUG] Log task IDs before clearing
+	if oldSize > 0 {
+		taskIds := make([]string, 0, oldSize)
+		for _, task := range q.tasks {
+			taskIds = append(taskIds, task.GetTaskID())
+		}
+		fmt.Printf("[QUEUE-CLEAR-BEFORE] About to clear queue with %d tasks: %v\n", oldSize, taskIds)
+	}
 	q.tasks = q.tasks[:0]
+	// [DEBUG] Log clear operation
+	fmt.Printf("[QUEUE-CLEAR] Queue cleared (size: %d -> %d)\n", oldSize, len(q.tasks))
 }
 
 // =============================================================================

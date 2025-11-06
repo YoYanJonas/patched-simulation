@@ -56,38 +56,78 @@ type StateFeatures struct {
 // ExtractStateFeatures extracts state features from current tasks and node status
 // Note: Cache-related features are excluded from scheduling state (cache has its own agent)
 func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager) *StateFeatures {
+	// [DEBUG] Entry point for ExtractStateFeatures
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-ENTRY] ExtractStateFeatures called with %d tasks\n", len(tasks))
+	
 	state := &StateFeatures{
 		Timestamp: time.Now(),
 	}
+	// [DEBUG] State struct created
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-CREATE] State struct created\n")
 
+	// [DEBUG] Extract time-based features
 	// Extract time-based features
 	now := time.Now()
 	state.TimeOfDay = now.Hour()
 	state.DayOfWeek = int(now.Weekday())
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-TIME] Time features: TimeOfDay=%d, DayOfWeek=%d\n", state.TimeOfDay, state.DayOfWeek)
 
+	// [DEBUG] Queue characteristics
 	// Queue characteristics
 	state.QueueLength = len(tasks)
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-QUEUE] Queue length: %d\n", state.QueueLength)
 
+	// [DEBUG] Calculate task statistics
 	if len(tasks) > 0 {
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-STATS-BEFORE] About to calculate task statistics\n")
 		state.calculateTaskStatistics(tasks)
+		// [DEBUG] Task statistics calculated
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-STATS-AFTER] Task statistics calculated: AvgWait=%.2f, AvgExec=%.2f, AvgPriority=%.2f\n",
+			state.AvgWaitingTime, state.AvgExecutionTime, state.AvgPriority)
+		
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-DIST-BEFORE] About to calculate task distribution\n")
 		state.calculateTaskDistribution(tasks)
+		// [DEBUG] Task distribution calculated
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-DIST-AFTER] Task distribution calculated: HighPriority=%.2f, ShortTask=%.2f, Urgent=%.2f\n",
+			state.HighPriorityRatio, state.ShortTaskRatio, state.UrgentTaskRatio)
+	} else {
+		// [DEBUG] No tasks
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-NO-TASKS] No tasks, skipping statistics calculation\n")
 	}
 
+	// [DEBUG] Resource utilization
 	// Resource utilization from node manager
 	if nodeManager != nil {
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-NODE-BEFORE] About to get node manager metrics\n")
 		state.CPUUtilization = nodeManager.GetCPUUtilization()
 		state.MemoryUtilization = nodeManager.GetMemoryUtilization()
 		state.SystemLoad = (state.CPUUtilization + state.MemoryUtilization) / 2.0
 		state.ResourcePressure = math.Max(state.CPUUtilization, state.MemoryUtilization)
+		// [DEBUG] Node metrics retrieved
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-NODE-AFTER] Node metrics: CPU=%.2f, Memory=%.2f, Load=%.2f, Pressure=%.2f\n",
+			state.CPUUtilization, state.MemoryUtilization, state.SystemLoad, state.ResourcePressure)
 
 		// Performance indicators (placeholder - would be calculated from historical data)
 		state.RecentThroughput = float64(state.QueueLength) / 10.0 // Simplified
 		state.RecentLatency = state.AvgWaitingTime + state.AvgExecutionTime
+		// [DEBUG] Performance indicators calculated
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-PERF] Performance indicators: Throughput=%.2f, Latency=%.2f\n",
+			state.RecentThroughput, state.RecentLatency)
+	} else {
+		// [DEBUG] No node manager
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-NO-NODE] Node manager is nil\n")
 	}
 
+	// [DEBUG] Apply fuzzy categorization
 	// Apply fuzzy categorization if enabled
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-FUZZY-BEFORE] About to apply fuzzy categories\n")
 	state.applyFuzzyCategories()
+	// [DEBUG] Fuzzy categories applied
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-FUZZY-AFTER] Fuzzy categories: CPU=%s, Memory=%s, Queue=%s, Load=%s, Priority=%s\n",
+		state.CPUCategory, state.MemoryCategory, state.QueueCategory, state.LoadCategory, state.PriorityCategory)
 
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-EXIT] ExtractStateFeatures returning state with QueueLength=%d\n", state.QueueLength)
 	return state
 }
 

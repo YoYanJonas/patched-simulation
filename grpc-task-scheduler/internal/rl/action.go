@@ -1,5 +1,7 @@
 package rl
 
+import "fmt"
+
 // ActionType represents different types of scheduling actions
 type ActionType int
 
@@ -47,48 +49,105 @@ func GetActionSize() int {
 
 // ApplyAction applies the chosen action to reorder the task queue
 func ApplyAction(action Action, tasks []TaskEntry) []TaskEntry {
+	// [DEBUG] Entry point for ApplyAction
+	fmt.Printf("[DEBUG] [ACTION-APPLY-ENTRY] ApplyAction called: ActionType=%d, Tasks=%d\n", action.Type, len(tasks))
+	
 	if len(tasks) <= 1 {
+		// [DEBUG] Not enough tasks
+		fmt.Printf("[DEBUG] [ACTION-APPLY-SKIP] Skipping (tasks <= 1: %d)\n", len(tasks))
 		return tasks
 	}
 
+	// [DEBUG] Creating reordered slice
+	fmt.Printf("[DEBUG] [ACTION-APPLY-COPY] Creating reordered slice\n")
 	reordered := make([]TaskEntry, len(tasks))
 	copy(reordered, tasks)
+	// [DEBUG] Copy complete
+	fmt.Printf("[DEBUG] [ACTION-APPLY-COPY-DONE] Copy complete: %d tasks\n", len(reordered))
 
+	// [DEBUG] Applying action based on type
+	fmt.Printf("[DEBUG] [ACTION-APPLY-SWITCH] Applying action: Type=%d, Description=%s\n", action.Type, action.Description)
 	switch action.Type {
 	case ActionNone:
+		// [DEBUG] No action
+		fmt.Printf("[DEBUG] [ACTION-APPLY-NONE] ActionNone: returning original order\n")
 		return reordered
 
 	case ActionScheduleNext:
-		return sortByPriority(reordered)
+		// [DEBUG] Schedule next
+		fmt.Printf("[DEBUG] [ACTION-APPLY-SCHEDULE-NEXT] ActionScheduleNext: sorting by priority\n")
+		result := sortByPriority(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-SCHEDULE-NEXT-DONE] Sorted by priority: %d tasks\n", len(result))
+		return result
 
 	case ActionReorder:
+		// [DEBUG] Reorder
+		fmt.Printf("[DEBUG] [ACTION-APPLY-REORDER] ActionReorder: Priority=%.2f\n", action.Priority)
 		if action.Priority > 0.7 {
-			return sortByBalanced(reordered)
+			fmt.Printf("[DEBUG] [ACTION-APPLY-REORDER-BALANCED] Sorting by balanced\n")
+			result := sortByBalanced(reordered)
+			fmt.Printf("[DEBUG] [ACTION-APPLY-REORDER-BALANCED-DONE] Sorted by balanced: %d tasks\n", len(result))
+			return result
 		}
-		return sortByPriority(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-REORDER-PRIORITY] Sorting by priority\n")
+		result := sortByPriority(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-REORDER-PRIORITY-DONE] Sorted by priority: %d tasks\n", len(result))
+		return result
 
 	case ActionDelay:
-		return sortByPriority(reordered) // High priority first = delay low priority
+		// [DEBUG] Delay
+		fmt.Printf("[DEBUG] [ACTION-APPLY-DELAY] ActionDelay: sorting by priority (high priority first = delay low priority)\n")
+		result := sortByPriority(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-DELAY-DONE] Sorted by priority: %d tasks\n", len(result))
+		return result
 
 	case ActionPriorityBoost:
-		return sortByUrgency(reordered)
+		// [DEBUG] Priority boost
+		fmt.Printf("[DEBUG] [ACTION-APPLY-PRIORITY-BOOST] ActionPriorityBoost: sorting by urgency\n")
+		result := sortByUrgency(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-PRIORITY-BOOST-DONE] Sorted by urgency: %d tasks\n", len(result))
+		return result
 
 	case ActionPromoteHighPriority:
-		return sortByPriority(reordered)
+		// [DEBUG] Promote high priority
+		fmt.Printf("[DEBUG] [ACTION-APPLY-PROMOTE-HIGH] ActionPromoteHighPriority: sorting by priority\n")
+		result := sortByPriority(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-PROMOTE-HIGH-DONE] Sorted by priority: %d tasks\n", len(result))
+		return result
 
 	case ActionPromoteShortJobs:
-		return sortByShortestJob(reordered)
+		// [DEBUG] Promote short jobs
+		fmt.Printf("[DEBUG] [ACTION-APPLY-PROMOTE-SHORT] ActionPromoteShortJobs: sorting by shortest job\n")
+		result := sortByShortestJob(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-PROMOTE-SHORT-DONE] Sorted by shortest job: %d tasks\n", len(result))
+		return result
 
 	case ActionBalancedScheduling:
-		return sortByBalanced(reordered)
+		// [DEBUG] Balanced scheduling
+		fmt.Printf("[DEBUG] [ACTION-APPLY-BALANCED] ActionBalancedScheduling: sorting by balanced\n")
+		result := sortByBalanced(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-BALANCED-DONE] Sorted by balanced: %d tasks\n", len(result))
+		return result
 
 	case ActionDeadlineAware:
-		return sortByDeadline(reordered)
+		// [DEBUG] Deadline aware
+		fmt.Printf("[DEBUG] [ACTION-APPLY-DEADLINE] ActionDeadlineAware: sorting by deadline\n")
+		result := sortByDeadline(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-DEADLINE-DONE] Sorted by deadline: %d tasks\n", len(result))
+		return result
 
 	case ActionResourceOptimized:
-		return sortByResource(reordered)
+		// [DEBUG] Resource optimized
+		fmt.Printf("[DEBUG] [ACTION-APPLY-RESOURCE] ActionResourceOptimized: sorting by resource\n")
+		result := sortByResource(reordered)
+		fmt.Printf("[DEBUG] [ACTION-APPLY-RESOURCE-DONE] Sorted by resource: %d tasks\n", len(result))
+		return result
 
 	default:
+		// [DEBUG] Default case
+		fmt.Printf("[DEBUG] [ACTION-APPLY-DEFAULT] Unknown action type: %d, returning original order\n", action.Type)
+		// [DEBUG] About to return
+		fmt.Printf("[DEBUG] [ACTION-APPLY-EXIT] ApplyAction returning %d tasks\n", len(reordered))
 		return reordered
 	}
 }

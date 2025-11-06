@@ -1,6 +1,7 @@
 package rl
 
 import (
+	"fmt"
 	pb "scheduler-grpc-server/api/proto"
 )
 
@@ -11,6 +12,10 @@ func CalculateCacheReward(
 	cacheHitSuccess bool,      // was cache hit successful?
 	systemLoad float64,        // current system load [0.0-1.0]
 ) float64 {
+	// [DEBUG] Entry point for CalculateCacheReward
+	fmt.Printf("[DEBUG] [CACHE-REWARD-ENTRY] CalculateCacheReward called: Action=%v, TimeSaved=%dms, HitSuccess=%t, Load=%.3f\n",
+		action, executionTimeSaved, cacheHitSuccess, systemLoad)
+	
 	reward := 0.0
 
 	switch action {
@@ -40,10 +45,14 @@ func CalculateCacheReward(
 		reward += 0.0
 
 	default:
+		// [DEBUG] Unknown action
+		fmt.Printf("[DEBUG] [CACHE-REWARD-UNKNOWN] Unknown cache action: %v\n", action)
 		// Unknown action - no reward
 		reward += 0.0
 	}
 
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [CACHE-REWARD-EXIT] CalculateCacheReward returning: %.3f\n", reward)
 	return reward
 }
 
