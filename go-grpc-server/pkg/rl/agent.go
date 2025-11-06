@@ -389,28 +389,62 @@ func (a *Agent) GetAlgorithmManager() *AlgorithmManager {
 func (a *Agent) SaveModels() error {
 	a.mutex.RLock()
 	algorithms := a.algorithmManager.GetRegisteredAlgorithms()
+	savePath := a.savePath
 	a.mutex.RUnlock()
 
+	if a.logger != nil {
+		a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Starting model saving to path: %s", savePath))
+		a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Registered algorithms: %v", algorithms))
+	}
+
+	// Ensure save directory exists
+	if err := os.MkdirAll(savePath, 0755); err != nil {
+		if a.logger != nil {
+			a.logger.Error(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Failed to create model directory: %s", savePath), err)
+		}
+		return fmt.Errorf("failed to create model directory: %w", err)
+	}
+
 	var lastErr error
+	savedCount := 0
 	for _, name := range algorithms {
 		alg, err := a.algorithmManager.GetAlgorithm(name)
 		if err != nil {
 			lastErr = err
 			if a.logger != nil {
-				a.logger.Error(fmt.Sprintf("Failed to get algorithm: %s", name), err)
+				a.logger.Error(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Failed to get algorithm: %s", name), err)
 			}
 			continue
 		}
 
-		modelPath := filepath.Join(a.savePath, fmt.Sprintf("%s.json", name))
+		modelPath := filepath.Join(savePath, fmt.Sprintf("%s.json", name))
+		
+		if a.logger != nil {
+			a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Saving model for algorithm: %s to: %s", name, modelPath))
+		}
+
 		if err := alg.SaveModel(modelPath); err != nil {
 			lastErr = err
 			if a.logger != nil {
-				a.logger.Error(fmt.Sprintf("Failed to save model: %s", name), err)
+				a.logger.Error(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Failed to save model: %s to %s", name, modelPath), err)
 			}
-		} else if a.logger != nil {
-			a.logger.Info(fmt.Sprintf("Saved model: %s to %s", name, modelPath))
+		} else {
+			savedCount++
+			// Check file size after saving
+			if info, err := os.Stat(modelPath); err == nil {
+				if a.logger != nil {
+					a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Successfully saved model: %s to %s (Size: %d bytes)", name, modelPath, info.Size()))
+				}
+			} else {
+				if a.logger != nil {
+					a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Successfully saved model: %s to %s", name, modelPath))
+				}
+			}
 		}
+	}
+
+	if a.logger != nil {
+		a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-SAVE] Model saving complete: %d/%d models saved", savedCount, len(algorithms)))
 	}
 
 	return lastErr
@@ -420,37 +454,63 @@ func (a *Agent) SaveModels() error {
 func (a *Agent) LoadModels() error {
 	a.mutex.RLock()
 	algorithms := a.algorithmManager.GetRegisteredAlgorithms()
+	savePath := a.savePath
 	a.mutex.RUnlock()
 
+	if a.logger != nil {
+		a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Starting model loading from path: %s", savePath))
+		a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Registered algorithms: %v", algorithms))
+	}
+
+	// Ensure save directory exists
+	if err := os.MkdirAll(savePath, 0755); err != nil {
+		if a.logger != nil {
+			a.logger.Error(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Failed to create model directory: %s", savePath), err)
+		}
+		return fmt.Errorf("failed to create model directory: %w", err)
+	}
+
 	var lastErr error
+	loadedCount := 0
 	for _, name := range algorithms {
 		alg, err := a.algorithmManager.GetAlgorithm(name)
 		if err != nil {
 			lastErr = err
 			if a.logger != nil {
-				a.logger.Error(fmt.Sprintf("Failed to get algorithm: %s", name), err)
+				a.logger.Error(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Failed to get algorithm: %s", name), err)
 			}
 			continue
 		}
 
-		modelPath := filepath.Join(a.savePath, fmt.Sprintf("%s.json", name))
+		modelPath := filepath.Join(savePath, fmt.Sprintf("%s.json", name))
 
 		// Check if file exists
 		if _, err := os.Stat(modelPath); os.IsNotExist(err) {
 			if a.logger != nil {
-				a.logger.Info(fmt.Sprintf("No saved model found for: %s", name))
+				a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] No saved model found for: %s (expected at: %s)", name, modelPath))
 			}
 			continue
+		}
+
+		if a.logger != nil {
+			a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Loading model for algorithm: %s from: %s", name, modelPath))
 		}
 
 		if err := alg.LoadModel(modelPath); err != nil {
 			lastErr = err
 			if a.logger != nil {
-				a.logger.Error(fmt.Sprintf("Failed to load model: %s", name), err)
+				a.logger.Error(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Failed to load model: %s from %s", name, modelPath), err)
 			}
-		} else if a.logger != nil {
-			a.logger.Info(fmt.Sprintf("Loaded model: %s from %s", name, modelPath))
+		} else {
+			loadedCount++
+			if a.logger != nil {
+				a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Successfully loaded model: %s from %s", name, modelPath))
+			}
 		}
+	}
+
+	if a.logger != nil {
+		a.logger.Info(fmt.Sprintf("[ALLOCATOR-MODEL-LOAD] Model loading complete: %d/%d models loaded", loadedCount, len(algorithms)))
 	}
 
 	return lastErr

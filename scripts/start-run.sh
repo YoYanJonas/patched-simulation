@@ -6,6 +6,10 @@
 
 set -e
 
+# Disable colors in output to prevent ANSI codes in log files
+export NO_COLOR=1
+export TERM=dumb
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -114,9 +118,12 @@ export PLACEMENT_RL_SERVER_PORT=50051
 cd "$PROJECT_ROOT/ifogsim"
 
 # Run simulation (output goes to stdout/stderr, no file logging)
+# Disable Maven colors to prevent ANSI codes in logs
 mvn exec:java -Dexec.mainClass="scenarios.RL3FogSimulation" \
     -Dexec.args="" \
-    -Dexec.classpathScope=compile
+    -Dexec.classpathScope=compile \
+    -Dstyle.color=never \
+    --batch-mode
 
 # Check exit code
 EXIT_CODE=$?
