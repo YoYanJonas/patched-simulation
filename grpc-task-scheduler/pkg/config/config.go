@@ -248,7 +248,12 @@ type QueueConfig struct {
 	TaskTimeout          time.Duration `mapstructure:"task_timeout"`
 	CleanupInterval      time.Duration `mapstructure:"cleanup_interval"`
 	RetryAttempts        int           `mapstructure:"retry_attempts"`
+	// BACKWARD COMPATIBILITY: ResortIntervalMs is still used for cache cleanup interval
+	// but no longer used for periodic queue resorting (resorting is now on-demand).
 	ResortIntervalMs     int           `mapstructure:"resort_interval_ms"`
+	// BACKWARD COMPATIBILITY: EnablePeriodicResort is no longer used.
+	// Periodic queue resorting has been removed. Resorting now happens on-demand
+	// when GetSortedQueue() or GetQueueUpdateResponse() is called.
 	EnablePeriodicResort bool          `mapstructure:"enable_periodic_resort"`
 }
 
@@ -279,11 +284,11 @@ type CachingConfig struct {
 // CacheAgentConfig contains cache RL agent settings
 type CacheAgentConfig struct {
 	Enabled         bool    `mapstructure:"enabled"`
-	Algorithm       string  `mapstructure:"algorithm"` // "qlearning"
-	LearningRate    float64 `mapstructure:"learning_rate"`
-	DiscountFactor  float64 `mapstructure:"discount_factor"`
+	Algorithm      string  `mapstructure:"algorithm"` // "qlearning"
+	LearningRate   float64 `mapstructure:"learning_rate"`
+	DiscountFactor float64 `mapstructure:"discount_factor"`
 	ExplorationRate float64 `mapstructure:"exploration_rate"`
-	MinExploration  float64 `mapstructure:"min_exploration"`
+	MinExploration float64 `mapstructure:"min_exploration"`
 	ExplorationDecay float64 `mapstructure:"exploration_decay"`
 }
 

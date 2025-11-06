@@ -1,27 +1,20 @@
 package rl
 
 import (
+	"fmt"
 	"sync"
 	"time"
+
+	"scheduler-grpc-server/pkg/config"
 )
 
 // CacheAgent makes cache decisions using RL policy
 type CacheAgent struct {
 	qLearningScheduler *CacheQLearningScheduler
 	isEnabled          bool
-	config             CacheAgentConfig
+	config             config.CacheAgentConfig
 	stats              CacheAgentStats
 	mu                 sync.RWMutex
-}
-
-// CacheAgentConfig contains cache agent configuration
-type CacheAgentConfig struct {
-	Enabled         bool
-	LearningRate    float64
-	DiscountFactor  float64
-	ExplorationRate float64
-	MinExploration  float64
-	ExplorationDecay float64
 }
 
 // CacheAgentStats tracks agent statistics
@@ -36,7 +29,7 @@ type CacheAgentStats struct {
 }
 
 // NewCacheAgent creates a new cache agent
-func NewCacheAgent(cfg CacheAgentConfig) *CacheAgent {
+func NewCacheAgent(cfg config.CacheAgentConfig) *CacheAgent {
 	now := time.Now()
 	
 	// Create Q-learning scheduler config
@@ -76,12 +69,28 @@ func (ca *CacheAgent) IsEnabled() bool {
 
 // SelectAction selects cache action using RL policy
 func (ca *CacheAgent) SelectAction(state *CacheStateFeatures) Action {
-	if !ca.IsEnabled() {
-		// Fallback: return default action
-		return Action{Type: ActionNoCache, Description: "Agent disabled", Priority: 0.0}
-	}
+	// [DEBUG] Entry point for CacheAgent SelectAction
+	fmt.Printf("[DEBUG] [CACHE-AGENT-SELECT-ENTRY] CacheAgent.SelectAction called\n")
 	
-	return ca.qLearningScheduler.SelectAction(state)
+	// [DEBUG] Check if enabled
+	if !ca.IsEnabled() {
+		// [DEBUG] Agent disabled
+		fmt.Printf("[DEBUG] [CACHE-AGENT-SELECT-DISABLED] Cache agent disabled, returning default action\n")
+		// Fallback: return default action (ActionDelete = no cache)
+		return Action{Type: ActionDelete, Description: "Agent disabled", Priority: 0.0}
+	}
+	// [DEBUG] Agent enabled
+	fmt.Printf("[DEBUG] [CACHE-AGENT-SELECT-ENABLED] Cache agent enabled, delegating to Q-learning scheduler\n")
+	
+	// [DEBUG] About to call Q-learning scheduler
+	fmt.Printf("[DEBUG] [CACHE-AGENT-SELECT-QLEARNING-BEFORE] About to call qLearningScheduler.SelectAction\n")
+	result := ca.qLearningScheduler.SelectAction(state)
+	// [DEBUG] Q-learning scheduler returned
+	fmt.Printf("[DEBUG] [CACHE-AGENT-SELECT-QLEARNING-AFTER] qLearningScheduler.SelectAction returned: Type=%d\n", result.Type)
+	
+	// [DEBUG] About to return
+	fmt.Printf("[DEBUG] [CACHE-AGENT-SELECT-EXIT] CacheAgent.SelectAction returning: Type=%d\n", result.Type)
+	return result
 }
 
 // UpdateReward updates the agent with a reward signal
