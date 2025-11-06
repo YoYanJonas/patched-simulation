@@ -170,6 +170,16 @@ public class SchedulerClient implements AutoCloseable {
             }
 
             logger.info(String.format("[IFOGSIM-SCHED-CALL] Calling gRPC addTaskToQueue: TaskID=%s", task.getTaskId()));
+            
+            // [DEBUG] Enhanced logging before gRPC call
+            System.out.println(String.format(
+                    "[FLOW-GRPC-CLIENT-CALL-START] Time: %.2f - SchedulerClient - Preparing gRPC AddTaskToQueue request for TaskID=%s",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
+            System.out.println(String.format(
+                    "[FLOW-GRPC-CLIENT-REQUEST] Time: %.2f - SchedulerClient - Request details: TaskID=%s, TaskName=%s, Type=%s, CPU=%d, Mem=%d, Priority=%d, Nodes=%d, QueueContext=%s",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getTaskName(),
+                    task.getTaskType().toString(), task.getCpuRequirement(), task.getMemoryRequirement(),
+                    task.getPriority(), availableNodes.size(), queueContext != null ? String.format("total_queue_size=%d", queueContext.getTotalQueueSize()) : "NULL"));
 
             // Note: QueueContext should be set by caller via overloaded method
             AddTaskToQueueRequest.Builder requestBuilder = AddTaskToQueueRequest.newBuilder()
@@ -180,11 +190,24 @@ public class SchedulerClient implements AutoCloseable {
             // Add QueueContext if provided
             if (queueContext != null) {
                 requestBuilder.setQueueContext(queueContext);
+                System.out.println(String.format(
+                        "[FLOW-GRPC-CLIENT-QUEUE-CONTEXT] Time: %.2f - SchedulerClient - Added QueueContext to request: total_queue_size=%d",
+                        org.cloudbus.cloudsim.core.CloudSim.clock(), queueContext.getTotalQueueSize()));
             }
 
             AddTaskToQueueRequest request = requestBuilder.build();
+            
+            // [DEBUG] Log just before gRPC call
+            System.out.println(String.format(
+                    "[FLOW-GRPC-CLIENT-CALL-NOW] Time: %.2f - SchedulerClient - EXECUTING gRPC call: addTaskToQueue for TaskID=%s (BLOCKING)",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
 
             AddTaskToQueueResponse response = schedulerStub.addTaskToQueue(request);
+            
+            // [DEBUG] Log immediately after gRPC response
+            System.out.println(String.format(
+                    "[FLOW-GRPC-CLIENT-RESPONSE-RECEIVED] Time: %.2f - SchedulerClient - gRPC call COMPLETED for TaskID=%s",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
             long duration = System.currentTimeMillis() - startTime;
 
             logger.info(String.format(
@@ -192,9 +215,18 @@ public class SchedulerClient implements AutoCloseable {
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getPriority(),
                     task.getCpuRequirement(), task.getMemoryRequirement()));
 
+            // [DEBUG] Enhanced response logging
+            double respTime = org.cloudbus.cloudsim.core.CloudSim.clock();
+            System.out.println(String.format(
+                    "[FLOW-GRPC-CLIENT-RESPONSE-DETAILS] Time: %.2f - SchedulerClient - Response for TaskID=%s: Success=%s, Position=%d, Wait=%dms, Cached=%s, CacheAction=%s, CacheKey=%s, Duration=%dms",
+                    respTime, response.getTaskId(), response.getSuccess(), response.getQueuePosition(),
+                    response.getEstimatedWaitTimeMs(), response.getIsCachedTask(),
+                    response.getCacheAction() != null ? response.getCacheAction().toString() : "NONE",
+                    response.getCacheKey(), duration));
+            
             logger.info(String.format(
                     "[IFOGSIM-SCHED-RESP] Time: %.2f - Received scheduler response: TaskID=%s, Success=%s, Position=%d, Wait=%dms, Cached=%s, Duration=%dms",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), response.getTaskId(), response.getSuccess(),
+                    respTime, response.getTaskId(), response.getSuccess(),
                     response.getQueuePosition(), response.getEstimatedWaitTimeMs(), response.getIsCachedTask(),
                     duration));
 
@@ -355,13 +387,58 @@ public class SchedulerClient implements AutoCloseable {
      * Get current sorted queue
      */
     public GetSortedQueueResponse getSortedQueue(String nodeId) {
+        // Check and ensure healthy connection before making request
+        if (!baseClient.isConnectionHealthy()) {
+            logger.warning("Connection unhealthy before GetSortedQueue, attempting reconnection...");
+            if (!baseClient.ensureHealthyConnection()) {
+                logger.severe("Failed to reconnect, returning empty queue response");
+                // Return empty response instead of throwing to allow simulation to continue
+                return GetSortedQueueResponse.newBuilder()
+                        .setNodeId(nodeId)
+                        .setTotalTasks(0)
+                        .setTimestamp(System.currentTimeMillis() / 1000)
+                        .build();
+            }
+        }
+        
         try {
             GetSortedQueueRequest request = GetSortedQueueRequest.newBuilder()
                     .setNodeId(nodeId)
                     .build();
-            return schedulerStub.getSortedQueue(request);
-        } catch (StatusRuntimeException e) {
-            logger.log(Level.SEVERE, "Failed to get sorted queue: " + e.getMessage(), e);
+            // Add 5 second timeout to prevent indefinite blocking
+            return schedulerStub.withDeadlineAfter(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .getSortedQueue(request);
+        } catch (io.grpc.StatusRuntimeException e) {
+            io.grpc.Status.Code statusCode = e.getStatus().getCode();
+            if (statusCode == io.grpc.Status.Code.DEADLINE_EXCEEDED) {
+                logger.log(Level.WARNING, "GetSortedQueue request timed out after 5 seconds", e);
+                // Reset connection state after timeout
+                logger.warning("Resetting connection state after timeout");
+                // Attempt reconnection (ensureHealthyConnection will reset connection state)
+                if (!baseClient.ensureHealthyConnection()) {
+                    logger.warning("Reconnection failed after timeout, returning empty queue response");
+                    // Return empty response instead of throwing to allow simulation to continue
+                    return GetSortedQueueResponse.newBuilder()
+                            .setNodeId(nodeId)
+                            .setTotalTasks(0)
+                            .setTimestamp(System.currentTimeMillis() / 1000)
+                            .build();
+                }
+            } else if (statusCode == io.grpc.Status.Code.UNAVAILABLE) {
+                logger.log(Level.WARNING, "Service unavailable, resetting connection", e);
+                // Attempt reconnection (ensureHealthyConnection will reset connection state)
+                if (!baseClient.ensureHealthyConnection()) {
+                    logger.warning("Reconnection failed after UNAVAILABLE, returning empty queue response");
+                    return GetSortedQueueResponse.newBuilder()
+                            .setNodeId(nodeId)
+                            .setTotalTasks(0)
+                            .setTimestamp(System.currentTimeMillis() / 1000)
+                            .build();
+                }
+            } else {
+                logger.log(Level.SEVERE, "Failed to get sorted queue: " + e.getMessage(), e);
+            }
+            // After handling the error, throw to allow retry logic in StreamingQueueObserver
             throw e;
         }
     }

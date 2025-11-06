@@ -103,7 +103,14 @@ public class RLController extends Controller {
             enableRL();
         }
 
+        // Schedule STOP_SIMULATION event at SIMULATION_TIME
+        // This ensures graceful termination at the correct time
+        // Task generation already stops at SIMULATION_TIME (sensors and external tasks check this)
+        send(getId(), org.fog.utils.Config.SIMULATION_TIME, FogEvents.STOP_SIMULATION);
+        
         logger.info("RLController started: " + getName());
+        logger.info(String.format("STOP_SIMULATION event scheduled at %.2f seconds", 
+            (double) org.fog.utils.Config.SIMULATION_TIME));
     }
 
     /**
@@ -228,17 +235,10 @@ public class RLController extends Controller {
                     return; // Exit immediately
                 }
 
-                // Set terminateAt to MAX_SIMULATION_TIME to ensure simulation stops even if
-                // event queue is not empty
-                // This provides a hard termination cap while still allowing queued events to
-                // be processed
                 CloudSim.terminateSimulation(maxSimulationTime);
                 logger.info(String.format(
                         "[STOP-SIMULATION] Time: %.2f - Set terminateAt to %.2f - Simulation will stop at MAX_SIMULATION_TIME even if queue is not empty",
                         currentTime, maxSimulationTime));
-
-                // Stop streaming observers gracefully to prevent new blocking calls
-                stopAllStreamingObservers();
 
                 logger.info(String.format(
                         "[STOP-SIMULATION] Time: %.2f - Marking simulation for graceful shutdown - will process queued events until MAX_SIMULATION_TIME (%.2f)",

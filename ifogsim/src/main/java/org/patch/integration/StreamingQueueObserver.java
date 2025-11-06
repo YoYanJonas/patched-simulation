@@ -51,7 +51,7 @@ public class StreamingQueueObserver {
 
     // Callback for queue updates
     private Consumer<ScheduledQueue> queueUpdateCallback;
-    
+
     // Reference to RLFogDevice for event scheduling (will be set by RLFogDevice)
     private org.cloudbus.cloudsim.core.SimEntity deviceEntity;
 
@@ -69,38 +69,40 @@ public class StreamingQueueObserver {
         this.scheduledQueue = scheduledQueue;
         this.deviceId = deviceId;
 
-        // Load streaming interval from YAML config (with fallback to env var and default)
+        // Load streaming interval from YAML config (with fallback to env var and
+        // default)
         // Priority: YAML config > Environment variable > Default (1000ms)
         EnhancedConfigurationLoader.initialize(); // Ensure config is loaded
         String intervalStr = org.patch.config.YamlConfigLoader.getValue(
                 "schedulers.settings.streaming.update-interval-ms",
                 null);
-        
+
         // Fallback to environment variable if YAML value is not found
         if (intervalStr == null || intervalStr.isEmpty() || intervalStr.equals("null")) {
             intervalStr = System.getenv("STREAMING_UPDATE_INTERVAL_MS");
         }
-        
+
         // Fallback to default if still not found
         if (intervalStr == null || intervalStr.isEmpty()) {
             intervalStr = "1000";
         }
-        
+
         // Parse interval value (with error handling)
         long intervalValue = 1000; // Default fallback
         try {
             intervalValue = Long.parseLong(intervalStr);
         } catch (NumberFormatException e) {
-            logger.warning("Invalid streaming interval value: " + intervalStr + 
+            logger.warning("Invalid streaming interval value: " + intervalStr +
                     ", using default: 1000ms");
         }
         this.streamingIntervalMs = intervalValue;
         // Convert milliseconds to simulation time (seconds)
         this.streamingIntervalSeconds = intervalValue / 1000.0;
-        logger.info("StreamingQueueObserver initialized for device: " + deviceId + 
-                " with update interval: " + streamingIntervalMs + "ms (" + streamingIntervalSeconds + "s simulation time)");
+        logger.info("StreamingQueueObserver initialized for device: " + deviceId +
+                " with update interval: " + streamingIntervalMs + "ms (" + streamingIntervalSeconds
+                + "s simulation time)");
     }
-    
+
     /**
      * Set the device entity for event scheduling
      * Must be called by RLFogDevice before startStreaming()
@@ -134,7 +136,7 @@ public class StreamingQueueObserver {
                 logger.severe("Cannot start streaming: scheduler client is null");
                 return false;
             }
-            
+
             if (deviceEntity == null) {
                 logger.severe("Cannot start streaming: device entity is null. Call setDeviceEntity() first.");
                 return false;
@@ -159,14 +161,14 @@ public class StreamingQueueObserver {
             scheduleNextQueueUpdate(0.1);
         }
 
-        logger.info("Started streaming queue updates for device: " + deviceId + 
+        logger.info("Started streaming queue updates for device: " + deviceId +
                 " (interval: " + streamingIntervalSeconds + "s)");
         System.out.println(String.format(
                 "[FLOW-STREAMING-START] Device %d - Streaming started (interval=%.2fs)",
                 deviceId, streamingIntervalSeconds));
         return true;
     }
-    
+
     /**
      * Schedule next queue update event using CloudSim
      */
@@ -175,23 +177,23 @@ public class StreamingQueueObserver {
             logger.severe("Cannot schedule queue update: device entity is null");
             return;
         }
-        
+
         double nextUpdateTime = currentTime + streamingIntervalSeconds;
         double maxSimulationTime = Config.MAX_SIMULATION_TIME;
-        
+
         // Don't schedule beyond MAX_SIMULATION_TIME
         if (nextUpdateTime >= maxSimulationTime) {
             logger.info("Not scheduling queue update beyond MAX_SIMULATION_TIME: " + maxSimulationTime);
             return;
         }
-        
+
         try {
             org.cloudbus.cloudsim.core.CloudSim.send(
-                deviceEntity.getId(),
-                deviceEntity.getId(),
-                streamingIntervalSeconds,
-                org.patch.utils.ExtendedFogEvents.STREAMING_QUEUE_UPDATE,
-                null);
+                    deviceEntity.getId(),
+                    deviceEntity.getId(),
+                    streamingIntervalSeconds,
+                    org.patch.utils.ExtendedFogEvents.STREAMING_QUEUE_UPDATE,
+                    null);
             System.out.println(String.format(
                     "[FLOW-STREAMING-SCHEDULE] Device %d - Scheduled next queue update at time %.2f (current=%.2f, interval=%.2fs)",
                     deviceId, nextUpdateTime, currentTime, streamingIntervalSeconds));
@@ -199,7 +201,7 @@ public class StreamingQueueObserver {
             logger.log(Level.WARNING, "Failed to schedule queue update event", e);
         }
     }
-    
+
     /**
      * Poll queue from scheduler (called from CloudSim event)
      */
@@ -207,10 +209,10 @@ public class StreamingQueueObserver {
         if (!isStreaming.get() || shouldStop.get()) {
             return;
         }
-        
+
         double currentTime = CloudSim.clock();
         double maxSimulationTime = Config.MAX_SIMULATION_TIME;
-        
+
         // Stop if simulation has ended
         if (currentTime >= maxSimulationTime || !CloudSim.running()) {
             logger.info(String.format(
@@ -220,11 +222,11 @@ public class StreamingQueueObserver {
             isStreaming.set(false);
             return;
         }
-        
+
         System.out.println(String.format(
                 "[FLOW-STREAMING-POLL] Device %d - Polling queue from scheduler (time=%.2f)",
                 deviceId, currentTime));
-        
+
         // Get current queue state from scheduler
         GetSortedQueueResponse response = getSortedQueueFromScheduler();
 
@@ -238,7 +240,7 @@ public class StreamingQueueObserver {
                     "[FLOW-FOG-STREAMING-RECEIVE] Time: %.2f - FogNode (ID:%d) - ERROR: getSortedQueueFromScheduler returned NULL!",
                     CloudSim.clock(), deviceId));
         }
-        
+
         if (isStreaming.get() && !shouldStop.get()) {
             scheduleNextQueueUpdate(currentTime);
         }
@@ -301,24 +303,25 @@ public class StreamingQueueObserver {
                         requestTime, deviceId));
                 logger.info(String.format("[IFOGSIM-QUEUE-GET] Device %d requesting sorted queue from scheduler",
                         deviceId));
-                
+
                 GetSortedQueueResponse response = schedulerClient.getSortedQueue(String.valueOf(deviceId));
                 double receiveTime = CloudSim.clock();
 
                 if (response != null) {
                     System.out.println(String.format(
                             "[FLOW-STREAMING-QUEUE-RESPONSE-RECEIVED] Time: %.2f - FogNode (ID:%d) - Received queue response: Tasks=%d, TotalTasks=%d, NodeID=%s, Timestamp=%d",
-                            receiveTime, deviceId, response.getQueueTasksCount(), response.getTotalTasks(), 
+                            receiveTime, deviceId, response.getQueueTasksCount(), response.getTotalTasks(),
                             response.getNodeId(), response.getTimestamp()));
                     logger.info(String.format("[IFOGSIM-QUEUE-RESP] Device %d received queue: Tasks=%d",
                             deviceId, response.getQueueTasksCount()));
-                    
+
                     // Log first 3 task IDs for tracing
                     if (response.getQueueTasksCount() > 0) {
                         StringBuilder taskIds = new StringBuilder();
                         int maxTasks = Math.min(3, response.getQueueTasksCount());
                         for (int i = 0; i < maxTasks && i < response.getQueueTasksList().size(); i++) {
-                            if (i > 0) taskIds.append(",");
+                            if (i > 0)
+                                taskIds.append(",");
                             taskIds.append(response.getQueueTasksList().get(i).getTaskId());
                         }
                         if (response.getQueueTasksCount() > 3) {
@@ -328,15 +331,29 @@ public class StreamingQueueObserver {
                                 "[FLOW-STREAMING-QUEUE-TASKIDS] Time: %.2f - FogNode (ID:%d) - Task IDs in response: [%s]",
                                 receiveTime, deviceId, taskIds.toString()));
                     }
-                    
+
                     return response;
                 } else {
                     logger.warning(
                             String.format("[IFOGSIM-QUEUE-NULL] Device %d received null queue response", deviceId));
                 }
 
-            } catch (Exception e) {
-                logger.log(Level.WARNING, "Failed to get sorted queue (attempt " + (retries + 1) + ")", e);
+            } catch (io.grpc.StatusRuntimeException e) {
+                // Handle gRPC-specific errors
+                io.grpc.Status.Code statusCode = e.getStatus().getCode();
+                if (statusCode == io.grpc.Status.Code.DEADLINE_EXCEEDED) {
+                    logger.log(Level.WARNING, String.format(
+                            "[TIMEOUT] GetSortedQueue request timed out for device %d (attempt %d/%d) - will retry",
+                            deviceId, retries + 1, maxRetries));
+                } else if (statusCode == io.grpc.Status.Code.UNAVAILABLE) {
+                    logger.log(Level.WARNING, String.format(
+                            "[UNAVAILABLE] Scheduler unavailable for device %d (attempt %d/%d) - will retry",
+                            deviceId, retries + 1, maxRetries));
+                } else {
+                    logger.log(Level.WARNING, String.format(
+                            "[ERROR] Failed to get sorted queue for device %d (attempt %d/%d): %s",
+                            deviceId, retries + 1, maxRetries, e.getMessage()));
+                }
                 retries++;
 
                 if (retries < maxRetries) {
@@ -345,14 +362,49 @@ public class StreamingQueueObserver {
                         long delay = Math.min(retryDelayMs * (long) Math.pow(2, retries), 30000); // Max 30 seconds
                         Thread.sleep(delay);
                     } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        logger.warning("Retry delay interrupted");
                         break;
                     }
+                } else {
+                    logger.warning(String.format(
+                            "[RETRY-EXHAUSTED] Max retries reached for device %d - will continue polling but may have stale queue",
+                            deviceId));
+                    // Continue - don't break the loop, just log and return null
+                    // The next polling event will try again
+                }
+            } catch (Exception e) {
+                // Handle non-gRPC exceptions
+                logger.log(Level.WARNING, String.format(
+                        "Failed to get sorted queue for device %d (attempt %d/%d): %s",
+                        deviceId, retries + 1, maxRetries, e.getMessage()), e);
+                retries++;
+                if (retries < maxRetries) {
+                    try {
+                        long delay = Math.min(retryDelayMs * (long) Math.pow(2, retries), 30000);
+                        Thread.sleep(delay);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        logger.warning("Retry delay interrupted");
+                        break;
+                    }
+                } else {
+                    logger.warning(String.format(
+                            "[RETRY-EXHAUSTED] Max retries reached for device %d",
+                            deviceId));
                 }
             }
         }
 
-        logger.severe("Failed to get sorted queue after " + maxRetries + " attempts");
-        return null;
+        logger.warning(String.format(
+                "[QUEUE-FETCH-FAILED] Failed to get sorted queue after %d attempts for device %d - returning empty response, will retry on next poll",
+                maxRetries, deviceId));
+        // Return empty response instead of null to allow simulation to continue
+        return GetSortedQueueResponse.newBuilder()
+                .setNodeId(String.valueOf(deviceId))
+                .setTotalTasks(0)
+                .setTimestamp(System.currentTimeMillis() / 1000)
+                .build();
     }
 
     /**
@@ -406,7 +458,7 @@ public class StreamingQueueObserver {
                         "[FLOW-FOG-SCHEDULED-QUEUE-READY] Time: %.2f - FogNode (ID:%d) - Scheduled queue NOW HAS TASKS! Ready for execution (queue size: %d)",
                         CloudSim.clock(), deviceId, newSize));
                 logger.info(String.format("Scheduled queue now has %d tasks - ready for execution", newSize));
-                
+
                 // [DEBUG] CRITICAL: Check if callback will trigger execution
                 if (queueUpdateCallback != null) {
                     System.out.println(String.format(
@@ -464,11 +516,12 @@ public class StreamingQueueObserver {
                 if (taskInfo != null) {
                     scheduledQueue.addTask(taskInfo);
                     addedCount++;
-                    
+
                     // [DEBUG] Log each task being added
                     System.out.println(String.format(
                             "[FLOW-FOG-SCHEDULED-QUEUE-ADD] Time: %.2f - FogNode (ID:%d) - Adding task %s to scheduled queue (task %d/%d, queue size now: %d)",
-                            CloudSim.clock(), deviceId, taskInfo.getTaskId(), addedCount, response.getQueueTasksCount(), scheduledQueue.size()));
+                            CloudSim.clock(), deviceId, taskInfo.getTaskId(), addedCount, response.getQueueTasksCount(),
+                            scheduledQueue.size()));
                 } else {
                     skippedCount++;
                     System.err.println(String.format(
@@ -479,11 +532,12 @@ public class StreamingQueueObserver {
 
             logger.fine("Updated scheduled queue with " + response.getQueueTasksCount() +
                     " tasks for device: " + deviceId);
-            
+
             // [DEBUG] Log summary of update
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULED-QUEUE-UPDATE-SUMMARY] Time: %.2f - FogNode (ID:%d) - Queue update: added=%d, skipped=%d, total_in_response=%d, queue_size_now=%d",
-                    CloudSim.clock(), deviceId, addedCount, skippedCount, response.getQueueTasksCount(), scheduledQueue.size()));
+                    CloudSim.clock(), deviceId, addedCount, skippedCount, response.getQueueTasksCount(),
+                    scheduledQueue.size()));
 
             // Trigger callback if set
             if (queueUpdateCallback != null) {
@@ -506,8 +560,9 @@ public class StreamingQueueObserver {
             // [DEBUG] Log conversion attempt
             System.out.println(String.format(
                     "[FLOW-QUEUE-OBSERVER-CONVERT] Time: %.2f - FogNode (ID:%d) - Converting task %s to TaskInfo (CPU=%d, Mem=%d)",
-                    CloudSim.clock(), deviceId, task.getTaskId(), task.getCpuRequirement(), task.getMemoryRequirement()));
-            
+                    CloudSim.clock(), deviceId, task.getTaskId(), task.getCpuRequirement(),
+                    task.getMemoryRequirement()));
+
             // Convert proto task to tuple
             Tuple tuple = convertProtoTaskToTuple(task);
 
@@ -517,7 +572,7 @@ public class StreamingQueueObserver {
                         CloudSim.clock(), deviceId, task.getTaskId()));
                 return null;
             }
-            
+
             // [DEBUG] Log successful tuple conversion
             System.out.println(String.format(
                     "[FLOW-QUEUE-OBSERVER-CONVERT] Time: %.2f - FogNode (ID:%d) - Successfully converted task %s to tuple (tuple ID: %d)",
@@ -526,7 +581,7 @@ public class StreamingQueueObserver {
             // Extract cache information from Task metadata
             boolean isCached = false;
             String cacheKey = "";
-            
+
             if (task.getMetadataMap() != null) {
                 String isCachedStr = task.getMetadataMap().get("is_cached");
                 if (isCachedStr != null && isCachedStr.equals("true")) {
@@ -534,7 +589,7 @@ public class StreamingQueueObserver {
                 }
                 cacheKey = task.getMetadataMap().getOrDefault("cache_key", "");
             }
-            
+
             // [DEBUG] Log cache info extraction
             if (isCached) {
                 System.out.println(String.format(
@@ -551,7 +606,7 @@ public class StreamingQueueObserver {
                     (long) (CloudSim.clock() + task.getExecutionTime()), // estimatedCompletionTime - use simulation
                                                                          // time
                     isCached, // isCached - from metadata
-                    cacheKey  // cacheKey - from metadata
+                    cacheKey // cacheKey - from metadata
             );
 
         } catch (Exception e) {

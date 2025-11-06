@@ -81,7 +81,7 @@ public class GrpcClientConfig implements Serializable {
         private boolean enableKeepAlive = true;
         private long keepAliveTime = 30;
         private long keepAliveTimeout = 10;
-        private boolean keepAliveWithoutCalls = true;
+        private boolean keepAliveWithoutCalls = false;
         private Map<String, Object> loadBalancingConfig = new HashMap<>();
 
         public Builder(String host, int port) {
