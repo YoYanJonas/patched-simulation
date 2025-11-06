@@ -473,19 +473,41 @@ public class GrpcClient implements AutoCloseable {
     }
 
     /**
-     * Gracefully shuts down the channel
+     * Gracefully shuts down the channel (FIX: Phase 3)
+     * Uses dedicated shutdown timeout and force shutdown if needed
      */
     public void shutdown() {
         if (channel != null && !channel.isShutdown()) {
             try {
-                channel.shutdown().awaitTermination(
-                        config.getConnectTimeout(),
-                        config.getConnectTimeoutUnit());
+                // Use dedicated shutdown timeout (FIX: Phase 3)
+                long shutdownTimeout = config.getShutdownTimeout();
+                TimeUnit timeoutUnit = config.getShutdownTimeoutUnit();
+                
+                // Graceful shutdown
+                boolean terminated = channel.shutdown().awaitTermination(shutdownTimeout, timeoutUnit);
+                
+                if (!terminated) {
+                    logger.warning("Channel did not terminate gracefully, forcing shutdown");
+                    // Force shutdown (FIX: Phase 3)
+                    channel.shutdownNow();
+                    terminated = channel.awaitTermination(5, TimeUnit.SECONDS);
+                    
+                    if (!terminated) {
+                        logger.severe("Channel failed to terminate even after force shutdown");
+                    } else {
+                        logger.info("Channel terminated after force shutdown");
+                    }
+                }
+                
                 isConnected = false;
                 logger.info("gRPC client shutdown successfully");
             } catch (InterruptedException e) {
                 logger.log(Level.SEVERE, "Channel shutdown interrupted", e);
                 Thread.currentThread().interrupt();
+                // Force shutdown on interruption (FIX: Phase 3)
+                if (channel != null && !channel.isShutdown()) {
+                    channel.shutdownNow();
+                }
             }
         }
     }

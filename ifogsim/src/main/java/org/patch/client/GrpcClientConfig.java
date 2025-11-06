@@ -21,6 +21,8 @@ public class GrpcClientConfig implements Serializable {
     private final boolean usePlaintext;
     private final long connectTimeout;
     private final TimeUnit connectTimeoutUnit;
+    private final long shutdownTimeout; // FIX: Phase 3 - dedicated shutdown timeout
+    private final TimeUnit shutdownTimeoutUnit; // FIX: Phase 3
 
     // Retry mechanism settings
     private final int maxRetries;
@@ -58,6 +60,8 @@ public class GrpcClientConfig implements Serializable {
         this.keepAliveTimeout = builder.keepAliveTimeout;
         this.keepAliveWithoutCalls = builder.keepAliveWithoutCalls;
         this.loadBalancingConfig = builder.loadBalancingConfig;
+        this.shutdownTimeout = builder.shutdownTimeout; // FIX: Phase 3
+        this.shutdownTimeoutUnit = builder.shutdownTimeoutUnit; // FIX: Phase 3
     }
 
     /**
@@ -73,6 +77,8 @@ public class GrpcClientConfig implements Serializable {
         private boolean usePlaintext = false;
         private long connectTimeout = 10;
         private TimeUnit connectTimeoutUnit = TimeUnit.SECONDS;
+        private long shutdownTimeout = 10; // FIX: Phase 3 - default 10 seconds for shutdown
+        private TimeUnit shutdownTimeoutUnit = TimeUnit.SECONDS; // FIX: Phase 3
         private int maxRetries = 3;
         private long retryDelay = 1000;
         private long maxRetryDelay = 30000;
@@ -243,5 +249,14 @@ public class GrpcClientConfig implements Serializable {
 
     public TimeUnit getConnectTimeoutUnit() {
         return connectTimeoutUnit;
+    }
+    
+    // FIX: Phase 3 - shutdown timeout getters
+    public long getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+    
+    public TimeUnit getShutdownTimeoutUnit() {
+        return shutdownTimeoutUnit;
     }
 }

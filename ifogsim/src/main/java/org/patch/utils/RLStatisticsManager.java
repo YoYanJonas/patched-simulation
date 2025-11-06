@@ -62,6 +62,10 @@ public class RLStatisticsManager {
     private volatile double simulationStartTime = 0.0;
     private final Map<String, Object> customMetrics = new HashMap<>();
 
+    // Scheduling time tracking for throughput calculation
+    private volatile double firstSchedulingTime = -1.0;
+    private volatile double lastSchedulingTime = -1.0;
+
     /**
      * Private constructor for singleton
      */
@@ -209,6 +213,36 @@ public class RLStatisticsManager {
 
     public synchronized void addSchedulingLatency(double latency) {
         totalSchedulingLatency += latency;
+    }
+
+    /**
+     * Record scheduling decision time for throughput calculation
+     * Tracks first and last scheduling decision times to calculate accurate
+     * throughput
+     */
+    public synchronized void recordSchedulingDecision() {
+        double currentTime = CloudSim.clock();
+        if (firstSchedulingTime < 0) {
+            firstSchedulingTime = currentTime;
+        }
+        lastSchedulingTime = currentTime;
+    }
+
+    /**
+     * Get scheduling duration for throughput calculation
+     * Returns the time span from first to last scheduling decision
+     */
+    public synchronized double getSchedulingDuration() {
+        if (firstSchedulingTime < 0) {
+            // No scheduling decisions made yet
+            return 0.0;
+        }
+        double duration = lastSchedulingTime - firstSchedulingTime;
+        if (duration <= 0) {
+            // Fallback: use total simulation duration
+            return getSimulationDuration();
+        }
+        return duration;
     }
 
     public long getTotalSchedulingDecisions() {

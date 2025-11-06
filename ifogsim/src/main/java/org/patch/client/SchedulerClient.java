@@ -170,7 +170,7 @@ public class SchedulerClient implements AutoCloseable {
             }
 
             logger.info(String.format("[IFOGSIM-SCHED-CALL] Calling gRPC addTaskToQueue: TaskID=%s", task.getTaskId()));
-            
+
             // [DEBUG] Enhanced logging before gRPC call
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-CALL-START] Time: %.2f - SchedulerClient - Preparing gRPC AddTaskToQueue request for TaskID=%s",
@@ -179,7 +179,9 @@ public class SchedulerClient implements AutoCloseable {
                     "[FLOW-GRPC-CLIENT-REQUEST] Time: %.2f - SchedulerClient - Request details: TaskID=%s, TaskName=%s, Type=%s, CPU=%d, Mem=%d, Priority=%d, Nodes=%d, QueueContext=%s",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getTaskName(),
                     task.getTaskType().toString(), task.getCpuRequirement(), task.getMemoryRequirement(),
-                    task.getPriority(), availableNodes.size(), queueContext != null ? String.format("total_queue_size=%d", queueContext.getTotalQueueSize()) : "NULL"));
+                    task.getPriority(), availableNodes.size(),
+                    queueContext != null ? String.format("total_queue_size=%d", queueContext.getTotalQueueSize())
+                            : "NULL"));
 
             // Note: QueueContext should be set by caller via overloaded method
             AddTaskToQueueRequest.Builder requestBuilder = AddTaskToQueueRequest.newBuilder()
@@ -196,19 +198,24 @@ public class SchedulerClient implements AutoCloseable {
             }
 
             AddTaskToQueueRequest request = requestBuilder.build();
-            
+
             // [DEBUG] Log just before gRPC call
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-CALL-NOW] Time: %.2f - SchedulerClient - EXECUTING gRPC call: addTaskToQueue for TaskID=%s (BLOCKING)",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
 
             AddTaskToQueueResponse response = schedulerStub.addTaskToQueue(request);
-            
+
             // [DEBUG] Log immediately after gRPC response
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-RESPONSE-RECEIVED] Time: %.2f - SchedulerClient - gRPC call COMPLETED for TaskID=%s",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
             long duration = System.currentTimeMillis() - startTime;
+
+            // Record latency in statistics manager (FIX: Phase 1)
+            org.patch.utils.RLStatisticsManager.getInstance().addSchedulingLatency(duration);
+            // Record scheduling decision time for throughput calculation
+            org.patch.utils.RLStatisticsManager.getInstance().recordSchedulingDecision();
 
             logger.info(String.format(
                     "[IFOGSIM-SCHED-SEND] Time: %.2f - Sending task to scheduler: TaskID=%s, Priority=%d, CPU=%d, Mem=%d",
@@ -223,7 +230,7 @@ public class SchedulerClient implements AutoCloseable {
                     response.getEstimatedWaitTimeMs(), response.getIsCachedTask(),
                     response.getCacheAction() != null ? response.getCacheAction().toString() : "NONE",
                     response.getCacheKey(), duration));
-            
+
             logger.info(String.format(
                     "[IFOGSIM-SCHED-RESP] Time: %.2f - Received scheduler response: TaskID=%s, Success=%s, Position=%d, Wait=%dms, Cached=%s, Duration=%dms",
                     respTime, response.getTaskId(), response.getSuccess(),
@@ -246,6 +253,12 @@ public class SchedulerClient implements AutoCloseable {
             return response;
         } catch (StatusRuntimeException e) {
             long duration = System.currentTimeMillis() - startTime;
+
+            // Record latency even for error cases (FIX: Phase 1)
+            org.patch.utils.RLStatisticsManager.getInstance().addSchedulingLatency(duration);
+            // Record scheduling decision time for throughput calculation
+            org.patch.utils.RLStatisticsManager.getInstance().recordSchedulingDecision();
+
             Map<String, Object> errorFields = new HashMap<>();
             errorFields.put("task_id", task.getTaskId());
             errorFields.put("error_code", e.getStatus().getCode().toString());
@@ -276,11 +289,16 @@ public class SchedulerClient implements AutoCloseable {
         }
 
         // Select first available node as fallback
+        // Note: selectedNode, currentTime, and executionTime are kept for potential
+        // future use
+        @SuppressWarnings("unused")
         FogNode selectedNode = availableNodes.get(0);
+        @SuppressWarnings("unused")
         long currentTime = System.currentTimeMillis();
 
         // Get fallback configuration values
         long schedulingDelay = EnhancedConfigurationLoader.getGrpcConfigLong("grpc.fallback.scheduling.delay", 1000);
+        @SuppressWarnings("unused")
         long executionTime = EnhancedConfigurationLoader.getGrpcConfigLong("grpc.fallback.execution.time", 5000);
 
         return AddTaskToQueueResponse.newBuilder()
@@ -400,7 +418,7 @@ public class SchedulerClient implements AutoCloseable {
                         .build();
             }
         }
-        
+
         try {
             GetSortedQueueRequest request = GetSortedQueueRequest.newBuilder()
                     .setNodeId(nodeId)
@@ -438,7 +456,8 @@ public class SchedulerClient implements AutoCloseable {
             } else {
                 logger.log(Level.SEVERE, "Failed to get sorted queue: " + e.getMessage(), e);
             }
-            // After handling the error, throw to allow retry logic in StreamingQueueObserver
+            // After handling the error, throw to allow retry logic in
+            // StreamingQueueObserver
             throw e;
         }
     }

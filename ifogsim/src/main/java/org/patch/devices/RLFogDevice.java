@@ -899,14 +899,36 @@ public class RLFogDevice extends FogDevice {
     }
 
     /**
-     * Get scheduling throughput (decisions per second)
+     * Get scheduling throughput (decisions per second) (FIX: Phase 2)
+     * Uses scheduling duration from first to last decision for accurate calculation
      */
     public double getSchedulingThroughput() {
-        double simulationTime = CloudSim.clock();
-        if (simulationTime == 0) {
+        long totalDecisions = getTotalSchedulingDecisions();
+        if (totalDecisions == 0) {
             return 0.0;
         }
-        return getTotalSchedulingDecisions() / simulationTime;
+        
+        // Get scheduling duration from statistics manager (FIX: Phase 2)
+        double schedulingDuration = RLStatisticsManager.getInstance().getSchedulingDuration();
+        if (schedulingDuration <= 0) {
+            // Fallback: use current simulation time or config
+            double simulationTime = CloudSim.clock();
+            if (simulationTime <= 0) {
+                // Use config value as last resort
+                simulationTime = org.fog.utils.Config.SIMULATION_TIME;
+            }
+            if (simulationTime <= 0) {
+                // Final fallback: use MAX_SIMULATION_TIME
+                simulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
+            }
+            if (simulationTime <= 0) {
+                return 0.0;
+            }
+            return totalDecisions / simulationTime;
+        }
+        
+        // Throughput = decisions / simulation_seconds
+        return totalDecisions / schedulingDuration;
     }
 
     /**
