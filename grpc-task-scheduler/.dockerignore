@@ -1,0 +1,49 @@
+# Exclude unnecessary files from Docker build context
+# This reduces build context size and speeds up builds
+
+# Build artifacts
+server
+*.exe
+*.test
+*.out
+
+# Go cache
+vendor/
+*.mod.sum.bak
+
+# Development files
+.git/
+.gitignore
+*.md
+README*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Reports (generated at runtime)
+reports/
+
+# Models (mounted as volume)
+models/
+
+# Config (mounted as volume)
+config/config.yaml
+config/air.toml
+
+# Docker files
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
+.dockerignore
+
+# Air config (not needed in final image)
+air.toml
+
