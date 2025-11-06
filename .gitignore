@@ -55,6 +55,8 @@ go-grpc-server/go.work
 go-grpc-server/go.work.sum
 # Env
 go-grpc-server/.env
+# Model files (generated during training)
+go-grpc-server/models/*.json
 # Temporary build / runtime dirs
 go-grpc-server/tmp
 go-grpc-server/cmd/server/tmp
