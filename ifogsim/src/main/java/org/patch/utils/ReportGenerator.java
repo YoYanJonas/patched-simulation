@@ -10,6 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
 
+import org.json.simple.JSONObject;
+import org.json.simple.JSONArray;
+
 /**
  * Report generator for simulation results
  * Creates both human-readable and machine-readable reports
@@ -243,60 +246,51 @@ public class ReportGenerator {
 
         report.put("summary", summary);
 
-        // Write JSON file (pretty-printed for readability)
+        // Write JSON file using json-simple for proper JSON formatting
         try (FileWriter writer = new FileWriter(file)) {
-            writer.write(formatJson(report));
+            JSONObject jsonReport = convertToJsonObject(report);
+            // Use json-simple's toJSONString with proper formatting
+            writer.write(jsonReport.toJSONString());
         }
 
         logger.info("JSON report written to: " + filename);
     }
 
     /**
-     * Format map to pretty-printed JSON string
+     * Convert Map to JSONObject recursively
      */
-    private String formatJson(Map<String, Object> data) {
-        StringBuilder json = new StringBuilder();
-        json.append("{\n");
-        formatJsonValue(json, data, 1);
-        json.append("}\n");
-        return json.toString();
+    @SuppressWarnings("unchecked")
+    private JSONObject convertToJsonObject(Map<String, Object> map) {
+        JSONObject json = new JSONObject();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof Map) {
+                json.put(entry.getKey(), convertToJsonObject((Map<String, Object>) value));
+            } else if (value instanceof List) {
+                json.put(entry.getKey(), convertToJsonArray((List<?>) value));
+            } else {
+                json.put(entry.getKey(), value);
+            }
+        }
+        return json;
     }
 
+    /**
+     * Convert List to JSONArray recursively
+     */
     @SuppressWarnings("unchecked")
-    private void formatJsonValue(StringBuilder json, Object value, int indent) {
-        String indentStr = repeatString("  ", indent);
-
-        if (value instanceof Map) {
-            Map<String, Object> map = (Map<String, Object>) value;
-            json.append("{\n");
-            boolean first = true;
-            for (Map.Entry<String, Object> entry : map.entrySet()) {
-                if (!first)
-                    json.append(",\n");
-                first = false;
-                json.append(indentStr).append("\"").append(entry.getKey()).append("\": ");
-                formatJsonValue(json, entry.getValue(), indent + 1);
+    private JSONArray convertToJsonArray(List<?> list) {
+        JSONArray json = new JSONArray();
+        for (Object item : list) {
+            if (item instanceof Map) {
+                json.add(convertToJsonObject((Map<String, Object>) item));
+            } else if (item instanceof List) {
+                json.add(convertToJsonArray((List<?>) item));
+            } else {
+                json.add(item);
             }
-            json.append("\n").append(repeatString("  ", indent - 1)).append("}");
-        } else if (value instanceof List) {
-            json.append("[\n");
-            List<?> list = (List<?>) value;
-            boolean first = true;
-            for (Object item : list) {
-                if (!first)
-                    json.append(",\n");
-                first = false;
-                json.append(indentStr);
-                formatJsonValue(json, item, indent + 1);
-            }
-            json.append("\n").append(repeatString("  ", indent - 1)).append("]");
-        } else if (value instanceof String) {
-            json.append("\"").append(value).append("\"");
-        } else if (value instanceof Number || value instanceof Boolean) {
-            json.append(value);
-        } else {
-            json.append("\"").append(String.valueOf(value)).append("\"");
         }
+        return json;
     }
 
     /**

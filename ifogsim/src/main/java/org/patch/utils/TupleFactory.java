@@ -45,7 +45,9 @@ public class TupleFactory {
 
             // Set properties following iFogSim conventions
             tuple.setTupleType("SCHEDULER_TASK"); // Specific type for scheduler tasks
-            tuple.setDestModuleName("scheduler-module"); // Will be updated by actual processing
+            // FIX: Use "processing_module" instead of "scheduler-module" to match deployed application modules
+            // The application only has "processing_module" and "aggregation_module" deployed
+            tuple.setDestModuleName("processing_module"); // Use existing deployed module
             tuple.setSrcModuleName("scheduler"); // Source is scheduler
             tuple.setDirection(Tuple.UP); // Default direction
             tuple.setAppId("scheduler-app"); // Consistent app ID

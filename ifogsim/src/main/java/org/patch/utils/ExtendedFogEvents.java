@@ -22,6 +22,8 @@ public class ExtendedFogEvents {
     public static final int TASK_COMPLETION_CHECK = 1011; // For periodic task completion checking
     public static final int ALLOC_OUTCOME_REPORT = 1012; // When fog reports task outcome to cloud for allocator
                                                          // learning
+    public static final int STREAMING_QUEUE_UPDATE = 1013; // For periodic queue polling from scheduler
+    public static final int TUPLE_COMPLETE = 1014; // When tuple execution completes (for CloudSim event scheduling)
 
     /**
      * Get event name for logging/debugging
@@ -52,6 +54,10 @@ public class ExtendedFogEvents {
                 return "TASK_COMPLETION_CHECK";
             case ALLOC_OUTCOME_REPORT:
                 return "ALLOC_OUTCOME_REPORT";
+            case STREAMING_QUEUE_UPDATE:
+                return "STREAMING_QUEUE_UPDATE";
+            case TUPLE_COMPLETE:
+                return "TUPLE_COMPLETE";
             default:
                 return "UNKNOWN_EVENT";
         }

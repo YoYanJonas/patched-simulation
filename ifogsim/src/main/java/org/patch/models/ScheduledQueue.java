@@ -27,11 +27,37 @@ public class ScheduledQueue {
      * @param taskInfo The task information from scheduler
      */
     public void addTask(TaskInfo taskInfo) {
+        int queueSizeBefore = tasks.size();
+        String taskId = taskInfo.getTaskId();
+        boolean isCached = taskInfo.isCachedTask();
+        String cacheKey = taskInfo.getCacheKey();
+        
+        // [DEBUG] Enhanced logging before adding
+        double currentTime = org.cloudbus.cloudsim.core.CloudSim.clock();
+        System.out.println(String.format(
+                "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-ADD-START] Time: %.2f - Adding task to scheduled queue: TaskID=%s, IsCached=%s, CacheKey=%s (queue size before: %d)",
+                currentTime, taskId, isCached ? "true" : "false", cacheKey != null ? cacheKey : "NONE", queueSizeBefore));
+        
         tasks.add(taskInfo);
-        taskMap.put(taskInfo.getTaskId(), taskInfo);
+        taskMap.put(taskId, taskInfo);
         totalTasksAdded++;
-
-        logger.fine("Task " + taskInfo.getTaskId() + " added to scheduled queue (total: " + tasks.size() + ")");
+        
+        int queueSizeAfter = tasks.size();
+        
+        logger.fine("Task " + taskId + " added to scheduled queue (total: " + queueSizeAfter + ")");
+        
+        // [DEBUG] Enhanced logging after adding
+        System.out.println(String.format(
+                "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-ADD-SUCCESS] Time: %.2f - Task %s successfully added to scheduled queue (queue size: %d -> %d, total added: %d, isCached=%s)",
+                currentTime, taskId, queueSizeBefore, queueSizeAfter, totalTasksAdded, isCached ? "true" : "false"));
+        
+        // Log tuple details if available
+        if (taskInfo.getTuple() != null) {
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-TUPLE] Time: %.2f - Task %s tuple details: TupleID=%d, Type=%s, CPU=%d, Mem=%d",
+                    currentTime, taskId, taskInfo.getTuple().getCloudletId(), taskInfo.getTuple().getTupleType(),
+                    taskInfo.getTuple().getCloudletLength(), taskInfo.getTuple().getCloudletFileSize()));
+        }
     }
 
     /**

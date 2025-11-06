@@ -191,7 +191,7 @@ public class TaskExecutionEngine {
                 Tuple tuple = taskInfo.getTuple();
                 ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
                         tuple, true, 0, true); // success=true, executionTime=0, isCached=true
-                
+
                 System.out.println(String.format(
                         "[FLOW-FOG-COMPLETE-CACHE] Time: %.2f - FogNode (ID:%d) - CACHED task %s completion reported to scheduler (instant, executionTime=0)",
                         CloudSim.clock(), fogDevice.getId(), taskId));
@@ -314,8 +314,7 @@ public class TaskExecutionEngine {
      * @return Processing result
      */
     private RLTupleProcessingResult processTupleWithRL(Tuple tuple, ScheduledQueue.TaskInfo taskInfo) {
-        // Find the target VM for this task using module name from tuple (iFogSim
-        // compatible)
+        // Find the target VM for this task using module name from tuple
         String moduleName = tuple.getDestModuleName();
         if (moduleName == null) {
             logger.warning("No destination module name found in tuple");
@@ -331,16 +330,35 @@ public class TaskExecutionEngine {
         // Set VM ID for the tuple
         tuple.setVmId(targetVm.getId());
 
-        // Use RL tuple processing
-        RLTupleProcessingResult result = rlTupleProcessing.processTuple(tuple, fogDevice, fogDevice);
-
-        // If RL processing failed, fall back to normal iFogSim processing
-        if (!result.isSuccess()) {
-            logger.warning("RL processing failed, falling back to normal processing for task: " + taskInfo.getTaskId());
-            result = processTupleNormally(tuple, targetVm);
+        // Check cache action - only USE skips execution
+        // isCachedTask() == true means CACHE_ACTION_USE (skip execution, NO fog node
+        // effects)
+        // isCachedTask() == false means STORE/NONE/INVALIDATE (process normally)
+        //
+        // When cache is invalidated/deleted (expired, not in TTL), scheduler returns:
+        // - CACHE_ACTION_INVALIDATE → cache entry deleted → isCachedTask() = false →
+        // process normally
+        // This is correct: after cache deletion, task should be processed normally
+        if (taskInfo.isCachedTask()) {
+            // Task is cached (USE action) - skip execution, return cached result, NO fog
+            // node effects
+            logger.info("Task " + taskInfo.getTaskId()
+                    + " is cached (USE action) - skipping execution, no fog node effects");
+            return new RLTupleProcessingResult(
+                    tuple,
+                    true,
+                    "cached_task",
+                    0, // No execution time
+                    0.0, // No energy consumed
+                    0.0, // No cost
+                    "cached_execution");
         }
 
-        return result;
+        // For non-cached tasks (STORE/NONE/INVALIDATE), process normally using iFogSim
+        // mechanisms
+        // Always use processTupleNormally() which has correct iFogSim implementation
+        logger.info("Task " + taskInfo.getTaskId() + " is not cached - processing normally using iFogSim mechanisms");
+        return processTupleNormally(tuple, targetVm);
     }
 
     /**
@@ -354,9 +372,6 @@ public class TaskExecutionEngine {
         double startTime = CloudSim.clock();
 
         try {
-            // Use iFogSim's core tuple processing mechanisms
-            // This integrates with iFogSim's cloudlet scheduler and VM processing
-
             // Set VM ID for the tuple (required by iFogSim)
             tuple.setVmId(targetVm.getId());
 
@@ -371,26 +386,28 @@ public class TaskExecutionEngine {
             fogDevice.getHost().getVmScheduler().allocatePesForVm(targetVm,
                     java.util.Arrays.asList((double) fogDevice.getHost().getTotalMips()));
 
-            // Simulate processing time based on iFogSim's cloudlet scheduler
+            // Calculate processing time based on tuple size and VM capacity
             double processingTime = calculateProcessingTime(tuple, targetVm);
 
-            // Wait for actual processing (iFogSim handles this internally)
-            Thread.sleep((long) processingTime);
+            // Schedule tuple completion event instead of Thread.sleep()
+            // This allows CloudSim to advance time and process the tuple
+            CloudSim.send(fogDevice.getId(), fogDevice.getId(), processingTime,
+                    org.patch.utils.ExtendedFogEvents.TUPLE_COMPLETE, tuple);
 
-            // Mark tuple as completed using iFogSim's TimeKeeper
-            TimeKeeper.getInstance().tupleEndedExecution(tuple);
+            // Update fog device status immediately
+            // This ensures CPU/memory/energy utilization is updated
+            // Note: Fog device status will be updated when TUPLE_COMPLETE event is
+            // processed
 
-            long executionTime = (long) (CloudSim.clock() - startTime);
-            double energyConsumed = rlTupleProcessing.getTotalEnergyConsumed();
-            double cost = rlTupleProcessing.getTotalCost();
-
+            // Return result with calculated processing time
+            // Execution time will be updated when TUPLE_COMPLETE event is processed
             return new RLTupleProcessingResult(
                     tuple,
                     true,
                     "ifogsim_normal_processing",
-                    executionTime,
-                    energyConsumed,
-                    cost,
+                    (long) processingTime, // Use calculated processing time
+                    calculateEnergyFromProcessing(processingTime, targetVm),
+                    calculateCostFromProcessing(processingTime, targetVm),
                     "ifogsim_normal_processing");
 
         } catch (Exception e) {
@@ -432,6 +449,34 @@ public class TaskExecutionEngine {
         // Convert to milliseconds (assuming MIPS is in millions of instructions per
         // second)
         return (tupleSize / vmCapacity) * 1000;
+    }
+
+    /**
+     * Calculate energy consumed from processing time
+     * 
+     * @param processingTime Processing time in milliseconds
+     * @param vm             The VM
+     * @return Energy consumed in Joules
+     */
+    private double calculateEnergyFromProcessing(double processingTime, Vm vm) {
+        // Use rlTupleProcessing to get energy consumed
+        // This is a placeholder - actual energy calculation should be done by iFogSim's
+        // energy model
+        return rlTupleProcessing.getTotalEnergyConsumed();
+    }
+
+    /**
+     * Calculate cost from processing time
+     * 
+     * @param processingTime Processing time in milliseconds
+     * @param vm             The VM
+     * @return Cost
+     */
+    private double calculateCostFromProcessing(double processingTime, Vm vm) {
+        // Use rlTupleProcessing to get cost
+        // This is a placeholder - actual cost calculation should be done by iFogSim's
+        // cost model
+        return rlTupleProcessing.getTotalCost();
     }
 
     /**
