@@ -24,6 +24,16 @@ public class ExtendedFogEvents {
                                                          // learning
     public static final int STREAMING_QUEUE_UPDATE = 1013; // For periodic queue polling from scheduler
     public static final int TUPLE_COMPLETE = 1014; // When tuple execution completes (for CloudSim event scheduling)
+    
+    // Event-based gRPC response events ()
+    public static final int GRPC_SCHEDULER_RESPONSE = 1015; // When scheduler gRPC response is ready (async)
+    public static final int GRPC_ALLOCATOR_RESPONSE = 1016; // When allocator gRPC response is ready (async)
+    public static final int GRPC_ALLOCATOR_OUTCOME_RESPONSE = 1017; // When allocator outcome report response is ready (async)
+    
+    // Timeout events ()
+    public static final int GRPC_SCHEDULER_TIMEOUT = 1018; // When scheduler gRPC call times out
+    public static final int GRPC_ALLOCATOR_TIMEOUT = 1019; // When allocator gRPC call times out
+    public static final int GRPC_ALLOCATOR_OUTCOME_TIMEOUT = 1020; // When allocator outcome report times out
 
     /**
      * Get event name for logging/debugging
@@ -58,6 +68,18 @@ public class ExtendedFogEvents {
                 return "STREAMING_QUEUE_UPDATE";
             case TUPLE_COMPLETE:
                 return "TUPLE_COMPLETE";
+            case GRPC_SCHEDULER_RESPONSE:
+                return "GRPC_SCHEDULER_RESPONSE";
+            case GRPC_ALLOCATOR_RESPONSE:
+                return "GRPC_ALLOCATOR_RESPONSE";
+            case GRPC_ALLOCATOR_OUTCOME_RESPONSE:
+                return "GRPC_ALLOCATOR_OUTCOME_RESPONSE";
+            case GRPC_SCHEDULER_TIMEOUT:
+                return "GRPC_SCHEDULER_TIMEOUT";
+            case GRPC_ALLOCATOR_TIMEOUT:
+                return "GRPC_ALLOCATOR_TIMEOUT";
+            case GRPC_ALLOCATOR_OUTCOME_TIMEOUT:
+                return "GRPC_ALLOCATOR_OUTCOME_TIMEOUT";
             default:
                 return "UNKNOWN_EVENT";
         }

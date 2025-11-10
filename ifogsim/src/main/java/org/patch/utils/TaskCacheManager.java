@@ -55,26 +55,30 @@ public class TaskCacheManager {
 
         if (entry == null) {
             cacheMisses++;
-            logger.fine("Cache miss for task " + taskId);
+            logger.info(String.format("[DEBUG-CACHE-CHECK] Task: %s - Cache MISS (entry not found), misses=%d", 
+                taskId, cacheMisses));
             return CacheResult.MISS;
         }
 
         // Check if cache entry is still valid
         long currentTime = System.currentTimeMillis();
         long entryTime = cacheTimestamps.getOrDefault(taskId, 0L);
+        long age = currentTime - entryTime;
 
-        if (currentTime - entryTime > cacheTTLMs) {
+        if (age > cacheTTLMs) {
             // Cache expired - invalidate
             cache.remove(taskId);
             cacheTimestamps.remove(taskId);
             cacheInvalidations++;
-            logger.fine("Cache invalidated for task " + taskId + " (expired)");
+            logger.info(String.format("[DEBUG-CACHE-CHECK] Task: %s - Cache EXPIRED (age=%d ms, TTL=%d ms), invalidations=%d", 
+                taskId, age, cacheTTLMs, cacheInvalidations));
             return CacheResult.HIT_INVALID;
         }
 
         // Cache hit - valid
         cacheHits++;
-        logger.fine("Cache hit for task " + taskId);
+        logger.info(String.format("[DEBUG-CACHE-CHECK] Task: %s - Cache HIT (age=%d ms, TTL=%d ms), hits=%d", 
+            taskId, age, cacheTTLMs, cacheHits));
         return CacheResult.HIT_VALID;
     }
 
@@ -86,15 +90,20 @@ public class TaskCacheManager {
      */
     public void storeInCache(String taskId, Object result) {
         // Check cache size limit
+        int sizeBefore = cache.size();
         if (cache.size() >= maxCacheSize) {
+            logger.info(String.format("[DEBUG-CACHE-STORE] Task: %s - Cache full (size=%d), cleaning up old entries", 
+                taskId, cache.size()));
             cleanupOldEntries();
         }
 
         cache.put(taskId, new CacheEntry(result, System.currentTimeMillis()));
         cacheTimestamps.put(taskId, System.currentTimeMillis());
         cacheStores++;
+        int sizeAfter = cache.size();
 
-        logger.fine("Task " + taskId + " result stored in cache");
+        logger.info(String.format("[DEBUG-CACHE-STORE] Task: %s - Stored in cache (size: %d -> %d, stores=%d)", 
+            taskId, sizeBefore, sizeAfter, cacheStores));
     }
 
     /**
