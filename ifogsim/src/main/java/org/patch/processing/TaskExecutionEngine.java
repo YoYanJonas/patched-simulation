@@ -9,6 +9,7 @@ import org.patch.client.SchedulerClient;
 import org.patch.client.AllocationClient;
 import org.patch.utils.TaskCacheManager;
 import org.patch.utils.ExtendedFogEvents;
+import org.patch.proto.IfogsimCommon.CacheAction;
 import org.fog.utils.TimeKeeper;
 
 import java.util.*;
@@ -149,18 +150,120 @@ public class TaskExecutionEngine {
 
         logger.fine("Processing task: " + taskId + " on device: " + fogDevice.getName());
 
-        // Scheduler is the source of truth for caching decisions
-        // Cache decision is made during task execution (not before adding to queue)
-        // ALL tasks go through the queue, but cached tasks skip execution
-        if (taskInfo.isCachedTask() && cacheEnabled) {
-            System.out.println(String.format(
-                    "[FLOW-FOG-EXECUTE-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s is CACHED - Skipping execution, using cached result",
+        // CRITICAL: Handle cache actions before processing
+        CacheAction cacheAction = taskInfo.getCacheAction();
+        
+        // Handle CACHE_ACTION_STORE: If cache exists, we still execute to update it
+        // STORE means "execute and cache result" - even if cache exists, we execute to update
+        if (cacheAction == CacheAction.CACHE_ACTION_STORE && 
+            cacheEnabled && cacheManager != null) {
+            Object existingCache = cacheManager.getCachedResult(taskId);
+            if (existingCache != null) {
+                // Cache exists but STORE action means we should execute and update cache
+                logger.info(String.format(
+                    "[CACHE-STORE-UPDATE] Time: %.2f - FogNode (ID:%d) - Task %s: STORE action with existing cache - will execute and update cache",
                     currentTime, fogDevice.getId(), taskId));
-            logger.info("Task " + taskId + " is cached according to scheduler - handling cached task");
+                System.out.println(String.format(
+                    "[CACHE-STORE-UPDATE] Time: %.2f - FogNode (ID:%d) - Task %s: Cache exists but STORE action - executing to update cache",
+                    currentTime, fogDevice.getId(), taskId));
+                // Continue to execute normally (don't use cache)
+            }
+        }
+        
+        // Handle CACHE_ACTION_INVALIDATE - delete cache entry before processing
+        // When scheduler says INVALIDATE, we must delete the cache entry in iFogSim
+        // If cache doesn't exist, report as cache miss
+        if (cacheAction == CacheAction.CACHE_ACTION_INVALIDATE && 
+            cacheEnabled && cacheManager != null) {
+            // Check if cache entry exists before attempting to delete
+            Object cachedResult = cacheManager.getCachedResult(taskId);
+            boolean cacheExisted = (cachedResult != null);
+            
+            if (cacheExisted) {
+                // Cache entry exists - delete it as instructed by scheduler
+                cacheManager.invalidateCache(taskId);
+                logger.info(String.format(
+                    "[CACHE-INVALIDATE] Time: %.2f - FogNode (ID:%d) - Task %s: Cache entry DELETED per scheduler INVALIDATE action",
+                    currentTime, fogDevice.getId(), taskId));
+                System.out.println(String.format(
+                    "[CACHE-INVALIDATE] Time: %.2f - FogNode (ID:%d) - Task %s: Cache entry DELETED (CACHE_ACTION_INVALIDATE) - will execute normally",
+                    currentTime, fogDevice.getId(), taskId));
+            } else {
+                // Cache entry doesn't exist - report as cache miss
+                logger.warning(String.format(
+                    "[CACHE-INVALIDATE-MISS] Time: %.2f - FogNode (ID:%d) - Task %s: INVALIDATE requested but cache entry NOT FOUND - reporting as cache miss",
+                    currentTime, fogDevice.getId(), taskId));
+                System.out.println(String.format(
+                    "[CACHE-INVALIDATE-MISS] Time: %.2f - FogNode (ID:%d) - Task %s: INVALIDATE requested but cache entry NOT FOUND (cache miss) - will execute normally",
+                    currentTime, fogDevice.getId(), taskId));
+                // Record as cache miss in TaskCacheManager
+                cacheManager.checkCache(taskId); // This records the miss
+            }
+            // After invalidation (or miss), task should be processed normally (not cached)
+        }
+
+        // Check if task is cached (ONLY scheduler decision - server is source of truth)
+        boolean isCachedByScheduler = taskInfo.isCachedTask();
+        boolean cacheExists = false;
+        
+        // CRITICAL: If scheduler says "use cache", verify local cache actually has the result
+        if (isCachedByScheduler && cacheEnabled && cacheManager != null) {
+            // Verify cache actually exists before treating as cached
+            Object cachedResult = cacheManager.getCachedResult(taskId);
+            cacheExists = (cachedResult != null);
+            
+            if (!cacheExists) {
+                // Scheduler said cached but local cache doesn't have it - cache miss!
+                logger.warning(String.format(
+                    "[CACHE-MISS-VERIFY] Time: %.2f - FogNode (ID:%d) - Task %s: Scheduler said CACHED but local cache MISS - executing normally and reporting as cache miss",
+                    currentTime, fogDevice.getId(), taskId));
+                System.out.println(String.format(
+                    "[CACHE-MISS-VERIFY] Time: %.2f - FogNode (ID:%d) - Task %s: Scheduler marked as cached but cache entry NOT FOUND - executing normally",
+                    currentTime, fogDevice.getId(), taskId));
+                // Don't treat as cached - execute normally
+                isCachedByScheduler = false;
+            } else {
+                // Cache exists - valid cache hit
+                logger.info(String.format(
+                    "[CACHE-VERIFY-HIT] Time: %.2f - FogNode (ID:%d) - Task %s: Scheduler said cached and local cache CONFIRMED - using cached result",
+                    currentTime, fogDevice.getId(), taskId));
+            }
+        }
+        
+        // Optional: Detect cache mismatch (for debugging and synchronization)
+        // If scheduler says NOT cached, check if local cache has it (mismatch detection)
+        if (!isCachedByScheduler && cacheEnabled && cacheManager != null) {
+            TaskCacheManager.CacheResult localCacheResult = cacheManager.checkCache(taskId);
+            if (localCacheResult == TaskCacheManager.CacheResult.HIT_VALID) {
+                // Mismatch detected: server says NOT cached, but local cache has it
+                // Trust server's decision, invalidate local cache to sync
+                logger.warning(String.format(
+                    "[CACHE-MISMATCH] Time: %.2f - FogNode (ID:%d) - Task %s: Server says NOT cached, but local cache has HIT - trusting server, invalidating local cache",
+                    currentTime, fogDevice.getId(), taskId));
+                System.out.println(String.format(
+                    "[CACHE-MISMATCH] Time: %.2f - FogNode (ID:%d) - Task %s: Cache mismatch detected (server=NOT cached, local=HIT) - invalidating local cache to sync with server",
+                    currentTime, fogDevice.getId(), taskId));
+                cacheManager.invalidateCache(taskId); // Sync with server
+            }
+        }
+        
+        // Handle cached task ONLY if scheduler says cached AND cache exists
+        // NO local fallback - server is source of truth
+        boolean isCached = isCachedByScheduler && cacheExists;
+        if (isCached && cacheEnabled) {
+            System.out.println(String.format(
+                    "[FLOW-FOG-EXECUTE-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s is CACHED (scheduler=YES, verified=%s) - Skipping execution, using cached result",
+                    currentTime, fogDevice.getId(), taskId, cacheExists ? "YES" : "NO"));
+            logger.info("Task " + taskId + " is cached (scheduler: YES, verified: " + cacheExists + ") - handling cached task");
             return handleCachedTask(taskInfo);
         }
 
-        // Execute the task (scheduler already determined it's not cached)
+        // Execute the task (not cached or cache missing)
+        if (isCachedByScheduler && !cacheExists) {
+            logger.warning(String.format(
+                "[CACHE-MISS-EXECUTE] Time: %.2f - FogNode (ID:%d) - Task %s: Executing normally due to cache miss (scheduler said cached but cache not found)",
+                currentTime, fogDevice.getId(), taskId));
+        }
         return executeTask(taskInfo);
     }
 
@@ -172,9 +275,40 @@ public class TaskExecutionEngine {
      */
     private boolean handleCachedTask(ScheduledQueue.TaskInfo taskInfo) {
         String taskId = taskInfo.getTaskId();
+        Tuple tuple = taskInfo.getTuple();
+        long cloudletId = tuple.getCloudletId();
+        double startTime = CloudSim.clock();
+        
         logger.info("Handling cached task: " + taskId);
 
+        // CRITICAL: Check if this cloudletId is already being processed (including cached tasks)
+        // This prevents duplicate processing when the same task is re-added from the server
+        if (isCloudletIdActive(cloudletId)) {
+            logger.warning(String.format(
+                "[DUPLICATE-CACHED-TASK-SKIP] Time: %.2f - FogNode (ID:%d) - SKIPPING duplicate cached task: cloudletId=%d, taskId=%s (already in activeTasks)",
+                startTime, fogDevice.getId(), cloudletId, taskId));
+            System.out.println(String.format(
+                "[DUPLICATE-CACHED-TASK-SKIP] Time: %.2f - FogNode (ID:%d) - SKIPPING duplicate cached task: cloudletId=%d, taskId=%s (already processing)",
+                startTime, fogDevice.getId(), cloudletId, taskId));
+            return false; // Don't process duplicate
+        }
+
         try {
+            // CRITICAL: Add cached task to activeTasks BEFORE processing
+            // This ensures duplicate check in StreamingQueueObserver works correctly
+            // Create execution state for cached task
+            TaskExecutionState cachedState = new TaskExecutionState(taskInfo, (long) startTime);
+            cachedState.setCached(true); // Mark as cached task
+            cachedState.setSuccess(true); // Cached tasks are always successful
+            cachedState.setExecutionTime(0); // Instant execution
+            // FIX (Issue 4): Use cloudletId as key instead of taskId
+            activeTasks.put(String.valueOf(cloudletId), cachedState);
+            
+            // [DEBUG] Log addition to activeTasks
+            System.out.println(String.format(
+                    "[CACHE-ACTIVE-TASKS-ADD] Time: %.2f - FogNode (ID:%d) - Added cached task %s (cloudletId=%d) to activeTasks (size now: %d)",
+                    startTime, fogDevice.getId(), taskId, cloudletId, activeTasks.size()));
+
             // Remove from scheduled queue
             scheduledQueue.removeTask(taskId);
 
@@ -187,14 +321,44 @@ public class TaskExecutionEngine {
 
             // Report completion to scheduler with isCached=true and executionTime=0
             // This indicates a successful cache hit (instant execution)
+            // Cached tasks don't use resources, so utilization is 0
             if (fogDevice instanceof org.patch.devices.RLFogDevice) {
-                Tuple tuple = taskInfo.getTuple();
-                ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
-                        tuple, true, 0, true); // success=true, executionTime=0, isCached=true
-
+                String cacheKey = taskInfo.getCacheKey();
+                
+                // Cached tasks execute instantly without resource allocation
+                double cachedCpuUtilization = 0.0;
+                double cachedRamUtilization = 0.0;
+                
+                // [DEBUG] Log cache data before reporting cached task completion
                 System.out.println(String.format(
-                        "[FLOW-FOG-COMPLETE-CACHE] Time: %.2f - FogNode (ID:%d) - CACHED task %s completion reported to scheduler (instant, executionTime=0)",
+                        "[CACHE-COMPLETION-PREP] Task=%s, isCachedTask()=true, cacheKey=%s, executionTime=0 ms, success=true, cpuUtil=0.0%%, ramUtil=0.0%%",
+                        taskId, cacheKey != null ? cacheKey : "null"));
+                
+                // Report completion to scheduler and get ACK
+                boolean ackSuccess = ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
+                        tuple, true, 0, true, cachedCpuUtilization, cachedRamUtilization);
+                // success=true, executionTime=0, isCached=true
+
+                // Use ACK to confirm server processed completion
+                if (ackSuccess) {
+                    // Server confirmed: task is removed from server's queue
+                    // Mark as reported and remove from activeTasks immediately
+                    cachedState.setReportedCompletion(true);
+                    removeTaskAfterCompletion(cloudletId);
+                    
+                    System.out.println(String.format(
+                            "[FLOW-FOG-COMPLETE-CACHE-ACK] Time: %.2f - FogNode (ID:%d) - CACHED task %s completion confirmed by server (ACK success), removed from activeTasks",
+                            CloudSim.clock(), fogDevice.getId(), taskId));
+                } else {
+                    // ACK failed: keep in activeTasks, might retry later
+                    // Duplicate check will prevent re-processing
+                    logger.warning(String.format(
+                        "[FLOW-FOG-COMPLETE-CACHE-ACK-FAIL] Time: %.2f - FogNode (ID:%d) - CACHED task %s completion NOT confirmed by server (ACK failed), keeping in activeTasks",
                         CloudSim.clock(), fogDevice.getId(), taskId));
+                    System.out.println(String.format(
+                            "[FLOW-FOG-COMPLETE-CACHE-ACK-FAIL] Time: %.2f - FogNode (ID:%d) - CACHED task %s completion report rejected, task stays in activeTasks",
+                            CloudSim.clock(), fogDevice.getId(), taskId));
+                }
             }
 
             logger.info("Cached task " + taskId + " completed successfully");
@@ -202,6 +366,9 @@ public class TaskExecutionEngine {
 
         } catch (Exception e) {
             logger.log(Level.WARNING, "Error handling cached task " + taskId, e);
+            // Remove from activeTasks on error
+            // FIX (Issue 4): Use cloudletId as key instead of taskId
+            activeTasks.remove(String.valueOf(cloudletId));
             return false;
         }
     }
@@ -215,15 +382,28 @@ public class TaskExecutionEngine {
     private boolean executeTask(ScheduledQueue.TaskInfo taskInfo) {
         String taskId = taskInfo.getTaskId();
         Tuple tuple = taskInfo.getTuple();
+        long cloudletId = tuple.getCloudletId();
         double startTime = CloudSim.clock();
+
+        // CRITICAL: Check if this cloudletId is already being processed
+        // This prevents duplicate processing when the same task is re-added from the server
+        if (isCloudletIdActive(cloudletId)) {
+            logger.warning(String.format(
+                "[DUPLICATE-TASK-SKIP] Time: %.2f - FogNode (ID:%d) - SKIPPING duplicate task: cloudletId=%d, taskId=%s (already in activeTasks)",
+                startTime, fogDevice.getId(), cloudletId, taskId));
+            System.out.println(String.format(
+                "[DUPLICATE-TASK-SKIP] Time: %.2f - FogNode (ID:%d) - SKIPPING duplicate task: cloudletId=%d, taskId=%s (already executing)",
+                startTime, fogDevice.getId(), cloudletId, taskId));
+            return false; // Don't process duplicate
+        }
 
         // [DEBUG] Log task execution start
         System.out.println(String.format(
                 "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - EXECUTING task %s (tuple ID: %d, CPU: %d, Mem: %d)",
-                startTime, fogDevice.getId(), taskId, tuple.getCloudletId(),
+                startTime, fogDevice.getId(), taskId, cloudletId,
                 tuple.getCloudletLength(), tuple.getCloudletFileSize()));
 
-        logger.fine("Executing task: " + taskId + " with tuple: " + tuple.getCloudletId());
+        logger.fine("Executing task: " + taskId + " with tuple: " + cloudletId);
 
         try {
             // Record start time
@@ -231,7 +411,8 @@ public class TaskExecutionEngine {
 
             // Create execution state
             TaskExecutionState state = new TaskExecutionState(taskInfo, (long) startTime);
-            activeTasks.put(taskId, state);
+            // FIX (Issue 4): Use cloudletId as key instead of taskId
+            activeTasks.put(String.valueOf(cloudletId), state);
 
             // Remove from scheduled queue
             scheduledQueue.removeTask(taskId);
@@ -242,50 +423,14 @@ public class TaskExecutionEngine {
                     CloudSim.clock(), fogDevice.getId(), taskId, scheduledQueue.size()));
 
             // Process tuple using RL-aware processing
-            RLTupleProcessingResult result = processTupleWithRL(tuple, taskInfo);
+            // Result is used by CloudSim scheduler for actual execution
+            processTupleWithRL(tuple, taskInfo);
 
-            // Calculate execution metrics
-            double endTime = CloudSim.clock();
-            long executionTime = (long) (endTime - startTime);
-            double energyConsumed = rlTupleProcessing.getTotalEnergyConsumed();
-            double cost = rlTupleProcessing.getTotalCost();
+            // Note: Completion reporting and resource utilization capture are now done
+            // in TUPLE_COMPLETE event handler (handleTupleComplete) after actual execution
+            // Task remains in activeTasks until TUPLE_COMPLETE event fires
 
-            // [DEBUG] Log task execution completion
-            System.out.println(String.format(
-                    "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - Task %s EXECUTION COMPLETE (success: %s, time: %d ms, energy: %.2f J, cost: $%.4f)",
-                    endTime, fogDevice.getId(), taskId, result.isSuccess(), executionTime, energyConsumed, cost));
-
-            // Update execution state
-            state.setCompleted(true);
-            state.setExecutionTime(executionTime);
-            state.setEnergyConsumed(energyConsumed);
-            state.setCost(cost);
-            state.setSuccess(result.isSuccess());
-
-            // Update metrics
-            updateExecutionMetrics(executionTime, energyConsumed, cost, result.isSuccess());
-
-            // [DEBUG] Log before reporting completion
-            boolean isExternalTask = isExternalTask(tuple);
-            System.out.println(String.format(
-                    "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Reporting task %s completion (isExternal: %s, will report to scheduler: true, will report to allocator: %s)",
-                    endTime, fogDevice.getId(), taskId, isExternalTask, isExternalTask));
-
-            // Report task completion to RL agents
-            reportTaskCompletion(taskInfo, result, executionTime);
-
-            // Store in cache if scheduler provided a cache key (for STORE action)
-            String cacheKey = taskInfo.getCacheKey();
-            if (cacheKey != null && !cacheKey.isEmpty() && cacheEnabled && cacheManager != null) {
-                cacheManager.storeInCache(cacheKey, result);
-                logger.fine("Task result stored in cache with key: " + cacheKey);
-            }
-
-            // Clean up
-            activeTasks.remove(taskId);
-            taskStartTimes.remove(taskId);
-
-            logger.info("Task " + taskId + " executed successfully in " + executionTime + "ms");
+            logger.info("Task " + taskId + " scheduled for execution (will complete via TUPLE_COMPLETE event)");
             return true;
 
         } catch (Exception e) {
@@ -299,7 +444,8 @@ public class TaskExecutionEngine {
             failedExecutions++;
 
             // Clean up
-            activeTasks.remove(taskId);
+            // FIX (Issue 4): Use cloudletId as key instead of taskId
+            activeTasks.remove(String.valueOf(cloudletId));
             taskStartTimes.remove(taskId);
 
             return false;
@@ -358,7 +504,7 @@ public class TaskExecutionEngine {
         // mechanisms
         // Always use processTupleNormally() which has correct iFogSim implementation
         logger.info("Task " + taskInfo.getTaskId() + " is not cached - processing normally using iFogSim mechanisms");
-        return processTupleNormally(tuple, targetVm);
+        return processTupleNormally(tuple, targetVm, taskInfo);
     }
 
     /**
@@ -366,11 +512,10 @@ public class TaskExecutionEngine {
      * 
      * @param tuple    The tuple to process
      * @param targetVm The target VM
+     * @param taskInfo The task information (for accessing taskId and state)
      * @return Processing result
      */
-    private RLTupleProcessingResult processTupleNormally(Tuple tuple, Vm targetVm) {
-        double startTime = CloudSim.clock();
-
+    private RLTupleProcessingResult processTupleNormally(Tuple tuple, Vm targetVm, ScheduledQueue.TaskInfo taskInfo) {
         try {
             // Set VM ID for the tuple (required by iFogSim)
             tuple.setVmId(targetVm.getId());
@@ -378,18 +523,86 @@ public class TaskExecutionEngine {
             // Use iFogSim's TimeKeeper for proper timing
             TimeKeeper.getInstance().tupleStartedExecution(tuple);
 
-            // Submit tuple as cloudlet to VM's scheduler (iFogSim core mechanism)
-            targetVm.getCloudletScheduler().cloudletSubmit(tuple);
-
             // Update allocated MIPS (iFogSim core mechanism)
             fogDevice.getHost().getVmScheduler().deallocatePesForVm(targetVm);
             fogDevice.getHost().getVmScheduler().allocatePesForVm(targetVm,
                     java.util.Arrays.asList((double) fogDevice.getHost().getTotalMips()));
 
-            // Calculate processing time based on tuple size and VM capacity
-            double processingTime = calculateProcessingTime(tuple, targetVm);
+            // Submit tuple as cloudlet to VM's scheduler (iFogSim core mechanism)
+            // CRITICAL: cloudletSubmit() returns DURATION (processing time), NOT absolute finish time
+            // It returns: cloudletLength / capacity (e.g., 1.43 seconds)
+            double estimatedDuration = targetVm.getCloudletScheduler().cloudletSubmit(tuple, 0.0);
 
-            // Schedule tuple completion event instead of Thread.sleep()
+            // CRITICAL: Trigger VM processing to start cloudlet execution
+            // This is required for CloudSim to actually execute the cloudlet and advance time
+            if (targetVm instanceof org.fog.application.AppModule) {
+                org.fog.application.AppModule appModule = (org.fog.application.AppModule) targetVm;
+                appModule.updateVmProcessing(
+                    CloudSim.clock(),
+                    fogDevice.getHost().getVmScheduler().getAllocatedMipsForVm(targetVm)
+                );
+            }
+
+            // Capture actual utilization DURING execution (while task is running)
+            // This is the accurate value that reflects the task's resource usage
+            String taskId = taskInfo.getTaskId();
+            // FIX (Issue 4): Use cloudletId as key instead of taskId
+            TaskExecutionState state = activeTasks.get(String.valueOf(tuple.getCloudletId()));
+            if (state != null) {
+                // CPU utilization: getUtilizationOfCpu() returns percentage [0.0, 1.0]
+                double actualCpuUtilization = fogDevice.getHost().getUtilizationOfCpu();
+                
+                // Memory utilization: getUtilizationOfRam() returns MB USED (not percentage!)
+                // Convert to percentage [0.0, 1.0] by dividing by total RAM
+                double actualRamUsedMb = fogDevice.getHost().getUtilizationOfRam();
+                int totalRamMb = fogDevice.getHost().getRam();
+                double actualRamUtilization = (totalRamMb > 0) ? (actualRamUsedMb / totalRamMb) : 0.0;
+                
+                // Clamp to valid range [0.0, 1.0]
+                if (actualRamUtilization < 0.0) actualRamUtilization = 0.0;
+                if (actualRamUtilization > 1.0) actualRamUtilization = 1.0;
+                
+                state.setCapturedCpuUtilization(actualCpuUtilization);
+                state.setCapturedRamUtilization(actualRamUtilization);
+                state.setUtilizationCaptured(true);
+                
+                // Log for debugging
+                logger.info(String.format(
+                    "[TASK-EXEC-CAPTURE] Time: %.2f - cloudletId: %d, taskId: %s, Captured utilization: CPU=%.2f%%, Memory=%.2f%% (used=%d MB / total=%d MB)",
+                    CloudSim.clock(), tuple.getCloudletId(), taskId, actualCpuUtilization * 100, actualRamUtilization * 100, (int)actualRamUsedMb, totalRamMb));
+            } else {
+                logger.warning(String.format(
+                    "[TASK-EXEC-CAPTURE] Time: %.2f - cloudletId: %d, taskId: %s, WARNING: TaskExecutionState not found, cannot capture utilization",
+                    CloudSim.clock(), tuple.getCloudletId(), taskId));
+            }
+
+            // Use CloudSim's estimated duration directly (it's already the processing time)
+            // estimatedDuration is the time needed to complete the cloudlet (e.g., 1.43 seconds)
+            double processingTime = estimatedDuration;
+
+            // Validate processingTime before scheduling event
+            if (processingTime <= 0 || Double.isNaN(processingTime) || Double.isInfinite(processingTime)) {
+                // Fallback to calculated processing time
+                processingTime = calculateProcessingTime(tuple, targetVm);
+                logger.warning(String.format(
+                    "[TASK-EXEC] Invalid estimatedDuration from cloudletSubmit() for cloudletId: %d (value: %.2f), using calculated time: %.2f",
+                    tuple.getCloudletId(), estimatedDuration, processingTime));
+            }
+
+            // Ensure processingTime is at least minimum time between events
+            if (processingTime < CloudSim.getMinTimeBetweenEvents()) {
+                processingTime = CloudSim.getMinTimeBetweenEvents();
+            }
+
+            // Calculate absolute finish time for logging (current time + duration)
+            double estimatedFinishTime = CloudSim.clock() + processingTime;
+
+            // Log execution start for debugging
+            logger.info(String.format(
+                "[TASK-EXEC-START] Time: %.2f - cloudletId: %d, estimatedDuration: %.2f, processingTime: %.2f, estimatedFinishTime: %.2f",
+                CloudSim.clock(), tuple.getCloudletId(), estimatedDuration, processingTime, estimatedFinishTime));
+
+            // Schedule tuple completion event using validated processingTime
             // This allows CloudSim to advance time and process the tuple
             CloudSim.send(fogDevice.getId(), fogDevice.getId(), processingTime,
                     org.patch.utils.ExtendedFogEvents.TUPLE_COMPLETE, tuple);
@@ -435,6 +648,151 @@ public class TaskExecutionEngine {
     }
 
     /**
+     * Get task execution state by cloudletId
+     * Used by TUPLE_COMPLETE event handler to find task info
+     * 
+     * @param cloudletId The cloudlet ID to search for
+     * @return TaskExecutionState if found, null otherwise
+     */
+    public TaskExecutionState getTaskByCloudletId(long cloudletId) {
+        // [DEBUG] Log lookup attempt
+        logger.fine("Looking up task by cloudletId: " + cloudletId + " (activeTasks size: " + activeTasks.size() + ")");
+        
+        // FIX (Issue 4): Use direct lookup with cloudletId as key (O(1) instead of O(n))
+        TaskExecutionState state = activeTasks.get(String.valueOf(cloudletId));
+        if (state != null) {
+            logger.fine("Found task state for cloudletId: " + cloudletId + " (taskId: " + state.getTaskInfo().getTaskId() + ")");
+            return state;
+        }
+        
+        logger.warning("Task state not found for cloudletId: " + cloudletId + " (activeTasks size: " + activeTasks.size() + ")");
+        return null;
+    }
+
+    /**
+     * Check if a cloudletId is already being processed (active)
+     * Used to prevent duplicate processing of the same task instance
+     * 
+     * @param cloudletId The cloudlet ID to check
+     * @return true if cloudletId is already in activeTasks, false otherwise
+     */
+    public boolean isCloudletIdActive(long cloudletId) {
+        return getTaskByCloudletId(cloudletId) != null;
+    }
+
+    /**
+     * Remove task from active tasks after completion
+     * Called from TUPLE_COMPLETE handler after reporting completion
+     * 
+     * NOTE: This method is now DEPRECATED for normal completion flow.
+     * Tasks should stay in activeTasks until server confirms (two-stage removal).
+     * This method is kept for error handling cases.
+     * 
+     * @param cloudletId The cloudlet ID of the task to remove
+     */
+    public void removeTaskAfterCompletion(long cloudletId) {
+        // FIX (Issue 4): Use direct lookup and removal with cloudletId as key
+        TaskExecutionState state = activeTasks.remove(String.valueOf(cloudletId));
+        if (state != null) {
+            String taskId = state.getTaskInfo().getTaskId();
+            taskStartTimes.remove(taskId);
+            logger.fine("Removed task from activeTasks: cloudletId=" + cloudletId + ", taskId=" + taskId + " (activeTasks size now: " + activeTasks.size() + ")");
+        } else {
+            logger.warning("Cannot remove task: cloudletId " + cloudletId + " not found in activeTasks");
+        }
+    }
+
+    /**
+     * Remove tasks from activeTasks that were reported as completed
+     * and are confirmed by server (not in server's queue response)
+     * 
+     * This implements Stage 2 of two-stage removal:
+     * - Stage 1: Mark reportedCompletion=true (don't remove yet)
+     * - Stage 2: Remove when server confirms (task not in server's response)
+     * 
+     * @param serverTaskIds Set of taskIds from server's GetSortedQueue response
+     * @return Number of tasks removed
+     */
+    public int removeConfirmedCompletedTasks(Set<String> serverTaskIds) {
+        List<String> toRemove = new ArrayList<>();
+        
+        // FIX (Issue 4): activeTasks now uses cloudletId as key, but serverTaskIds are taskIds
+        // So we need to iterate and check taskId from state
+        for (Map.Entry<String, TaskExecutionState> entry : activeTasks.entrySet()) {
+            String cloudletIdKey = entry.getKey(); // This is now cloudletId (as String)
+            TaskExecutionState state = entry.getValue();
+            String taskId = state.getTaskInfo().getTaskId(); // Extract taskId from state
+            
+            // Check if task was reported AND server confirmed (not in queue)
+            if (state.isReportedCompletion() && !serverTaskIds.contains(taskId)) {
+                toRemove.add(cloudletIdKey); // Remove using cloudletId key
+            }
+        }
+        
+        // Remove confirmed completed tasks
+        int removedCount = 0;
+        for (String cloudletIdKey : toRemove) {
+            TaskExecutionState state = activeTasks.remove(cloudletIdKey);
+            if (state != null) {
+                String taskId = state.getTaskInfo().getTaskId();
+                long cloudletId = state.getTaskInfo().getTuple().getCloudletId();
+                taskStartTimes.remove(taskId);
+                removedCount++;
+                logger.info(String.format(
+                    "[TASK-CONFIRMED-REMOVED] Task %s (cloudletId=%d) confirmed completed by server, removed from activeTasks",
+                    taskId, cloudletId));
+                System.out.println(String.format(
+                    "[TASK-CONFIRMED-REMOVED] Time: %.2f - FogNode (ID:%d) - Task %s (cloudletId=%d) confirmed completed by server, removed from activeTasks (size now: %d)",
+                    CloudSim.clock(), fogDevice.getId(), taskId, cloudletId, activeTasks.size()));
+            }
+        }
+        
+        return removedCount;
+    }
+
+    /**
+     * Calculate CPU and Memory utilization from task requirements
+     * Used in TUPLE_COMPLETE handler to calculate utilization from task size vs host capacity
+     * 
+     * @param tuple The tuple/task
+     * @return Array with [cpuUtilization, ramUtilization] in range [0.0, 1.0]
+     */
+    public double[] calculateUtilizationFromTaskRequirements(Tuple tuple) {
+        double cpuUtilization = 0.0;
+        double ramUtilization = 0.0;
+        
+        // Factor to account for overhead (5% overhead)
+        double overheadFactor = 1.05;
+        
+        // CPU utilization: based on number of processing elements (cores) required
+        int taskPes = tuple.getNumberOfPes();
+        int hostPes = fogDevice.getHost().getNumberOfPes();
+        
+        if (hostPes > 0 && taskPes > 0) {
+            // Calculate utilization: (task cores / host cores) * overhead factor
+            cpuUtilization = ((double) taskPes / hostPes) * overheadFactor;
+            // Clamp to [0.0, 1.0]
+            if (cpuUtilization > 1.0) cpuUtilization = 1.0;
+            if (cpuUtilization < 0.0) cpuUtilization = 0.0;
+        }
+        
+        // Memory utilization: based on task file size (input data size)
+        long taskMemoryBytes = tuple.getCloudletFileSize();
+        int hostRamMB = fogDevice.getHost().getRam();
+        long hostRamBytes = (long) hostRamMB * 1024L * 1024L; // Convert MB to bytes
+        
+        if (hostRamBytes > 0 && taskMemoryBytes > 0) {
+            // Calculate utilization: (task memory / host memory) * overhead factor
+            ramUtilization = ((double) taskMemoryBytes / hostRamBytes) * overheadFactor;
+            // Clamp to [0.0, 1.0]
+            if (ramUtilization > 1.0) ramUtilization = 1.0;
+            if (ramUtilization < 0.0) ramUtilization = 0.0;
+        }
+        
+        return new double[] { cpuUtilization, ramUtilization };
+    }
+
+    /**
      * Calculate processing time for a tuple on a VM
      * 
      * @param tuple The tuple
@@ -446,9 +804,31 @@ public class TaskExecutionEngine {
         double tupleSize = tuple.getCloudletLength();
         double vmCapacity = vm.getMips();
 
-        // Convert to milliseconds (assuming MIPS is in millions of instructions per
-        // second)
-        return (tupleSize / vmCapacity) * 1000;
+        // Validate inputs
+        if (tupleSize <= 0 || vmCapacity <= 0) {
+            logger.warning(String.format(
+                "[TASK-EXEC] Invalid tuple size (%.2f) or VM capacity (%.2f), using minimum time",
+                tupleSize, vmCapacity));
+            return CloudSim.getMinTimeBetweenEvents();
+        }
+
+        // Convert to milliseconds (assuming MIPS is in millions of instructions per second)
+        double processingTime = (tupleSize / vmCapacity) * 1000;
+
+        // Validate result
+        if (processingTime <= 0 || Double.isNaN(processingTime) || Double.isInfinite(processingTime)) {
+            logger.warning(String.format(
+                "[TASK-EXEC] Invalid processingTime calculated (%.2f), using minimum time",
+                processingTime));
+            return CloudSim.getMinTimeBetweenEvents();
+        }
+
+        // Ensure minimum time between events
+        if (processingTime < CloudSim.getMinTimeBetweenEvents()) {
+            processingTime = CloudSim.getMinTimeBetweenEvents();
+        }
+
+        return processingTime;
     }
 
     /**
@@ -520,7 +900,9 @@ public class TaskExecutionEngine {
      */
     private void reportTaskCompletion(ScheduledQueue.TaskInfo taskInfo,
             RLTupleProcessingResult result,
-            long executionTime) {
+            long executionTime,
+            double cpuUtilization,
+            double ramUtilization) {
         String taskId = taskInfo.getTaskId();
         Tuple tuple = taskInfo.getTuple();
         boolean success = result.isSuccess();
@@ -540,8 +922,15 @@ public class TaskExecutionEngine {
                     // Determine if task was cached (non-cached tasks have executionTime > 0)
                     // Cache decision is made by scheduler and stored in taskInfo.isCachedTask()
                     boolean isCached = taskInfo.isCachedTask();
+                    String cacheKey = taskInfo.getCacheKey();
+                    
+                    // [DEBUG] Log cache decision and data before reporting
+                    System.out.println(String.format(
+                            "[CACHE-COMPLETION-PREP] Task=%s, isCachedTask()=%s, cacheKey=%s, executionTime=%d ms, success=%s",
+                            taskId, isCached, cacheKey != null ? cacheKey : "null", executionTime, success));
+                    
                     ((org.patch.devices.RLFogDevice) fogDevice).reportTaskCompletion(
-                            tuple, success, executionTime, isCached);
+                            tuple, success, executionTime, isCached, cpuUtilization, ramUtilization);
 
                     System.out.println(String.format(
                             "[FLOW-FOG-COMPLETE] Time: %.2f - FogNode (ID:%d) - Task %s completion successfully reported to SCHEDULER",
@@ -678,6 +1067,16 @@ public class TaskExecutionEngine {
     }
 
     /**
+     * Get the cache manager instance
+     * Used by RLFogDevice to store execution results
+     * 
+     * @return TaskCacheManager instance or null if not available
+     */
+    public TaskCacheManager getCacheManager() {
+        return cacheManager;
+    }
+
+    /**
      * Check if there are active tasks
      * 
      * @return true if there are active tasks
@@ -726,6 +1125,15 @@ public class TaskExecutionEngine {
         private double energyConsumed = 0.0;
         private double cost = 0.0;
         private boolean success = false;
+        // Captured resource utilization during task execution (before resources are
+        // released)
+        private double capturedCpuUtilization = 0.0;
+        private double capturedRamUtilization = 0.0;
+        private boolean utilizationCaptured = false;
+        // Flag to prevent duplicate completion reports
+        private boolean reportedCompletion = false;
+        // Flag to indicate if this is a cached task (skips execution)
+        private boolean isCached = false;
 
         public TaskExecutionState(ScheduledQueue.TaskInfo taskInfo, long startTime) {
             this.taskInfo = taskInfo;
@@ -779,6 +1187,46 @@ public class TaskExecutionEngine {
 
         public void setSuccess(boolean success) {
             this.success = success;
+        }
+
+        public double getCapturedCpuUtilization() {
+            return capturedCpuUtilization;
+        }
+
+        public void setCapturedCpuUtilization(double capturedCpuUtilization) {
+            this.capturedCpuUtilization = capturedCpuUtilization;
+        }
+
+        public double getCapturedRamUtilization() {
+            return capturedRamUtilization;
+        }
+
+        public void setCapturedRamUtilization(double capturedRamUtilization) {
+            this.capturedRamUtilization = capturedRamUtilization;
+        }
+
+        public boolean isUtilizationCaptured() {
+            return utilizationCaptured;
+        }
+
+        public void setUtilizationCaptured(boolean utilizationCaptured) {
+            this.utilizationCaptured = utilizationCaptured;
+        }
+
+        public boolean isReportedCompletion() {
+            return reportedCompletion;
+        }
+
+        public void setReportedCompletion(boolean reportedCompletion) {
+            this.reportedCompletion = reportedCompletion;
+        }
+
+        public boolean isCached() {
+            return isCached;
+        }
+
+        public void setCached(boolean isCached) {
+            this.isCached = isCached;
         }
     }
 }
