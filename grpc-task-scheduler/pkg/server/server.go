@@ -118,9 +118,12 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to load model on startup: %w", err)
 	}
 
-	// Start model persistence
+	// Start model persistence (with cache agent periodic save)
 	ctx := context.Background()
-	go s.modelStorage.StartPeriodicSave(ctx)
+	cacheAgentGetter := func() *rl.CacheAgent {
+		return s.getCacheAgentFromSystem()
+	}
+	go s.modelStorage.StartPeriodicSave(ctx, cacheAgentGetter)
 
 	// ADD: Start scheduler service
 	s.schedulerService.Start(ctx)
@@ -206,10 +209,40 @@ func (s *Server) LoadModelOnStartup() error {
 	err := s.modelStorage.LoadModel(algorithmManager)
 	if err != nil {
 		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Failed to load persisted model: %v", err)
-		return nil // Don't fail startup, just log warning
+		logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Starting with fresh model (no previous learning data)")
+		return nil // Don't fail startup, just start fresh
+	}
+
+	// Verify model was actually loaded (not invalid)
+	// Check if Q-table has data
+	currentAlg := algorithmManager.GetCurrentAlgorithm()
+	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+		qTable := qlAlg.GetQTable()
+		if len(qTable) == 0 {
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Loaded model has empty Q-table, starting fresh")
+			// Model was loaded but is invalid - this shouldn't happen if validation works
+			// But add as safety check
+		} else {
+			logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Model loaded successfully: Q-table size=%d", len(qTable))
+		}
 	}
 
 	logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Model loaded and applied successfully")
+
+	// Load cache agent state
+	cacheAgent := s.getCacheAgentFromSystem()
+	if cacheAgent != nil {
+		logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Loading cache agent state on startup...")
+		if err := s.modelStorage.LoadCacheAgent(cacheAgent); err != nil {
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Failed to load cache agent: %v", err)
+			// Don't fail startup, just log warning
+		} else {
+			logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Cache agent loaded and applied successfully")
+		}
+	} else {
+		logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Cache agent not available, skipping cache agent load")
+	}
+
 	return nil
 }
 
@@ -228,10 +261,62 @@ func (s *Server) SaveModelOnShutdown() error {
 		return nil
 	}
 
-	// Save the model with algorithm manager
+	// Get current algorithm and log Q-table status
+	currentAlg := algorithmManager.GetCurrentAlgorithm()
+	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+		qTable := qlAlg.GetQTable()
+		if len(qTable) == 0 {
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Q-table is empty, but saving model anyway (for next run initialization)")
+		} else {
+			logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table has data (size=%d), proceeding with save", len(qTable))
+		}
+	}
+	// Always save, even if Q-table is empty
+
+	// Get scheduling Q-table size for comparison
+	schedulingQTableSize := 0
+	if algorithmManager != nil {
+		currentAlg := algorithmManager.GetCurrentAlgorithm()
+		if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+			schedulingQTableSize = len(qlAlg.GetQTable())
+		}
+	}
+
+	// Get cache Q-table size for comparison
+	cacheAgent := s.getCacheAgentFromSystem()
+	cacheQTableSize := 0
+	if cacheAgent != nil {
+		cacheQLScheduler := cacheAgent.GetQLearningScheduler()
+		if cacheQLScheduler != nil {
+			cacheQTableSize = len(cacheQLScheduler.GetQTable())
+		}
+	}
+
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table comparison: Scheduling=%d states, Cache=%d states",
+		schedulingQTableSize, cacheQTableSize)
+
+	if schedulingQTableSize == 0 && cacheQTableSize > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] DIAGNOSTIC: Scheduling Q-table is empty but cache Q-table has data!")
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] This suggests scheduling RL agent is not learning/updating Q-table")
+	}
+
+	// Save the model with algorithm manager (always save, even if Q-table is empty)
 	if err := s.modelStorage.SaveModel(algorithmManager); err != nil {
 		logger.GetLogger().Errorf("Failed to save model on shutdown: %v", err)
 		return err
+	}
+
+	// Save cache agent state (cacheAgent already retrieved above)
+	if cacheAgent != nil {
+		logger.GetLogger().Info("[SCHEDULER-MODEL-SAVE] Saving cache agent state on shutdown...")
+		if err := s.modelStorage.SaveCacheAgent(cacheAgent); err != nil {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] Failed to save cache agent on shutdown: %v", err)
+			// Don't fail shutdown, just log error
+		} else {
+			logger.GetLogger().Info("[SCHEDULER-MODEL-SAVE] Cache agent saved successfully on shutdown")
+		}
+	} else {
+		logger.GetLogger().Info("[SCHEDULER-MODEL-SAVE] Cache agent not available, skipping cache agent save")
 	}
 
 	logger.GetLogger().Info("Model saved successfully on shutdown")
@@ -252,4 +337,14 @@ func (s *Server) getAlgorithmManagerFromSystem() *rl.AlgorithmManager {
 
 	// Get algorithm manager from agent - we need to add this method to Agent
 	return agent.GetAlgorithmManager()
+}
+
+// getCacheAgentFromSystem retrieves the cache agent from the system
+func (s *Server) getCacheAgentFromSystem() *rl.CacheAgent {
+	if s.schedulerService == nil {
+		return nil
+	}
+
+	// Get cache agent from scheduler service
+	return s.schedulerService.GetCacheAgent()
 }

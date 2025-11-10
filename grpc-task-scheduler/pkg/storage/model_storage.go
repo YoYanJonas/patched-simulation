@@ -42,6 +42,7 @@ type ModelData struct {
 	AlgorithmManagerData *AlgorithmManagerData `json:"algorithm_manager_data,omitempty"`
 	ExperienceBufferData *ExperienceBufferData `json:"experience_buffer_data,omitempty"`
 	MultiObjectiveData   *MultiObjectiveData   `json:"multi_objective_data,omitempty"`
+	CacheQLearningData   *CacheQLearningModelData `json:"cache_qlearning_data,omitempty"`
 }
 
 // QLearningModelData stores Q-learning agent state
@@ -66,6 +67,31 @@ type QLearningModelData struct {
 	AverageQValue       float64   `json:"average_q_value"`
 	QTableSize          int       `json:"q_table_size"`
 	LastUpdateTimestamp time.Time `json:"last_update_timestamp"`
+}
+
+// CacheQLearningModelData stores Cache Q-learning agent state
+type CacheQLearningModelData struct {
+	QTable           map[string]map[string]float64 `json:"q_table"` // StateKey -> ActionType -> QValue
+	CurrentEpisode   int                           `json:"current_episode"`
+	EpisodeTaskCount int                           `json:"episode_task_count"`
+	EpisodeStartTime time.Time                     `json:"episode_start_time"`
+	ExplorationRate  float64                       `json:"exploration_rate"`
+	IsLearning       bool                          `json:"is_learning"`
+	RewardWeights    CacheRewardWeights            `json:"reward_weights"`
+	
+	// Learning Progress Tracking
+	TotalQUpdates       int64     `json:"total_q_updates"`
+	AverageQValue       float64   `json:"average_q_value"`
+	QTableSize          int       `json:"q_table_size"`
+	LastUpdateTimestamp time.Time `json:"last_update_timestamp"`
+}
+
+// CacheRewardWeights defines weights for different reward components (for JSON serialization)
+type CacheRewardWeights struct {
+	CacheHit     float64 `json:"cache_hit"`
+	CacheMiss    float64 `json:"cache_miss"`
+	Storage      float64 `json:"storage"`
+	Invalidation float64 `json:"invalidation"`
 }
 
 // AlgorithmManagerData stores algorithm manager state
@@ -412,14 +438,14 @@ func (ms *ModelStorage) updateModelHealthIndicators(modelData *ModelData) {
 	}
 }
 
-// StartPeriodicSave starts background saving routine
-func (ms *ModelStorage) StartPeriodicSave(ctx context.Context) {
+// StartPeriodicSave starts background saving routine for both scheduling and cache models
+func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, cacheAgentGetter func() *rl.CacheAgent) {
 	if !ms.config.Enabled || ms.config.SaveInterval <= 0 {
 		logger.GetLogger().Info("Periodic model saving disabled")
 		return
 	}
 
-	logger.GetLogger().Infof("Starting periodic RL model saving every %v", ms.config.SaveInterval)
+	logger.GetLogger().Infof("Starting periodic RL model saving every %v (scheduling + cache)", ms.config.SaveInterval)
 
 	ticker := time.NewTicker(ms.config.SaveInterval)
 	defer ticker.Stop()
@@ -428,11 +454,26 @@ func (ms *ModelStorage) StartPeriodicSave(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			if ms.dirty {
+				logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Periodic save triggered: dirty=true, calling saveModel()")
 				if err := ms.saveModel(); err != nil {
-					logger.GetLogger().Errorf("Failed to save RL model: %v", err)
+					logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] Failed to save RL model (periodic): %v", err)
 				} else {
-					logger.GetLogger().Debug("RL model saved successfully (periodic)")
+					logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] RL model saved successfully (periodic)")
 					ms.dirty = false
+				}
+			} else {
+				logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] Periodic save skipped: dirty=false")
+			}
+			// Periodic save for cache agent
+			if cacheAgentGetter != nil {
+				cacheAgent := cacheAgentGetter()
+				if cacheAgent != nil {
+					logger.GetLogger().Debug("[CACHE-MODEL-SAVE] Periodic cache model save triggered")
+					if err := ms.SaveCacheAgent(cacheAgent); err != nil {
+						logger.GetLogger().Errorf("[CACHE-MODEL-SAVE] Failed to save cache model (periodic): %v", err)
+					} else {
+						logger.GetLogger().Debug("[CACHE-MODEL-SAVE] Cache model saved successfully (periodic)")
+					}
 				}
 			}
 		case <-ctx.Done():
@@ -443,6 +484,18 @@ func (ms *ModelStorage) StartPeriodicSave(ctx context.Context) {
 					logger.GetLogger().Errorf("Failed to save RL model on shutdown: %v", err)
 				} else {
 					logger.GetLogger().Info("RL model saved successfully on shutdown")
+				}
+			}
+			// Final cache save on shutdown (handled by SaveModelOnShutdown, but also here for safety)
+			if cacheAgentGetter != nil {
+				cacheAgent := cacheAgentGetter()
+				if cacheAgent != nil {
+					logger.GetLogger().Info("[CACHE-MODEL-SAVE] Performing final cache model save on shutdown...")
+					if err := ms.SaveCacheAgent(cacheAgent); err != nil {
+						logger.GetLogger().Errorf("[CACHE-MODEL-SAVE] Failed to save cache model on shutdown: %v", err)
+					} else {
+						logger.GetLogger().Info("[CACHE-MODEL-SAVE] Cache model saved successfully on shutdown")
+					}
 				}
 			}
 			return
@@ -457,7 +510,7 @@ func (ms *ModelStorage) saveModel() error {
 	ms.mutex.RUnlock()
 
 	// Create directory structure
-	modelDir := filepath.Join(ms.config.ModelsPath, ms.config.ModelName, "current")
+	modelDir := filepath.Join(ms.config.ModelsPath, ms.config.ModelName)
 	logger.GetLogger().Infof("[MODEL-SAVE] Creating model directory: %s", modelDir)
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
 		logger.GetLogger().Errorf("[MODEL-SAVE] Failed to create model directory: %v", err)
@@ -465,15 +518,10 @@ func (ms *ModelStorage) saveModel() error {
 	}
 	logger.GetLogger().Infof("[MODEL-SAVE] Model directory ready: %s", modelDir)
 
-	// Create backup if current model exists
+	// Backups disabled - save directly
 	currentPath := ms.getCurrentModelPath()
 	if _, err := os.Stat(currentPath); err == nil {
-		logger.GetLogger().Infof("[MODEL-SAVE] Existing model found, creating backup before saving new model")
-		if err := ms.createBackup(currentPath); err != nil {
-			logger.GetLogger().Warnf("[MODEL-SAVE] Failed to create backup: %v", err)
-		} else {
-			logger.GetLogger().Infof("[MODEL-SAVE] Backup created successfully")
-		}
+		logger.GetLogger().Infof("[MODEL-SAVE] Existing model found at %s, overwriting (backups disabled)", currentPath)
 	} else {
 		logger.GetLogger().Infof("[MODEL-SAVE] No existing model at %s, saving new model", currentPath)
 	}
@@ -529,7 +577,11 @@ func (ms *ModelStorage) createBackup(currentPath string) error {
 }
 
 func (ms *ModelStorage) getCurrentModelPath() string {
-	return filepath.Join(ms.config.ModelsPath, ms.config.ModelName, "current", "model.json")
+	return filepath.Join(ms.config.ModelsPath, ms.config.ModelName, "scheduler_model.json")
+}
+
+func (ms *ModelStorage) getCacheModelPath() string {
+	return filepath.Join(ms.config.ModelsPath, ms.config.ModelName, "cache_model.json")
 }
 
 // createDefaultModel creates enhanced default model with RL components
@@ -661,8 +713,61 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 	}
 
 	// Extract Q-learning agent state using getter methods
+	originalQTable := agent.GetQTable()
+	qTableSize := len(originalQTable)
+
+	// Log Q-table state before save
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Preparing to save Q-learning agent: QTableSize=%d, Episode=%d, TaskCount=%d",
+		qTableSize, agent.GetCurrentEpisode(), agent.GetEpisodeTaskCount())
+
+	// Count Q-values
+	totalQValues := 0
+	for _, actions := range originalQTable {
+		totalQValues += len(actions)
+	}
+
+	if qTableSize > 0 {
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table statistics: States=%d, TotalQValues=%d, AverageQValuesPerState=%.2f",
+			qTableSize, totalQValues, float64(totalQValues)/float64(qTableSize))
+	} else {
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table statistics: States=0, TotalQValues=0")
+	}
+
+	// Log sample states (first 3)
+	stateCount := 0
+	for stateKey, actions := range originalQTable {
+		if stateCount < 3 {
+			logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] Sample Q-table state: State=%s, Actions=%d",
+				stateKey, len(actions))
+			stateCount++
+		}
+	}
+
+	// Log Q-table status (but always save, even if empty)
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveQLearningAgent: Entry - QTableSize=%d, Episode=%d, TaskCount=%d, IsLearning=%v",
+		qTableSize, agent.GetCurrentEpisode(), agent.GetEpisodeTaskCount(), agent.IsLearning())
+	
+	if qTableSize == 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Q-table is empty (size=0), but saving model anyway (for next run initialization)")
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Diagnostic: Episode=%d, TaskCount=%d, IsLearning=%v, ExplorationRate=%.3f",
+			agent.GetCurrentEpisode(), agent.GetEpisodeTaskCount(), agent.IsLearning(), agent.GetConfig().ExplorationRate)
+		// Continue with save - empty Q-table is valid state for initialization
+	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveQLearningAgent: Q-table validation passed (size=%d), proceeding with save", qTableSize)
+
+	// Check minimum learning threshold
+	if qTableSize < 5 {
+		logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] Q-table is small (size=%d), saving anyway (early learning)", qTableSize)
+	}
+
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Converting Q-table to string format: %d states", len(originalQTable))
+	convertedQTable := ms.convertQTableToStringFormat(originalQTable)
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion complete: %d states converted to string format", len(convertedQTable))
+	
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Creating QLearningModelData structure...")
 	qData := &QLearningModelData{
-		QTable:              ms.convertQTableToStringFormat(agent.GetQTable()),
+		QTable:              convertedQTable,
 		CurrentEpisode:      agent.GetCurrentEpisode(),
 		EpisodeTaskCount:    agent.GetEpisodeTaskCount(),
 		EpisodeStartTime:    agent.GetEpisodeStartTime(),
@@ -671,13 +776,14 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 		IsLearning:          agent.IsLearning(),
 		RewardWeights:       agent.GetRewardWeights(),
 		EpisodeConfig:       agent.GetConfig().EpisodeConfig,
-		TotalQUpdates:       ms.calculateTotalQUpdates(agent.GetQTable()),
-		AverageQValue:       ms.calculateAverageQValue(agent.GetQTable()),
-		QTableSize:          len(agent.GetQTable()),
+		TotalQUpdates:       ms.calculateTotalQUpdates(originalQTable),
+		AverageQValue:       ms.calculateAverageQValue(originalQTable),
+		QTableSize:          len(originalQTable),
 		LastUpdateTimestamp: time.Now(),
 	}
 
 	// Update model data
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Updating model data structure...")
 	ms.currentModel.QLearningData = qData
 	ms.currentModel.Algorithm = "qlearning"
 	ms.currentModel.LearningRate = agent.GetConfig().LearningRate
@@ -692,15 +798,25 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 	ms.currentModel.Hyperparams["q_table_size"] = len(agent.GetQTable())
 	ms.currentModel.Hyperparams["total_q_updates"] = qData.TotalQUpdates
 	ms.currentModel.Hyperparams["average_q_value"] = qData.AverageQValue
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Model data structure updated: Algorithm=%s, Episode=%d, QTableSize=%d",
+		ms.currentModel.Algorithm, agent.GetCurrentEpisode(), len(agent.GetQTable()))
 
-	// Save to file
+	// Mark as dirty so it will be saved by periodic save
+	ms.dirty = true
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveQLearningAgent: Model marked as dirty (Q-table size: %d, will be saved on next periodic save)", qTableSize)
+
+	// Save to file immediately (for shutdown saves)
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Calling saveToFile() to persist model to disk...")
 	if err := ms.saveToFile(); err != nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] ERROR: saveToFile() failed: %v", err)
 		return fmt.Errorf("failed to save Q-learning agent: %w", err)
 	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile() completed successfully")
 
-	logger.GetLogger().Info("Q-learning agent state saved successfully",
+	logger.GetLogger().Info("[SCHEDULER-MODEL-SAVE] Q-learning agent state saved successfully",
 		"episode", agent.GetCurrentEpisode(),
-		"q_table_size", len(agent.GetQTable()),
+		"q_table_size", len(originalQTable),
+		"q_table_states_saved", len(convertedQTable),
 		"exploration_rate", agent.GetConfig().ExplorationRate)
 
 	return nil
@@ -720,6 +836,13 @@ func (ms *ModelStorage) LoadQLearningAgent() (*rl.QLearningScheduler, error) {
 	}
 
 	qData := ms.currentModel.QLearningData
+
+	// Validate Q-table is not empty
+	if qData.QTableSize == 0 || len(qData.QTable) == 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Q-table is empty (size=%d), cannot load - starting fresh", qData.QTableSize)
+		return nil, fmt.Errorf("Q-table is empty, cannot load model")
+	}
+
 	cfg := config.GetConfig()
 
 	// Create new Q-learning scheduler with saved configuration
@@ -733,20 +856,327 @@ func (ms *ModelStorage) LoadQLearningAgent() (*rl.QLearningScheduler, error) {
 	agent.SetExplorationRate(qData.ExplorationRate)
 	agent.SetLearning(qData.IsLearning)
 	agent.SetRewardWeights(qData.RewardWeights)
-	agent.SetQTable(ms.convertQTableFromStringFormat(qData.QTable))
+	// Restore Q-table with validation and debug logging
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Converting Q-table from string format: %d states", len(qData.QTable))
+	restoredQTable := ms.convertQTableFromStringFormat(qData.QTable)
+	
+	// Validate Q-table conversion
+	totalActions := 0
+	actionCounts := make(map[rl.ActionType]int)
+	invalidActionCount := 0
+	validActionTypes := map[rl.ActionType]bool{
+		rl.ActionNone:                true,
+		rl.ActionScheduleNext:         true,
+		rl.ActionReorder:              true,
+		rl.ActionDelay:               true,
+		rl.ActionPriorityBoost:        true,
+		rl.ActionPromoteHighPriority:  true,
+		rl.ActionPromoteShortJobs:     true,
+		rl.ActionBalancedScheduling:   true,
+		rl.ActionDeadlineAware:        true,
+		rl.ActionResourceOptimized:   true,
+	}
+	
+	for stateKey, actions := range restoredQTable {
+		for actionType, qValue := range actions {
+			totalActions++
+			if validActionTypes[actionType] {
+				actionCounts[actionType]++
+			} else {
+				invalidActionCount++
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Invalid action type in Q-table: state=%s, actionType=%d, qValue=%.3f",
+					stateKey, actionType, qValue)
+			}
+		}
+	}
+	
+	// Log action distribution
+	actionSummary := ""
+	for actionType, count := range actionCounts {
+		if count > 0 {
+			actionName := ms.actionTypeToString(actionType)
+			if actionSummary != "" {
+				actionSummary += ", "
+			}
+			actionSummary += fmt.Sprintf("%s=%d", actionName, count)
+		}
+	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Q-table conversion validated: TotalActions=%d, Invalid=%d", totalActions, invalidActionCount)
+	if actionSummary != "" {
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Action distribution: %s", actionSummary)
+	}
+	
+	if invalidActionCount > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Found %d invalid action types in Q-table - these will be ignored", invalidActionCount)
+	}
+	
+	// Set Q-table
+	agent.SetQTable(restoredQTable)
+	
+	// Verify Q-table was set correctly
+	verifyQTable := agent.GetQTable()
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Q-table verification: Restored states=%d, Verified states=%d",
+		len(restoredQTable), len(verifyQTable))
+	
+	if len(restoredQTable) != len(verifyQTable) {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Q-table size mismatch after restore: expected=%d, actual=%d",
+			len(restoredQTable), len(verifyQTable))
+	}
 
 	// Validate loaded state
 	if err := ms.validateQLearningState(agent, qData); err != nil {
 		return nil, fmt.Errorf("loaded Q-learning state validation failed: %w", err)
 	}
 
-	logger.GetLogger().Info("Q-learning agent state loaded successfully",
+	logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Q-learning agent state loaded successfully",
 		"episode", qData.CurrentEpisode,
 		"q_table_states", len(qData.QTable),
+		"q_table_actions", totalActions,
+		"action_distribution", actionSummary,
 		"exploration_rate", qData.ExplorationRate,
 		"is_learning", qData.IsLearning)
 
 	return agent, nil
+}
+
+// SaveCacheAgent saves Cache Q-learning agent state to separate cache_model.json file
+func (ms *ModelStorage) SaveCacheAgent(cacheAgent *rl.CacheAgent) error {
+	if cacheAgent == nil || !cacheAgent.IsEnabled() {
+		logger.GetLogger().Info("[CACHE-MODEL-SAVE] Cache agent is nil or disabled, skipping save")
+		return nil
+	}
+
+	logger.GetLogger().Info("[CACHE-MODEL-SAVE] Starting cache agent state save...")
+
+	// Get Q-learning scheduler from cache agent
+	cacheQLScheduler := cacheAgent.GetQLearningScheduler()
+	if cacheQLScheduler == nil {
+		logger.GetLogger().Warn("[CACHE-MODEL-SAVE] Cache Q-learning scheduler is nil, skipping save")
+		return nil
+	}
+
+	// Get all state from cache Q-learning scheduler
+	cacheQL := cacheQLScheduler.GetQTable()
+	rewardWeights := cacheQLScheduler.GetRewardWeights()
+	
+	// Convert reward weights to storage format
+	storageRewardWeights := CacheRewardWeights{
+		CacheHit:     rewardWeights.CacheHit,
+		CacheMiss:    rewardWeights.CacheMiss,
+		Storage:      rewardWeights.Storage,
+		Invalidation: rewardWeights.Invalidation,
+	}
+	
+	// Create cache model data structure
+	cacheModelData := &CacheQLearningModelData{
+		QTable:              ms.convertCacheQTableToStringFormat(cacheQL),
+		CurrentEpisode:      cacheQLScheduler.GetCurrentEpisode(),
+		EpisodeTaskCount:    cacheQLScheduler.GetEpisodeTaskCount(),
+		EpisodeStartTime:    cacheQLScheduler.GetEpisodeStartTime(),
+		ExplorationRate:     cacheQLScheduler.GetExplorationRate(),
+		IsLearning:          cacheQLScheduler.IsLearning(),
+		RewardWeights:       storageRewardWeights,
+		TotalQUpdates:       ms.calculateCacheTotalQUpdates(cacheQL),
+		AverageQValue:       ms.calculateCacheAverageQValue(cacheQL),
+		QTableSize:          len(cacheQL),
+		LastUpdateTimestamp: time.Now(),
+	}
+
+	logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Cache agent state extracted: Episode=%d, QTableSize=%d, ExplorationRate=%.3f",
+		cacheModelData.CurrentEpisode, cacheModelData.QTableSize, cacheModelData.ExplorationRate)
+
+	// Save to separate cache model file
+	return ms.saveCacheModelToFile(cacheModelData)
+}
+
+// saveCacheModelToFile saves cache model data to cache_model.json
+func (ms *ModelStorage) saveCacheModelToFile(cacheData *CacheQLearningModelData) error {
+	// Create directory structure
+	modelDir := filepath.Join(ms.config.ModelsPath, ms.config.ModelName)
+	logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Creating cache model directory: %s", modelDir)
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		logger.GetLogger().Errorf("[CACHE-MODEL-SAVE] Failed to create cache model directory: %v", err)
+		return fmt.Errorf("failed to create cache model directory: %w", err)
+	}
+	logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Cache model directory ready: %s", modelDir)
+
+	// Backups disabled - save directly
+	cachePath := ms.getCacheModelPath()
+	if _, err := os.Stat(cachePath); err == nil {
+		logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Existing cache model found at %s, overwriting (backups disabled)", cachePath)
+	} else {
+		logger.GetLogger().Infof("[CACHE-MODEL-SAVE] No existing cache model at %s, saving new cache model", cachePath)
+	}
+
+	// Marshal cache model data with pretty formatting
+	data, err := json.MarshalIndent(cacheData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal cache RL model: %w", err)
+	}
+
+	// Write to temporary file first, then rename (atomic operation)
+	tempPath := cachePath + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write temp cache RL model file: %w", err)
+	}
+
+	if err := os.Rename(tempPath, cachePath); err != nil {
+		os.Remove(tempPath) // Cleanup temp file
+		return fmt.Errorf("failed to rename temp cache RL model file: %w", err)
+	}
+
+	logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Cache RL model saved successfully to: %s", cachePath)
+	logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Cache model details: Episodes=%d, Q-table size=%d, ExplorationRate=%.3f, IsLearning=%v, Size=%d bytes",
+		cacheData.CurrentEpisode,
+		cacheData.QTableSize,
+		cacheData.ExplorationRate,
+		cacheData.IsLearning,
+		len(data))
+
+	return nil
+}
+
+func (ms *ModelStorage) createCacheBackup(cachePath string) error {
+	backupDir := filepath.Join(ms.config.ModelsPath, ms.config.ModelName, "backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return err
+	}
+
+	timestamp := time.Now().Format("20060102_150405")
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("cache_model_%s.json", timestamp))
+
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(backupPath, data, 0644)
+}
+
+// LoadCacheAgent loads Cache Q-learning agent state from separate cache_model.json file
+func (ms *ModelStorage) LoadCacheAgent(cacheAgent *rl.CacheAgent) error {
+	if cacheAgent == nil || !cacheAgent.IsEnabled() {
+		logger.GetLogger().Info("[CACHE-MODEL-LOAD] Cache agent is nil or disabled, skipping load")
+		return nil
+	}
+
+	logger.GetLogger().Info("[CACHE-MODEL-LOAD] Starting cache agent state load...")
+
+	// Check if cache model file exists
+	cachePath := ms.getCacheModelPath()
+	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+		logger.GetLogger().Infof("[CACHE-MODEL-LOAD] No existing cache model found at %s, starting with fresh cache agent", cachePath)
+		return nil
+	}
+
+	// Read cache model file
+	logger.GetLogger().Infof("[CACHE-MODEL-LOAD] Loading cache model from: %s", cachePath)
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		logger.GetLogger().Errorf("[CACHE-MODEL-LOAD] Failed to read cache model file: %v", err)
+		return fmt.Errorf("failed to read cache model file: %w", err)
+	}
+
+	// Unmarshal cache model data
+	var cacheData CacheQLearningModelData
+	if err := json.Unmarshal(data, &cacheData); err != nil {
+		logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Failed to parse cache model, starting fresh: %v", err)
+		return nil // Don't fail, just start fresh
+	}
+
+	logger.GetLogger().Infof("[CACHE-MODEL-LOAD] Cache model loaded: Episode=%d, QTableSize=%d, ExplorationRate=%.3f",
+		cacheData.CurrentEpisode, cacheData.QTableSize, cacheData.ExplorationRate)
+
+	// Validate cache Q-table is not empty
+	if cacheData.QTableSize == 0 || len(cacheData.QTable) == 0 {
+		logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Cache Q-table is empty (size=%d), starting fresh", cacheData.QTableSize)
+		return nil // Don't fail, just start fresh
+	}
+
+	// Validate minimum learning threshold
+	if cacheData.QTableSize < 3 {
+		logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Cache Q-table too small (size=%d), starting fresh", cacheData.QTableSize)
+		return nil
+	}
+
+	// Get Q-learning scheduler from cache agent
+	cacheQLScheduler := cacheAgent.GetQLearningScheduler()
+	if cacheQLScheduler == nil {
+		logger.GetLogger().Warn("[CACHE-MODEL-LOAD] Cache Q-learning scheduler is nil, cannot restore state")
+		return nil
+	}
+
+	// Restore state using setter methods
+	cacheQLScheduler.SetCurrentEpisode(cacheData.CurrentEpisode)
+	cacheQLScheduler.SetEpisodeTaskCount(cacheData.EpisodeTaskCount)
+	cacheQLScheduler.SetEpisodeStartTime(cacheData.EpisodeStartTime)
+	cacheQLScheduler.SetExplorationRate(cacheData.ExplorationRate)
+	cacheQLScheduler.SetLearning(cacheData.IsLearning)
+	
+	// Restore reward weights
+	restoredRewardWeights := rl.CacheRewardWeights{
+		CacheHit:     cacheData.RewardWeights.CacheHit,
+		CacheMiss:    cacheData.RewardWeights.CacheMiss,
+		Storage:      cacheData.RewardWeights.Storage,
+		Invalidation: cacheData.RewardWeights.Invalidation,
+	}
+	cacheQLScheduler.SetRewardWeights(restoredRewardWeights)
+	
+	// Restore Q-table with validation and debug logging
+	logger.GetLogger().Infof("[CACHE-MODEL-LOAD] Converting Q-table from string format: %d states", len(cacheData.QTable))
+	restoredQTable := ms.convertCacheQTableFromStringFormat(cacheData.QTable)
+	
+	// Validate Q-table conversion
+	totalActions := 0
+	actionCacheCount := 0
+	actionDeleteCount := 0
+	invalidActionCount := 0
+	for stateKey, actions := range restoredQTable {
+		for actionType, qValue := range actions {
+			totalActions++
+			if actionType == rl.ActionCache {
+				actionCacheCount++
+			} else if actionType == rl.ActionDelete {
+				actionDeleteCount++
+			} else {
+				invalidActionCount++
+				logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Invalid action type in Q-table: state=%s, actionType=%d, qValue=%.3f",
+					stateKey, actionType, qValue)
+			}
+		}
+	}
+	
+	logger.GetLogger().Infof("[CACHE-MODEL-LOAD] Q-table conversion validated: TotalActions=%d, ActionCache=%d, ActionDelete=%d, Invalid=%d",
+		totalActions, actionCacheCount, actionDeleteCount, invalidActionCount)
+	
+	if invalidActionCount > 0 {
+		logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Found %d invalid action types in Q-table - these will be ignored", invalidActionCount)
+	}
+	
+	// Set Q-table
+	cacheQLScheduler.SetQTable(restoredQTable)
+	
+	// Verify Q-table was set correctly
+	verifyQTable := cacheQLScheduler.GetQTable()
+	logger.GetLogger().Infof("[CACHE-MODEL-LOAD] Q-table verification: Restored states=%d, Verified states=%d",
+		len(restoredQTable), len(verifyQTable))
+	
+	if len(restoredQTable) != len(verifyQTable) {
+		logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Q-table size mismatch after restore: expected=%d, actual=%d",
+			len(restoredQTable), len(verifyQTable))
+	}
+
+	logger.GetLogger().Info("[CACHE-MODEL-LOAD] Cache agent state restored successfully",
+		"episode", cacheData.CurrentEpisode,
+		"q_table_states", len(cacheData.QTable),
+		"q_table_actions", totalActions,
+		"action_cache_count", actionCacheCount,
+		"action_delete_count", actionDeleteCount,
+		"exploration_rate", cacheData.ExplorationRate,
+		"is_learning", cacheData.IsLearning)
+
+	return nil
 }
 
 // Helper method to calculate total Q-updates from Q-table
@@ -788,14 +1218,58 @@ func (ms *ModelStorage) calculateAverageQValue(qTable map[string]map[rl.ActionTy
 // Helper method to convert Q-table format for saving (ActionType to string)
 func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.ActionType]float64) map[string]map[string]float64 {
 	stringQTable := make(map[string]map[string]float64)
+	
+	actionCounts := make(map[rl.ActionType]int)
+	invalidActionCount := 0
+	validActionTypes := map[rl.ActionType]bool{
+		rl.ActionNone:                true,
+		rl.ActionScheduleNext:         true,
+		rl.ActionReorder:              true,
+		rl.ActionDelay:               true,
+		rl.ActionPriorityBoost:        true,
+		rl.ActionPromoteHighPriority:  true,
+		rl.ActionPromoteShortJobs:     true,
+		rl.ActionBalancedScheduling:   true,
+		rl.ActionDeadlineAware:        true,
+		rl.ActionResourceOptimized:   true,
+	}
 
 	for stateKey, actions := range qTable {
 		stringQTable[stateKey] = make(map[string]float64)
 
 		for actionType, qValue := range actions {
+			// Validate action type before conversion
+			if !validActionTypes[actionType] {
+				invalidActionCount++
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Invalid action type in Q-table during save: state=%s, actionType=%d, qValue=%.3f - skipping",
+					stateKey, actionType, qValue)
+				continue // Skip invalid actions
+			}
+			
 			actionStr := ms.actionTypeToString(actionType)
 			stringQTable[stateKey][actionStr] = qValue
+			actionCounts[actionType]++
 		}
+	}
+	
+	if invalidActionCount > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Found %d invalid action types in Q-table during save - these were skipped", invalidActionCount)
+	}
+	
+	// Log action distribution
+	actionSummary := ""
+	for actionType, count := range actionCounts {
+		if count > 0 {
+			actionName := ms.actionTypeToString(actionType)
+			if actionSummary != "" {
+				actionSummary += ", "
+			}
+			actionSummary += fmt.Sprintf("%s=%d", actionName, count)
+		}
+	}
+	
+	if actionSummary != "" {
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion: %s, Invalid=%d", actionSummary, invalidActionCount)
 	}
 
 	return stringQTable
@@ -804,14 +1278,60 @@ func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.Act
 // Helper method to convert Q-table format for loading (string to ActionType)
 func (ms *ModelStorage) convertQTableFromStringFormat(savedQTable map[string]map[string]float64) map[string]map[rl.ActionType]float64 {
 	qTable := make(map[string]map[rl.ActionType]float64)
+	
+	actionCounts := make(map[rl.ActionType]int)
+	invalidStringCount := 0
+	validActionTypes := map[rl.ActionType]bool{
+		rl.ActionNone:                true,
+		rl.ActionScheduleNext:         true,
+		rl.ActionReorder:              true,
+		rl.ActionDelay:               true,
+		rl.ActionPriorityBoost:        true,
+		rl.ActionPromoteHighPriority:  true,
+		rl.ActionPromoteShortJobs:     true,
+		rl.ActionBalancedScheduling:   true,
+		rl.ActionDeadlineAware:        true,
+		rl.ActionResourceOptimized:   true,
+	}
 
 	for stateKey, actions := range savedQTable {
 		qTable[stateKey] = make(map[rl.ActionType]float64)
 
 		for actionStr, qValue := range actions {
 			actionType := ms.stringToActionType(actionStr)
+			
+			// Validate conversion result
+			if !validActionTypes[actionType] {
+				invalidStringCount++
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Invalid action string in saved Q-table: state=%s, actionStr=%s, qValue=%.3f - converted to ActionNone",
+					stateKey, actionStr, qValue)
+				// Default to ActionNone for invalid strings
+				actionType = rl.ActionNone
+			}
+			
 			qTable[stateKey][actionType] = qValue
+			actionCounts[actionType]++
 		}
+	}
+	
+	if invalidStringCount > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Found %d invalid action strings in saved Q-table - converted to ActionNone", invalidStringCount)
+	}
+	
+	// Log action distribution
+	actionSummary := ""
+	for actionType, count := range actionCounts {
+		if count > 0 {
+			actionName := ms.actionTypeToString(actionType)
+			if actionSummary != "" {
+				actionSummary += ", "
+			}
+			actionSummary += fmt.Sprintf("%s=%d", actionName, count)
+		}
+	}
+	
+	if actionSummary != "" {
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Q-table conversion from string: %s, Invalid=%d", actionSummary, invalidStringCount)
 	}
 
 	return qTable
@@ -871,6 +1391,150 @@ func (ms *ModelStorage) stringToActionType(actionStr string) rl.ActionType {
 	default:
 		return rl.ActionNone
 	}
+}
+
+// Helper method to convert Cache ActionType to string
+func (ms *ModelStorage) cacheActionTypeToString(actionType rl.ActionType) string {
+	switch actionType {
+	case rl.ActionCache:
+		return "cache"
+	case rl.ActionDelete:
+		return "delete"
+	default:
+		return "delete"
+	}
+}
+
+// Helper method to convert string to Cache ActionType
+func (ms *ModelStorage) stringToCacheActionType(actionStr string) rl.ActionType {
+	switch actionStr {
+	case "cache":
+		return rl.ActionCache
+	case "delete":
+		return rl.ActionDelete
+	default:
+		return rl.ActionDelete
+	}
+}
+
+// Helper method to convert Cache Q-table format for saving (ActionType to string)
+func (ms *ModelStorage) convertCacheQTableToStringFormat(qTable map[string]map[rl.ActionType]float64) map[string]map[string]float64 {
+	stringQTable := make(map[string]map[string]float64)
+	
+	actionCacheCount := 0
+	actionDeleteCount := 0
+	invalidActionCount := 0
+
+	for stateKey, actions := range qTable {
+		stringQTable[stateKey] = make(map[string]float64)
+
+		for actionType, qValue := range actions {
+			// Validate action type before conversion
+			if actionType != rl.ActionCache && actionType != rl.ActionDelete {
+				invalidActionCount++
+				logger.GetLogger().Warnf("[CACHE-MODEL-SAVE] Invalid action type in Q-table during save: state=%s, actionType=%d, qValue=%.3f - skipping",
+					stateKey, actionType, qValue)
+				continue // Skip invalid actions
+			}
+			
+			actionStr := ms.cacheActionTypeToString(actionType)
+			stringQTable[stateKey][actionStr] = qValue
+			
+			if actionType == rl.ActionCache {
+				actionCacheCount++
+			} else if actionType == rl.ActionDelete {
+				actionDeleteCount++
+			}
+		}
+	}
+	
+	if invalidActionCount > 0 {
+		logger.GetLogger().Warnf("[CACHE-MODEL-SAVE] Found %d invalid action types in Q-table during save - these were skipped", invalidActionCount)
+	}
+	
+	logger.GetLogger().Infof("[CACHE-MODEL-SAVE] Q-table conversion: ActionCache=%d, ActionDelete=%d, Invalid=%d",
+		actionCacheCount, actionDeleteCount, invalidActionCount)
+
+	return stringQTable
+}
+
+// Helper method to convert Cache Q-table format for loading (string to ActionType)
+func (ms *ModelStorage) convertCacheQTableFromStringFormat(savedQTable map[string]map[string]float64) map[string]map[rl.ActionType]float64 {
+	qTable := make(map[string]map[rl.ActionType]float64)
+	
+	actionCacheCount := 0
+	actionDeleteCount := 0
+	invalidStringCount := 0
+
+	for stateKey, actions := range savedQTable {
+		qTable[stateKey] = make(map[rl.ActionType]float64)
+
+		for actionStr, qValue := range actions {
+			actionType := ms.stringToCacheActionType(actionStr)
+			
+			// Validate conversion result
+			if actionType != rl.ActionCache && actionType != rl.ActionDelete {
+				invalidStringCount++
+				logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Invalid action string in saved Q-table: state=%s, actionStr=%s, qValue=%.3f - converted to ActionDelete",
+					stateKey, actionStr, qValue)
+				// Default to ActionDelete for invalid strings
+				actionType = rl.ActionDelete
+			}
+			
+			qTable[stateKey][actionType] = qValue
+			
+			if actionType == rl.ActionCache {
+				actionCacheCount++
+			} else if actionType == rl.ActionDelete {
+				actionDeleteCount++
+			}
+		}
+	}
+	
+	if invalidStringCount > 0 {
+		logger.GetLogger().Warnf("[CACHE-MODEL-LOAD] Found %d invalid action strings in saved Q-table - converted to ActionDelete", invalidStringCount)
+	}
+	
+	logger.GetLogger().Infof("[CACHE-MODEL-LOAD] Q-table conversion from string: ActionCache=%d, ActionDelete=%d, Invalid=%d",
+		actionCacheCount, actionDeleteCount, invalidStringCount)
+
+	return qTable
+}
+
+// Helper method to calculate total Q-updates from Cache Q-table
+func (ms *ModelStorage) calculateCacheTotalQUpdates(qTable map[string]map[rl.ActionType]float64) int64 {
+	var totalUpdates int64 = 0
+	for _, actions := range qTable {
+		for _, qValue := range actions {
+			if qValue != 0.0 {
+				totalUpdates++
+			}
+		}
+	}
+	return totalUpdates
+}
+
+// Helper method to calculate average Q-value from Cache Q-table
+func (ms *ModelStorage) calculateCacheAverageQValue(qTable map[string]map[rl.ActionType]float64) float64 {
+	if len(qTable) == 0 {
+		return 0.0
+	}
+
+	totalValue := 0.0
+	count := 0
+
+	for _, actions := range qTable {
+		for _, qValue := range actions {
+			totalValue += qValue
+			count++
+		}
+	}
+
+	if count == 0 {
+		return 0.0
+	}
+
+	return totalValue / float64(count)
 }
 
 // Helper method to validate loaded Q-learning state
@@ -970,38 +1634,62 @@ func (ms *ModelStorage) IsQLearningAgentSaved() bool {
 
 // saveToFile saves the current model to file
 func (ms *ModelStorage) saveToFile() error {
+	// Use getCurrentModelPath() to get the correct path (with new structure)
+	storagePath := ms.getCurrentModelPath()
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Entry - storagePath=%s", storagePath)
+	
 	if ms.currentModel == nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR - currentModel is nil")
 		return fmt.Errorf("no model data to save")
 	}
 
 	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(ms.storagePath), 0755); err != nil {
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Creating directory if needed: %s", filepath.Dir(storagePath))
+	if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR - failed to create directory: %v", err)
 		return fmt.Errorf("failed to create storage directory: %w", err)
 	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Directory created/verified successfully")
+
+	// Check Q-table size before marshaling
+	qTableSize := 0
+	if ms.currentModel.QLearningData != nil && ms.currentModel.QLearningData.QTable != nil {
+		qTableSize = len(ms.currentModel.QLearningData.QTable)
+	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Q-table size in model: %d states", qTableSize)
 
 	// Marshal model data to JSON
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Marshaling model data to JSON...")
 	data, err := json.MarshalIndent(ms.currentModel, "", "  ")
 	if err != nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR - failed to marshal: %v", err)
 		return fmt.Errorf("failed to marshal model data: %w", err)
 	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: JSON marshaling complete: %d bytes", len(data))
 
 	// Write to file
-	if err := os.WriteFile(ms.storagePath, data, 0644); err != nil {
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Writing to file: %s", storagePath)
+	if err := os.WriteFile(storagePath, data, 0644); err != nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR - failed to write file: %v", err)
 		return fmt.Errorf("failed to write model file: %w", err)
 	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: File written successfully: %s (%d bytes)", storagePath, len(data))
 
 	return nil
 }
 
 // loadFromFile loads model data from file
 func (ms *ModelStorage) loadFromFile() error {
+	// Use getCurrentModelPath() to get the correct path (with new structure)
+	storagePath := ms.getCurrentModelPath()
+	
 	// Check if file exists
-	if _, err := os.Stat(ms.storagePath); os.IsNotExist(err) {
-		return fmt.Errorf("model file does not exist: %s", ms.storagePath)
+	if _, err := os.Stat(storagePath); os.IsNotExist(err) {
+		return fmt.Errorf("model file does not exist: %s", storagePath)
 	}
 
 	// Read file
-	data, err := os.ReadFile(ms.storagePath)
+	data, err := os.ReadFile(storagePath)
 	if err != nil {
 		return fmt.Errorf("failed to read model file: %w", err)
 	}
@@ -1333,9 +2021,15 @@ func (ms *ModelStorage) SaveModel(algorithmManager *rl.AlgorithmManager) error {
 	// Save Q-Learning state
 	currentAlg := algorithmManager.GetCurrentAlgorithm()
 	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveModel: Calling SaveQLearningAgent (Q-table size: %d)",
+			len(qlAlg.GetQTable()))
 		if err := ms.SaveQLearningAgent(qlAlg); err != nil {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModel: Failed to save Q-Learning state: %v", err)
 			return fmt.Errorf("failed to save Q-Learning state: %w", err)
 		}
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveModel: SaveQLearningAgent completed successfully")
+	} else {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModel: Current algorithm is not QLearningScheduler (type: %T)", currentAlg)
 	}
 
 	// Save Algorithm Manager state
@@ -1361,6 +2055,18 @@ func (ms *ModelStorage) LoadModel(algorithmManager *rl.AlgorithmManager) error {
 	if err := ms.loadFromFile(); err != nil {
 		return fmt.Errorf("failed to load model from file: %w", err)
 	}
+
+	// Validate loaded model before proceeding
+	logger.GetLogger().Infof("[MODEL-LOAD] Validating loaded model...")
+	if !ms.isValidModel(ms.currentModel) {
+		logger.GetLogger().Warnf("[MODEL-LOAD] Loaded model is invalid (empty Q-table or no training), starting fresh")
+		logger.GetLogger().Info("[MODEL-LOAD] Creating fresh default model instead of loading invalid data")
+		ms.currentModel = ms.createDefaultModel()
+		ms.dirty = true
+		return nil // Don't load invalid data - return success (fresh start)
+	}
+
+	logger.GetLogger().Info("[MODEL-LOAD] Model validation passed, proceeding with load")
 
 	if err := ms.validateConfigurationCompatibility(ms.currentModel); err != nil {
 		return fmt.Errorf("configuration compatibility validation failed: %w", err)
@@ -1409,6 +2115,51 @@ func (ms *ModelStorage) LoadModel(algorithmManager *rl.AlgorithmManager) error {
 }
 
 // ============= STEP 6.5: CONFIGURATION COMPATIBILITY VALIDATION =============
+
+// isValidModel checks if a loaded model is valid for use
+func (ms *ModelStorage) isValidModel(modelData *ModelData) bool {
+	logger.GetLogger().Debugf("[MODEL-VALIDATION] Starting model validation...")
+
+	// Check 1: Model must exist
+	if modelData == nil {
+		logger.GetLogger().Warnf("[MODEL-VALIDATION] Model is nil")
+		return false
+	}
+
+	// Check 2: For Q-learning, Q-table must have entries
+	if modelData.QLearningData != nil {
+		qTableSize := modelData.QLearningData.QTableSize
+		qTableLen := len(modelData.QLearningData.QTable)
+
+		logger.GetLogger().Debugf("[MODEL-VALIDATION] Q-learning data found: QTableSize=%d, QTableLen=%d", qTableSize, qTableLen)
+
+		if qTableSize == 0 || qTableLen == 0 {
+			logger.GetLogger().Warnf("[MODEL-VALIDATION] Model has empty Q-table (size=%d, len=%d), treating as invalid", qTableSize, qTableLen)
+			return false
+		}
+
+		// Check 3: Q-table should have at least some minimum entries (e.g., 5 states)
+		if qTableSize < 5 {
+			logger.GetLogger().Warnf("[MODEL-VALIDATION] Model Q-table too small (size=%d < 5), treating as invalid", qTableSize)
+			return false
+		}
+
+		logger.GetLogger().Debugf("[MODEL-VALIDATION] Q-table size check passed: %d states", qTableSize)
+	}
+
+	// Check 4: Model metadata should indicate some learning occurred
+	trainingEps := modelData.Metadata.TrainingEps
+	totalReward := modelData.Metadata.TotalReward
+	logger.GetLogger().Debugf("[MODEL-VALIDATION] Training metadata: Episodes=%d, TotalReward=%.3f", trainingEps, totalReward)
+
+	if trainingEps == 0 && totalReward == 0 {
+		logger.GetLogger().Warnf("[MODEL-VALIDATION] Model has no training episodes or rewards, treating as invalid")
+		return false
+	}
+
+	logger.GetLogger().Infof("[MODEL-VALIDATION] Model validation passed: Q-table has data, training occurred")
+	return true
+}
 
 // validateConfigurationCompatibility validates that saved config is compatible with current config
 func (ms *ModelStorage) validateConfigurationCompatibility(savedModel *ModelData) error {
