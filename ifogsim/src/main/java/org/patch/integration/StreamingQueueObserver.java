@@ -4,6 +4,7 @@ import org.patch.client.SchedulerClient;
 import org.patch.models.ScheduledQueue;
 import org.patch.proto.IfogsimScheduler.*;
 import org.patch.proto.IfogsimCommon.*;
+import org.patch.proto.IfogsimCommon.CacheAction;
 import org.fog.entities.Tuple;
 import org.cloudbus.cloudsim.core.CloudSim;
 import org.patch.utils.TupleFactory;
@@ -54,6 +55,10 @@ public class StreamingQueueObserver {
 
     // Reference to RLFogDevice for event scheduling (will be set by RLFogDevice)
     private org.cloudbus.cloudsim.core.SimEntity deviceEntity;
+
+    // Reference to TaskExecutionEngine for checking active tasks (will be set by
+    // RLFogDevice)
+    private org.patch.processing.TaskExecutionEngine taskExecutionEngine;
 
     /**
      * Constructor
@@ -109,6 +114,15 @@ public class StreamingQueueObserver {
      */
     public void setDeviceEntity(org.cloudbus.cloudsim.core.SimEntity deviceEntity) {
         this.deviceEntity = deviceEntity;
+    }
+
+    /**
+     * Set the TaskExecutionEngine for checking active tasks
+     * 
+     * @param taskExecutionEngine The TaskExecutionEngine instance
+     */
+    public void setTaskExecutionEngine(org.patch.processing.TaskExecutionEngine taskExecutionEngine) {
+        this.taskExecutionEngine = taskExecutionEngine;
     }
 
     /**
@@ -510,10 +524,25 @@ public class StreamingQueueObserver {
             int addedCount = 0;
             int skippedCount = 0;
             for (Task task : response.getQueueTasksList()) {
+
                 // Convert proto task to internal format
                 ScheduledQueue.TaskInfo taskInfo = convertTaskToTaskInfo(task);
 
                 if (taskInfo != null) {
+                    // CRITICAL: Check if this cloudletId is already being processed
+                    // This prevents re-adding tasks that are already executing
+                    // (same cloudletId from server because task hasn't completed yet)
+                    long cloudletId = taskInfo.getTuple().getCloudletId();
+                    if (taskExecutionEngine != null && taskExecutionEngine.isCloudletIdActive(cloudletId)) {
+                        skippedCount++;
+                        System.out.println(String.format(
+                                "[FLOW-FOG-SCHEDULED-QUEUE-SKIP] Time: %.2f - FogNode (ID:%d) - SKIPPING task %s (cloudletId=%d) - already executing",
+                                CloudSim.clock(), deviceId, taskInfo.getTaskId(), cloudletId));
+                        logger.fine("Skipping task " + taskInfo.getTaskId() + " (cloudletId=" + cloudletId
+                                + ") - already in activeTasks");
+                        continue; // Skip this task - it's already being processed
+                    }
+
                     scheduledQueue.addTask(taskInfo);
                     addedCount++;
 
@@ -529,6 +558,10 @@ public class StreamingQueueObserver {
                             CloudSim.clock(), deviceId, task.getTaskId()));
                 }
             }
+
+            // Note: Two-stage removal is no longer needed
+            // Tasks are removed from activeTasks immediately when ACK confirms success
+            // This is handled in handleTupleComplete() and handleCachedTask()
 
             logger.fine("Updated scheduled queue with " + response.getQueueTasksCount() +
                     " tasks for device: " + deviceId);
@@ -581,6 +614,7 @@ public class StreamingQueueObserver {
             // Extract cache information from Task metadata
             boolean isCached = false;
             String cacheKey = "";
+            CacheAction cacheAction = CacheAction.CACHE_ACTION_NONE; // Default to NONE
 
             if (task.getMetadataMap() != null) {
                 String isCachedStr = task.getMetadataMap().get("is_cached");
@@ -588,16 +622,45 @@ public class StreamingQueueObserver {
                     isCached = true;
                 }
                 cacheKey = task.getMetadataMap().getOrDefault("cache_key", "");
+
+                // Extract cache action from metadata
+                String cacheActionStr = task.getMetadataMap().getOrDefault("cache_action", "CACHE_ACTION_NONE");
+                try {
+                    // Convert string to CacheAction enum
+                    cacheAction = CacheAction.valueOf(cacheActionStr);
+                } catch (IllegalArgumentException e) {
+                    // Fallback: try to parse common values
+                    if (cacheActionStr.contains("STORE")) {
+                        cacheAction = CacheAction.CACHE_ACTION_STORE;
+                    } else if (cacheActionStr.contains("USE")) {
+                        cacheAction = CacheAction.CACHE_ACTION_USE;
+                    } else if (cacheActionStr.contains("INVALIDATE")) {
+                        cacheAction = CacheAction.CACHE_ACTION_INVALIDATE;
+                    } else {
+                        cacheAction = CacheAction.CACHE_ACTION_NONE;
+                    }
+                    logger.warning("Failed to parse cache_action: " + cacheActionStr + ", using: " + cacheAction);
+                }
+
+                // [DEBUG] Log all metadata for cache debugging
+                System.out.println(String.format(
+                        "[FLOW-QUEUE-OBSERVER-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s cache metadata: is_cached=%s, cache_key=%s, cache_action=%s (metadata size=%d)",
+                        CloudSim.clock(), deviceId, task.getTaskId(), isCachedStr != null ? isCachedStr : "null",
+                        cacheKey.isEmpty() ? "NONE" : cacheKey, cacheAction, task.getMetadataMap().size()));
+            } else {
+                System.out.println(String.format(
+                        "[FLOW-QUEUE-OBSERVER-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s has NO metadata map",
+                        CloudSim.clock(), deviceId, task.getTaskId()));
             }
 
             // [DEBUG] Log cache info extraction
             if (isCached) {
                 System.out.println(String.format(
-                        "[FLOW-QUEUE-OBSERVER] Time: %.2f - FogNode (ID:%d) - Task %s has cache info: isCached=true, cacheKey=%s",
-                        CloudSim.clock(), deviceId, task.getTaskId(), cacheKey));
+                        "[FLOW-QUEUE-OBSERVER] Time: %.2f - FogNode (ID:%d) - Task %s has cache info: isCached=true, cacheKey=%s, cacheAction=%s",
+                        CloudSim.clock(), deviceId, task.getTaskId(), cacheKey, cacheAction));
             }
 
-            // Create TaskInfo with cache information from metadata
+            // Create TaskInfo with cache information from metadata (including cacheAction)
             return new ScheduledQueue.TaskInfo(
                     tuple,
                     0, // moduleId - will be set by tuple processing
@@ -606,7 +669,9 @@ public class StreamingQueueObserver {
                     (long) (CloudSim.clock() + task.getExecutionTime()), // estimatedCompletionTime - use simulation
                                                                          // time
                     isCached, // isCached - from metadata
-                    cacheKey // cacheKey - from metadata
+                    cacheKey, // cacheKey - from metadata
+                    task.getTaskId(), // ✅ Use scheduler-assigned TaskId (reused pattern ID)
+                    cacheAction // ✅ NEW: Cache action from metadata
             );
 
         } catch (Exception e) {
