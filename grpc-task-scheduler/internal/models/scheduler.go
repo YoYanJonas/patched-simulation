@@ -258,6 +258,33 @@ func (se *SchedulerEngine) resortQueue() {
 		// [DEBUG] RL sorting complete
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESORT-SORT-RL-DONE] RL sorting complete: %d tasks", len(sortedTasks))
 		logger.GetLogger().Debugf("Queue resorted using RL algorithm with multi-objective: %d tasks", len(sortedTasks))
+		
+		// Log task order change to verify resorting is working
+		if len(taskIdsBefore) > 0 && len(sortedTasks) > 0 {
+			taskIdsAfter := make([]string, 0, len(sortedTasks))
+			for _, task := range sortedTasks {
+				taskIdsAfter = append(taskIdsAfter, task.GetTaskID())
+			}
+			// Check if order changed
+			orderChanged := false
+			if len(taskIdsBefore) == len(taskIdsAfter) {
+				for i := 0; i < len(taskIdsBefore); i++ {
+					if taskIdsBefore[i] != taskIdsAfter[i] {
+						orderChanged = true
+						break
+					}
+				}
+			} else {
+				orderChanged = true
+			}
+			if orderChanged {
+				logger.GetLogger().Infof("[SCHEDULER-RESORT-ORDER-CHANGE] Task order changed by RL: Before=%v, After=%v",
+					taskIdsBefore, taskIdsAfter)
+			} else {
+				logger.GetLogger().Debugf("[SCHEDULER-RESORT-ORDER-SAME] Task order unchanged (RL may have kept same order): %v",
+					taskIdsBefore)
+			}
+		}
 	} else {
 		// [DEBUG] Using traditional sorting
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESORT-SORT-TRAD] Using traditional algorithm sorting")
@@ -545,21 +572,28 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	// [DEBUG] Check for duplicates
 	// Check if task is already scheduled (prevent duplicates)
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-CHECK] Checking for duplicate task %s", task.TaskId)
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-LOCK-BEFORE] About to acquire RLock for duplicate check")
-	se.mu.RLock()
-	// [DEBUG] Lock acquired
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-LOCK-ACQUIRED] RLock acquired for duplicate check")
-	if _, exists := se.scheduledTasks[task.TaskId]; exists {
-		// [DEBUG] Duplicate found
-		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-FOUND] Task %s already exists in scheduledTasks", task.TaskId)
-		se.mu.RUnlock()
-		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("task %s already scheduled", task.TaskId)
+	// Extract cloudletId from metadata (unique per tuple instance)
+	// CRITICAL: Never fall back to TaskId - cloudletId is required for unique instance tracking
+	cloudletId := ""
+	if task.Metadata != nil {
+		if cid, ok := task.Metadata["cloudlet_id"]; ok && cid != "" {
+			cloudletId = cid  // ✅ Use cloudletId from metadata
+			logger.GetLogger().Infof("[SCHEDULER-CLOUDLET-ID] Extracted cloudletId=%s from metadata (TaskId=%s)", cloudletId, task.TaskId)
+			// [DEBUG-LOG] Log key extraction for ACK failure investigation
+			logger.GetLogger().Errorf("[DEBUG-KEY-EXTRACTION] AddTaskToQueueWithCache: TaskId=%s, cloudletId extracted from metadata=%s, TaskId==cloudletId? %t", 
+				task.TaskId, cloudletId, task.TaskId == cloudletId)
+		} else {
+			// CRITICAL: cloudlet_id metadata is required - do NOT fall back to TaskId
+			logger.GetLogger().Errorf("[CRITICAL-ERROR] AddTaskToQueueWithCache: TaskId=%s, cloudlet_id NOT in metadata - REQUIRED for tracking unique instances", task.TaskId)
+			return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("cloudlet_id metadata is required for task %s (missing metadata prevents unique instance tracking)", task.TaskId)
+		}
+	} else {
+		// CRITICAL: metadata is nil - do NOT fall back to TaskId
+		logger.GetLogger().Errorf("[CRITICAL-ERROR] AddTaskToQueueWithCache: TaskId=%s, metadata is nil - REQUIRED for tracking unique instances", task.TaskId)
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("task metadata is required for task %s (missing cloudlet_id prevents unique instance tracking)", task.TaskId)
 	}
-	// [DEBUG] No duplicate
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-NOT-FOUND] Task %s not found in scheduledTasks, proceeding", task.TaskId)
-	se.mu.RUnlock()
-	// [DEBUG] Lock released
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-LOCK-RELEASED] RLock released after duplicate check")
+
+	// Note: Duplicate check will be done later when we acquire the write lock
 
 	// Step 1: Generate pattern fingerprint (for RL state) and cache key (unique identifier)
 	logger.GetLogger().Infof("[SCHEDULER-FLOW-DEBUG] Task %s: Step 1 - Generating fingerprint and cache key", task.TaskId)
@@ -587,6 +621,12 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	cacheExists := false
 	cacheExpired := false
 	cacheAgeCategory := "none"
+	
+	// Extract local_cache_exists from proto field (fog node's cache status)
+	fogCacheExists := task.LocalCacheExists
+	if fogCacheExists {
+		logger.GetLogger().Infof("[SCHEDULER-FLOW-DEBUG] Task %s: Fog node reports local_cache_exists=true", task.TaskId)
+	}
 
 	if se.cacheManager != nil && se.cacheManager.config.Enabled {
 		// Look up cache entry using cache key (TaskId), not fingerprint
@@ -675,11 +715,12 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 		rlAction = se.cacheAgent.SelectAction(extractedState)
 		logger.GetLogger().Infof("[SCHEDULER-FLOW-DEBUG] Task %s: Cache agent selected action: Type=%d", task.TaskId, rlAction.Type)
 
-		// Map RL action to proto CacheAction (with expired handling)
+		// Map RL action to proto CacheAction (with expired handling and fog node cache consideration)
 		cacheAction = rl.MapCacheActionToProto(
 			rlAction,
 			cacheExists && !cacheExpired,
 			cacheExpired,
+			fogCacheExists, // Pass fog node's cache status
 		)
 
 		// Determine isCached
@@ -756,16 +797,31 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-ENQUEUE-AFTER] TaskID=%s enqueued successfully (queue size: %d -> %d)", 
 		task.TaskId, queueSizeBeforeEnqueue, queueSizeAfterEnqueue)
 
-	// [DEBUG] About to add to scheduledTasks map
-	// Track scheduled task for delayed rewards
+	// [DEBUG] About to add to scheduledTasks map and update statistics
+	// Track scheduled task for delayed rewards and update statistics in a single lock acquisition
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-BEFORE] About to add TaskID=%s to scheduledTasks map", task.TaskId)
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-BEFORE] About to acquire write lock for scheduledTasks")
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-BEFORE] About to acquire write lock for scheduledTasks and statistics")
 	se.mu.Lock()
 	// [DEBUG] Lock acquired
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-ACQUIRED] Write lock acquired for scheduledTasks")
-	se.scheduledTasks[task.TaskId] = taskEntry
+	
+	// Check for duplicate (now that we have the lock)
+	if _, exists := se.scheduledTasks[cloudletId]; exists {  // ✅ Check using cloudletId
+		// [DEBUG] Duplicate found
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-FOUND] Task %s (cloudletId=%s) already exists in scheduledTasks", task.TaskId, cloudletId)
+		se.mu.Unlock()
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("task %s (cloudletId=%s) already scheduled", task.TaskId, cloudletId)
+	}
+	
+	// Add to scheduledTasks and update statistics in the same lock
+	se.scheduledTasks[cloudletId] = taskEntry  // ✅ Store using cloudletId (unique)
+	se.totalTasksProcessed++
+	totalProcessed := se.totalTasksProcessed
 	// [DEBUG] Added to scheduledTasks
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-ADDED] TaskID=%s added to scheduledTasks map (size: %d)", task.TaskId, len(se.scheduledTasks))
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-ADDED] TaskID=%s (cloudletId=%s) added to scheduledTasks map (size: %d)", task.TaskId, cloudletId, len(se.scheduledTasks))
+			// [DEBUG-LOG] Log exact key used for storage
+			logger.GetLogger().Errorf("[DEBUG-KEY-STORAGE] AddTaskToQueueWithCache: Storing task in scheduledTasks with key='%s' (TaskId='%s', cloudletId='%s', keysMatch=%t)", 
+				cloudletId, task.TaskId, cloudletId, task.TaskId == cloudletId)
 	se.mu.Unlock()
 	// [DEBUG] Lock released
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-RELEASED] Write lock released for scheduledTasks")
@@ -786,12 +842,6 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 				task.TaskId, cacheAction.String(), cacheKey)
 		}
 	}
-
-	// Update statistics
-	se.mu.Lock()
-	se.totalTasksProcessed++
-	totalProcessed := se.totalTasksProcessed
-	se.mu.Unlock()
 	
 	// [DEBUG] Log final result
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-TASK-ENQUEUED] Task %s enqueued successfully: Position=%d, WaitTime=%dms, Cached=%t, TotalProcessed=%d",
@@ -947,12 +997,42 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	se.mu.Lock()
 	defer se.mu.Unlock()
 
+	// [DEBUG-LOG] Log lookup key and all available keys for ACK failure investigation
+	logger.GetLogger().Errorf("[DEBUG-KEY-LOOKUP] ProcessTaskCompletion: Looking up task with req.TaskId='%s'", req.TaskId)
+	allKeys := make([]string, 0, len(se.scheduledTasks))
+	for key := range se.scheduledTasks {
+		allKeys = append(allKeys, key)
+	}
+	logger.GetLogger().Errorf("[DEBUG-KEY-LOOKUP] ProcessTaskCompletion: scheduledTasks map contains %d keys: %v", len(allKeys), allKeys)
+
 	// Find the task in scheduled tasks (for delayed rewards)
 	task, exists := se.scheduledTasks[req.TaskId]
 	if !exists {
-		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-ERROR] Task %s not found in scheduled tasks", req.TaskId)
-		return fmt.Errorf("task %s not found in scheduled tasks", req.TaskId)
+		// Fallback: Try to find task by cloudletId from stored task metadata
+		logger.GetLogger().Errorf("[DEBUG-KEY-LOOKUP] ProcessTaskCompletion: Primary lookup failed for req.TaskId='%s', trying fallback lookup", req.TaskId)
+		found := false
+		for key, storedTask := range se.scheduledTasks {
+			if storedTask.Task.Metadata != nil {
+				if cid, ok := storedTask.Task.Metadata["cloudlet_id"]; ok && cid == req.TaskId {
+					// Found by cloudletId in metadata
+					logger.GetLogger().Errorf("[DEBUG-KEY-LOOKUP] ProcessTaskCompletion: Fallback lookup SUCCESS - found task with key='%s' matching cloudletId='%s'", key, req.TaskId)
+					task = storedTask
+					exists = true
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-ERROR] Task %s not found in scheduled tasks", req.TaskId)
+			// [DEBUG-LOG] Log lookup failure details
+			logger.GetLogger().Errorf("[DEBUG-KEY-LOOKUP] ProcessTaskCompletion: LOOKUP FAILED - req.TaskId='%s' not found in scheduledTasks. Available keys: %v", 
+				req.TaskId, allKeys)
+			return fmt.Errorf("task %s not found in scheduled tasks", req.TaskId)
+		}
 	}
+	// [DEBUG-LOG] Log successful lookup
+	logger.GetLogger().Errorf("[DEBUG-KEY-LOOKUP] ProcessTaskCompletion: LOOKUP SUCCESS - req.TaskId='%s' found in scheduledTasks", req.TaskId)
 
 	// Derive success from completion report
 	success := se.deriveTaskSuccess(req)
@@ -978,13 +1058,52 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 		se.totalExecutionTime += actualDuration
 	}
 
+	// Extract node status from completion report
+	var nodeStatus *pb.FogNode
+	if req.NodeStatus != nil {
+		nodeStatus = req.NodeStatus
+		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-NODE-STATUS] Task=%s, Node=%s, CPU=%.2f%%, Memory=%d MB",
+			req.TaskId, nodeStatus.NodeId,
+			float64(nodeStatus.CurrentUsage.CpuUsage),
+			nodeStatus.CurrentUsage.MemoryUsageMb)
+	} else {
+		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-NO-NODE-STATUS] Task=%s has no node status in completion report", req.TaskId)
+	}
+
+	// Get actual current queue length (before task is removed from scheduled tasks)
+	// This is the accurate queue length at completion time
+	currentQueueLength := se.queue.Size()
+	logger.GetLogger().Infof("[SCHEDULER-COMPLETION-QUEUE-LENGTH] Task=%s, CurrentQueueLength=%d", req.TaskId, currentQueueLength)
+
 	// **KEY PART: Delegate to Agent for RL experience handling** (before deleting from map)
+	fmt.Printf("[DEBUG] [SCHEDULER-COMPLETE-AGENT-CHECK] Agent check: agent=%t, enabled=%t, TaskID=%s\n", 
+		se.agent != nil, se.agent != nil && se.agent.IsEnabled(), req.TaskId)
+	logger.GetLogger().Infof("[SCHEDULER-COMPLETE-AGENT-CHECK] Agent check: agent=%t, enabled=%t, TaskID=%s", 
+		se.agent != nil, se.agent != nil && se.agent.IsEnabled(), req.TaskId)
+	
 	if se.agent != nil && se.agent.IsEnabled() {
 		// The Agent should handle experience collection through AlgorithmManager
-		if err := se.reportTaskCompletionToAgent(task, req); err != nil {
+		// Pass actual queue length for accurate next state calculation
+		fmt.Printf("[DEBUG] [SCHEDULER-COMPLETE-AGENT-CALL] Calling reportTaskCompletionToAgent: TaskID=%s, QueueLength=%d\n", 
+			req.TaskId, currentQueueLength)
+		logger.GetLogger().Infof("[SCHEDULER-COMPLETE-AGENT-CALL] Calling reportTaskCompletionToAgent: TaskID=%s, QueueLength=%d", 
+			req.TaskId, currentQueueLength)
+		
+		if err := se.reportTaskCompletionToAgent(task, req, nodeStatus, currentQueueLength); err != nil {
 			// Log error but don't fail the whole operation
-			fmt.Printf("Warning: Failed to report completion to RL agent: %v\n", err)
+			fmt.Printf("[DEBUG] [SCHEDULER-COMPLETE-AGENT-ERROR] Failed to report completion to RL agent: TaskID=%s, Error=%v\n", 
+				req.TaskId, err)
+			logger.GetLogger().Warnf("[SCHEDULER-COMPLETE-AGENT-ERROR] Failed to report completion to RL agent: TaskID=%s, Error=%v", 
+				req.TaskId, err)
+		} else {
+			fmt.Printf("[DEBUG] [SCHEDULER-COMPLETE-AGENT-SUCCESS] Successfully reported to RL agent: TaskID=%s\n", req.TaskId)
+			logger.GetLogger().Infof("[SCHEDULER-COMPLETE-AGENT-SUCCESS] Successfully reported to RL agent: TaskID=%s", req.TaskId)
 		}
+	} else {
+		fmt.Printf("[DEBUG] [SCHEDULER-COMPLETE-AGENT-SKIP] Skipping agent report: agent=%t, enabled=%t, TaskID=%s\n", 
+			se.agent != nil, se.agent != nil && se.agent.IsEnabled(), req.TaskId)
+		logger.GetLogger().Warnf("[SCHEDULER-COMPLETE-AGENT-SKIP] Skipping agent report: agent=%t, enabled=%t, TaskID=%s", 
+			se.agent != nil, se.agent != nil && se.agent.IsEnabled(), req.TaskId)
 	}
 
 	// **NEW: Process cache agent delayed reward** (before deleting from map)
@@ -1000,10 +1119,26 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	}
 
 	// **CRITICAL: Remove from scheduled tasks to prevent duplicate scheduling** (after processing rewards)
+	// [DEBUG-LOG] Log removal key
+	logger.GetLogger().Errorf("[DEBUG-KEY-REMOVAL] ProcessTaskCompletion: Removing from scheduledTasks with key='%s'", req.TaskId)
 	delete(se.scheduledTasks, req.TaskId)
 	
-	logger.GetLogger().Infof("[SCHEDULER-COMPLETION-DONE] Task %s completion processed successfully (RemainingScheduled=%d)",
-		req.TaskId, len(se.scheduledTasks))
+	// **CRITICAL: Remove from queue to prevent re-sending completed tasks**
+	// This ensures GetSortedQueue() only returns uncompleted tasks
+	// [DEBUG-LOG] Log queue removal key
+	logger.GetLogger().Errorf("[DEBUG-KEY-REMOVAL] ProcessTaskCompletion: Removing from queue with key='%s'", req.TaskId)
+	removedTask := se.queue.Remove(req.TaskId)
+	if removedTask != nil {
+		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-QUEUE-REMOVED] Task %s removed from queue (queue size: %d -> %d)",
+			req.TaskId, se.queue.Size()+1, se.queue.Size())
+	} else {
+		// Task might have been removed already or was never in queue (e.g., cached task)
+		logger.GetLogger().Debugf("[SCHEDULER-COMPLETION-QUEUE-NOT-FOUND] Task %s not found in queue (may have been removed already or was cached)",
+			req.TaskId)
+	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-COMPLETION-DONE] Task %s completion processed successfully (RemainingScheduled=%d, QueueSize=%d)",
+		req.TaskId, len(se.scheduledTasks), se.queue.Size())
 
 	return nil
 }
@@ -1052,13 +1187,30 @@ func (se *SchedulerEngine) deriveActualExecutionTime(req *pb.TaskCompletionRepor
 }
 
 // reportTaskCompletionToAgent sends completion data to the RL agent
-func (se *SchedulerEngine) reportTaskCompletionToAgent(task *TaskEntry, req *pb.TaskCompletionReport) error {
+func (se *SchedulerEngine) reportTaskCompletionToAgent(task *TaskEntry, req *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
+	fmt.Printf("[DEBUG] [SCHEDULER-REPORT-AGENT-ENTRY] reportTaskCompletionToAgent called: TaskID=%s, QueueLength=%d, HasNodeStatus=%t\n", 
+		req.TaskId, queueLength, nodeStatus != nil)
+	logger.GetLogger().Infof("[SCHEDULER-REPORT-AGENT-ENTRY] reportTaskCompletionToAgent: TaskID=%s, QueueLength=%d, HasNodeStatus=%t", 
+		req.TaskId, queueLength, nodeStatus != nil)
+	
 	if se.agent == nil || !se.agent.IsEnabled() {
+		fmt.Printf("[DEBUG] [SCHEDULER-REPORT-AGENT-SKIP] Agent not enabled: TaskID=%s\n", req.TaskId)
 		return nil // Agent not enabled or initialized
 	}
 
-	// Pass nodeManager to the agent for proper integration
-	return se.agent.ProcessTaskCompletionWithNodeManager(task, req, se.nodeManager)
+	// Pass node status and actual queue length from completion report to the agent
+	fmt.Printf("[DEBUG] [SCHEDULER-REPORT-AGENT-CALL] Calling agent.ProcessTaskCompletionWithNodeStatus: TaskID=%s\n", req.TaskId)
+	err := se.agent.ProcessTaskCompletionWithNodeStatus(task, req, nodeStatus, queueLength)
+	if err != nil {
+		fmt.Printf("[DEBUG] [SCHEDULER-REPORT-AGENT-ERROR] Agent.ProcessTaskCompletionWithNodeStatus failed: TaskID=%s, Error=%v\n", 
+			req.TaskId, err)
+		logger.GetLogger().Errorf("[SCHEDULER-REPORT-AGENT-ERROR] Agent.ProcessTaskCompletionWithNodeStatus failed: TaskID=%s, Error=%v", 
+			req.TaskId, err)
+	} else {
+		fmt.Printf("[DEBUG] [SCHEDULER-REPORT-AGENT-SUCCESS] Agent.ProcessTaskCompletionWithNodeStatus succeeded: TaskID=%s\n", req.TaskId)
+		logger.GetLogger().Infof("[SCHEDULER-REPORT-AGENT-SUCCESS] Agent.ProcessTaskCompletionWithNodeStatus succeeded: TaskID=%s", req.TaskId)
+	}
+	return err
 }
 
 // reportTaskCompletionToCacheAgent processes completion for cache agent delayed reward
@@ -1178,8 +1330,16 @@ func (se *SchedulerEngine) GetAgent() *rl.Agent {
 	return se.agent
 }
 
+// GetCacheAgent returns the cache RL agent
+func (se *SchedulerEngine) GetCacheAgent() *rl.CacheAgent {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.cacheAgent
+}
+
 // GetSortedQueue returns the current sorted queue as proto tasks
 // CRITICAL: Resorts queue on-demand before returning to ensure fresh, sorted order
+// FIX: Simplified lock acquisition to prevent deadlocks - use single write lock for all operations
 func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQueueResponse {
 	// [DEBUG] Entry point for GetSortedQueue
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-START] GetSortedQueue called (on-demand resorting, queue size before resort=%d)", 
@@ -1194,17 +1354,17 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 	// [DEBUG] ResortQueue completed
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-AFTER] resortQueue() completed, queue size after resort: %d", se.queue.Size())
 	
-	// [DEBUG] About to acquire read lock
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-BEFORE] About to acquire RLock")
-	se.mu.RLock()
-	// [DEBUG] Read lock acquired
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-ACQUIRED] RLock acquired successfully")
+	// FIX: Acquire write lock ONCE for all operations (prevents deadlock from multiple lock acquisitions)
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-BEFORE] About to acquire write lock (Lock)")
+	se.mu.Lock()
+	// [DEBUG] Write lock acquired
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-ACQUIRED] Write lock acquired successfully")
 	defer func() {
-		// [DEBUG] About to release read lock
-		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-RELEASE] Releasing RLock")
-		se.mu.RUnlock()
-		// [DEBUG] Read lock released
-		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-RELEASED] RLock released")
+		// [DEBUG] About to release write lock
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-RELEASE] Releasing write lock")
+		se.mu.Unlock()
+		// [DEBUG] Write lock released
+		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-RELEASED] Write lock released")
 	}()
 
 	// [DEBUG] About to get all tasks from queue
@@ -1249,10 +1409,60 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 		}
 	}
 	
+	// CRITICAL FIX (Issue 1): Add tasks to scheduledTasks if not already present
+	// This ensures tasks sent via GetSortedQueue are tracked for completion reports
+	// NOTE: We're already holding the write lock, so we can safely modify scheduledTasks
+	tasksAddedToScheduled := 0
+	for _, taskEntry := range allTasks {
+		// Extract cloudletId from metadata (same as AddTaskToQueueWithCache)
+		// CRITICAL: Never fall back to TaskId - cloudletId is required for unique instance tracking
+		cloudletId := ""
+		if taskEntry.Task.Metadata != nil {
+			if cid, ok := taskEntry.Task.Metadata["cloudlet_id"]; ok && cid != "" {
+				cloudletId = cid
+				// [DEBUG-LOG] Log key extraction for ACK failure investigation
+				logger.GetLogger().Errorf("[DEBUG-KEY-EXTRACTION] GetSortedQueue: TaskId=%s, cloudletId extracted from metadata=%s, TaskId==cloudletId? %t", 
+					taskEntry.Task.TaskId, cloudletId, taskEntry.Task.TaskId == cloudletId)
+			} else {
+				// CRITICAL: cloudlet_id metadata is required - do NOT fall back to TaskId
+				logger.GetLogger().Errorf("[CRITICAL-ERROR] GetSortedQueue: TaskId=%s, cloudlet_id NOT in metadata - SKIPPING scheduledTasks tracking (required for unique instance tracking)", taskEntry.Task.TaskId)
+				continue // Skip this task - cannot track without cloudletId
+			}
+		} else {
+			// CRITICAL: metadata is nil - do NOT fall back to TaskId
+			logger.GetLogger().Errorf("[CRITICAL-ERROR] GetSortedQueue: TaskId=%s, metadata is nil - SKIPPING scheduledTasks tracking (required for unique instance tracking)", taskEntry.Task.TaskId)
+			continue // Skip this task - cannot track without cloudletId
+		}
+		
+		// Check if task is already in scheduledTasks
+		if _, exists := se.scheduledTasks[cloudletId]; !exists {
+			// Add to scheduledTasks using cloudletId as key (unique)
+			se.scheduledTasks[cloudletId] = taskEntry
+			tasksAddedToScheduled++
+			logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-SCHEDULED] Added task to scheduledTasks: cloudletId=%s, TaskID=%s (scheduledTasks size: %d)",
+				cloudletId, taskEntry.Task.TaskId, len(se.scheduledTasks))
+			// [DEBUG-LOG] Log exact key used for storage
+			logger.GetLogger().Errorf("[DEBUG-KEY-STORAGE] GetSortedQueue: Storing task in scheduledTasks with key='%s' (TaskId='%s', cloudletId='%s', keysMatch=%t)", 
+				cloudletId, taskEntry.Task.TaskId, cloudletId, taskEntry.Task.TaskId == cloudletId)
+		} else {
+			logger.GetLogger().Debugf("[SCHEDULER-GET-QUEUE-SCHEDULED] Task already in scheduledTasks: cloudletId=%s, TaskID=%s",
+				cloudletId, taskEntry.Task.TaskId)
+			// [DEBUG-LOG] Log existing entry for ACK failure investigation
+			logger.GetLogger().Debugf("[DEBUG-KEY-STORAGE] GetSortedQueue: Task already exists in scheduledTasks with key='%s' (TaskId='%s')", 
+				cloudletId, taskEntry.Task.TaskId)
+		}
+	}
+	
+	if tasksAddedToScheduled > 0 {
+		logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-SCHEDULED] Added %d tasks to scheduledTasks (total scheduledTasks: %d)",
+			tasksAddedToScheduled, len(se.scheduledTasks))
+	}
+	
 	// [DEBUG] Starting proto conversion
 	// Convert to proto tasks WITH cache information in metadata
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-PROTO-START] Starting proto conversion for %d tasks", len(allTasks))
 	protoTasks := make([]*pb.Task, 0, len(allTasks))
+	
 	for i, taskEntry := range allTasks {
 		// [DEBUG] Converting each task
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-PROTO-TASK] Converting task %d/%d: TaskID=%s", i+1, len(allTasks), taskEntry.GetTaskID())
@@ -1323,9 +1533,11 @@ func (se *SchedulerEngine) taskEntryToProtoTaskWithCache(taskEntry *TaskEntry) *
 		CpuRequirement:  taskEntry.Task.CpuRequirement,
 		MemoryRequirement: taskEntry.Task.MemoryRequirement,
 		ExecutionTime:   taskEntry.Task.ExecutionTime,
+		OutputSize:      taskEntry.Task.OutputSize,      // ✅ Copy output_size from original task
 		Priority:        taskEntry.Task.Priority,
 		Deadline:        taskEntry.Task.Deadline,
 		Dependencies:    taskEntry.Task.Dependencies,
+		LocalCacheExists: taskEntry.Task.LocalCacheExists, // ✅ Copy local_cache_exists from original task
 	}
 	// [DEBUG] Task struct created
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-PROTO-CONVERT-CREATE-DONE] Proto Task struct created: TaskID=%s, Type=%s, CPU=%d",
@@ -1378,14 +1590,64 @@ func (se *SchedulerEngine) GetQueueUpdateResponse(updateReason string, includeMe
 	se.resortQueue() // This will lock internally and apply algorithm/RL policy
 	logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-AFTER-RESORT] Queue size after resort: %d", se.queue.Size())
 	
-	se.mu.RLock()
-	defer se.mu.RUnlock()
-
-	// Get all tasks from queue (now freshly resorted)
+	// Get all tasks from queue (now freshly resorted) - no lock needed for queue.GetAll()
 	allTasks := se.queue.GetAll()
 	
 	logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-UPDATE-RETRIEVE] Retrieved %d tasks from queue for streaming update (reason=%s)",
 		len(allTasks), updateReason)
+	
+	// FIX: Acquire write lock ONCE for all operations (prevents deadlock from multiple lock acquisitions)
+	se.mu.Lock()
+	defer se.mu.Unlock()
+	
+	// CRITICAL FIX (Issue 1): Add tasks to scheduledTasks if not already present
+	// This ensures tasks sent via GetQueueUpdateResponse (streaming) are tracked for completion reports
+	// NOTE: We're already holding the write lock, so we can safely modify scheduledTasks
+	tasksAddedToScheduled := 0
+	for _, taskEntry := range allTasks {
+		// Extract cloudletId from metadata (same as AddTaskToQueueWithCache and GetSortedQueue)
+		// CRITICAL: Never fall back to TaskId - cloudletId is required for unique instance tracking
+		cloudletId := ""
+		if taskEntry.Task.Metadata != nil {
+			if cid, ok := taskEntry.Task.Metadata["cloudlet_id"]; ok && cid != "" {
+				cloudletId = cid
+				// [DEBUG-LOG] Log key extraction for ACK failure investigation
+				logger.GetLogger().Errorf("[DEBUG-KEY-EXTRACTION] GetQueueUpdateResponse: TaskId=%s, cloudletId extracted from metadata=%s, TaskId==cloudletId? %t", 
+					taskEntry.Task.TaskId, cloudletId, taskEntry.Task.TaskId == cloudletId)
+			} else {
+				// CRITICAL: cloudlet_id metadata is required - do NOT fall back to TaskId
+				logger.GetLogger().Errorf("[CRITICAL-ERROR] GetQueueUpdateResponse: TaskId=%s, cloudlet_id NOT in metadata - SKIPPING scheduledTasks tracking (required for unique instance tracking)", taskEntry.Task.TaskId)
+				continue // Skip this task - cannot track without cloudletId
+			}
+		} else {
+			// CRITICAL: metadata is nil - do NOT fall back to TaskId
+			logger.GetLogger().Errorf("[CRITICAL-ERROR] GetQueueUpdateResponse: TaskId=%s, metadata is nil - SKIPPING scheduledTasks tracking (required for unique instance tracking)", taskEntry.Task.TaskId)
+			continue // Skip this task - cannot track without cloudletId
+		}
+		
+		// Check if task is already in scheduledTasks
+		if _, exists := se.scheduledTasks[cloudletId]; !exists {
+			// Add to scheduledTasks using cloudletId as key (unique)
+			se.scheduledTasks[cloudletId] = taskEntry
+			tasksAddedToScheduled++
+			logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-UPDATE-SCHEDULED] Added task to scheduledTasks: cloudletId=%s, TaskID=%s (scheduledTasks size: %d)",
+				cloudletId, taskEntry.Task.TaskId, len(se.scheduledTasks))
+			// [DEBUG-LOG] Log exact key used for storage
+			logger.GetLogger().Errorf("[DEBUG-KEY-STORAGE] GetQueueUpdateResponse: Storing task in scheduledTasks with key='%s' (TaskId='%s', cloudletId='%s', keysMatch=%t)", 
+				cloudletId, taskEntry.Task.TaskId, cloudletId, taskEntry.Task.TaskId == cloudletId)
+		} else {
+			logger.GetLogger().Debugf("[SCHEDULER-GET-QUEUE-UPDATE-SCHEDULED] Task already in scheduledTasks: cloudletId=%s, TaskID=%s",
+				cloudletId, taskEntry.Task.TaskId)
+			// [DEBUG-LOG] Log existing entry for ACK failure investigation
+			logger.GetLogger().Debugf("[DEBUG-KEY-STORAGE] GetQueueUpdateResponse: Task already exists in scheduledTasks with key='%s' (TaskId='%s')", 
+				cloudletId, taskEntry.Task.TaskId)
+		}
+	}
+	
+	if tasksAddedToScheduled > 0 {
+		logger.GetLogger().Infof("[SCHEDULER-GET-QUEUE-UPDATE-SCHEDULED] Added %d tasks to scheduledTasks (total scheduledTasks: %d)",
+			tasksAddedToScheduled, len(se.scheduledTasks))
+	}
 	
 	// Convert to proto tasks WITH cache information in metadata
 	protoTasks := make([]*pb.Task, 0, len(allTasks))
