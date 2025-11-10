@@ -1,6 +1,7 @@
 package org.patch.models;
 
 import org.fog.entities.Tuple;
+import org.patch.proto.IfogsimCommon.CacheAction;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
@@ -188,33 +189,36 @@ public class ScheduledQueue {
         private final long estimatedCompletionTime;
         private final boolean isCachedTask;
         private final String cacheKey;
+        private final CacheAction cacheAction;  // NEW: Cache action from scheduler
 
         public TaskInfo(Tuple tuple, int moduleId, String assignedNodeId,
                 long estimatedStartTime, long estimatedCompletionTime,
-                boolean isCachedTask, String cacheKey) {
+                boolean isCachedTask, String cacheKey, String taskId, CacheAction cacheAction) {  // ✅ NEW: cacheAction parameter
             this.tuple = tuple;
             this.moduleId = moduleId;
             this.entryTime = System.currentTimeMillis();
-            this.taskId = String.valueOf(tuple.getCloudletId());
+            this.taskId = taskId;  // ✅ Use provided taskId (scheduler-assigned, can be reused)
             this.assignedNodeId = assignedNodeId;
             this.estimatedStartTime = estimatedStartTime;
             this.estimatedCompletionTime = estimatedCompletionTime;
             this.isCachedTask = isCachedTask;
             this.cacheKey = cacheKey;
+            this.cacheAction = cacheAction != null ? cacheAction : CacheAction.CACHE_ACTION_NONE;  // Default to NONE if null
         }
 
         public TaskInfo(Tuple tuple, int moduleId, double simulationTime, String assignedNodeId,
                 long estimatedStartTime, long estimatedCompletionTime,
-                boolean isCachedTask, String cacheKey) {
+                boolean isCachedTask, String cacheKey, String taskId, CacheAction cacheAction) {  // ✅ NEW: cacheAction parameter
             this.tuple = tuple;
             this.moduleId = moduleId;
             this.entryTime = simulationTime;
-            this.taskId = String.valueOf(tuple.getCloudletId());
+            this.taskId = taskId;  // ✅ Use provided taskId (scheduler-assigned, can be reused)
             this.assignedNodeId = assignedNodeId;
             this.estimatedStartTime = estimatedStartTime;
             this.estimatedCompletionTime = estimatedCompletionTime;
             this.isCachedTask = isCachedTask;
             this.cacheKey = cacheKey;
+            this.cacheAction = cacheAction != null ? cacheAction : CacheAction.CACHE_ACTION_NONE;  // Default to NONE if null
         }
 
         public Tuple getTuple() {
@@ -251,6 +255,10 @@ public class ScheduledQueue {
 
         public String getCacheKey() {
             return cacheKey;
+        }
+
+        public CacheAction getCacheAction() {
+            return cacheAction;
         }
     }
 }
