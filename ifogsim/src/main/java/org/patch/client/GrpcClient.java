@@ -473,13 +473,13 @@ public class GrpcClient implements AutoCloseable {
     }
 
     /**
-     * Gracefully shuts down the channel (FIX: Phase 3)
+     * Gracefully shuts down the channel ()
      * Uses dedicated shutdown timeout and force shutdown if needed
      */
     public void shutdown() {
         if (channel != null && !channel.isShutdown()) {
             try {
-                // Use dedicated shutdown timeout (FIX: Phase 3)
+                // Use dedicated shutdown timeout ()
                 long shutdownTimeout = config.getShutdownTimeout();
                 TimeUnit timeoutUnit = config.getShutdownTimeoutUnit();
                 
@@ -488,15 +488,20 @@ public class GrpcClient implements AutoCloseable {
                 
                 if (!terminated) {
                     logger.warning("Channel did not terminate gracefully, forcing shutdown");
-                    // Force shutdown (FIX: Phase 3)
+                    // Force shutdown - this interrupts all worker threads
                     channel.shutdownNow();
-                    terminated = channel.awaitTermination(5, TimeUnit.SECONDS);
+                    // Wait longer for force shutdown (worker threads need time to respond to interrupt)
+                    terminated = channel.awaitTermination(15, TimeUnit.SECONDS);
                     
                     if (!terminated) {
-                        logger.severe("Channel failed to terminate even after force shutdown");
+                        logger.warning("Channel still not terminated after force shutdown, but continuing cleanup");
+                        // Note: Some threads may still be alive, but they're daemon threads
+                        // and will be terminated when JVM exits via System.exit()
                     } else {
                         logger.info("Channel terminated after force shutdown");
                     }
+                } else {
+                    logger.info("Channel terminated gracefully");
                 }
                 
                 isConnected = false;
@@ -504,9 +509,15 @@ public class GrpcClient implements AutoCloseable {
             } catch (InterruptedException e) {
                 logger.log(Level.SEVERE, "Channel shutdown interrupted", e);
                 Thread.currentThread().interrupt();
-                // Force shutdown on interruption (FIX: Phase 3)
+                // Force shutdown on interruption
                 if (channel != null && !channel.isShutdown()) {
                     channel.shutdownNow();
+                    try {
+                        // Give it a moment to terminate
+                        channel.awaitTermination(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
             }
         }

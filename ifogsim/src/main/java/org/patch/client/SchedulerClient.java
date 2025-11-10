@@ -8,6 +8,10 @@ import org.patch.proto.IfogsimCommon.*;
 import org.patch.config.EnhancedConfigurationLoader;
 import org.patch.utils.LoggingConfig;
 import org.patch.utils.StructuredLogger;
+import org.patch.utils.NetworkLatencyConverter;
+import org.patch.utils.NetworkEnergyCostCalculator;
+import org.patch.models.PendingSchedulingRequest;
+import org.cloudbus.cloudsim.core.CloudSim;
 
 import java.util.List;
 import java.util.Map;
@@ -86,6 +90,9 @@ public class SchedulerClient implements AutoCloseable {
     // Enhanced logging
     private final StructuredLogger structuredLogger;
     private final LoggingConfig loggingConfig;
+    
+    // Async client for event-based operations
+    private AsyncSchedulerClient asyncClient;
 
     /**
      * Constructor using base GrpcClient
@@ -98,6 +105,9 @@ public class SchedulerClient implements AutoCloseable {
         // Initialize enhanced logging
         this.loggingConfig = LoggingConfig.getInstance();
         this.structuredLogger = loggingConfig.createLoggerWithCorrelation(SchedulerClient.class);
+        
+        // Initialize async client for event-based operations ()
+        this.asyncClient = new AsyncSchedulerClient(this);
     }
 
     /**
@@ -212,7 +222,7 @@ public class SchedulerClient implements AutoCloseable {
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
             long duration = System.currentTimeMillis() - startTime;
 
-            // Record latency in statistics manager (FIX: Phase 1)
+            // Record latency in statistics manager
             org.patch.utils.RLStatisticsManager.getInstance().addSchedulingLatency(duration);
             // Record scheduling decision time for throughput calculation
             org.patch.utils.RLStatisticsManager.getInstance().recordSchedulingDecision();
@@ -254,7 +264,7 @@ public class SchedulerClient implements AutoCloseable {
         } catch (StatusRuntimeException e) {
             long duration = System.currentTimeMillis() - startTime;
 
-            // Record latency even for error cases (FIX: Phase 1)
+            // Record latency even for error cases ()
             org.patch.utils.RLStatisticsManager.getInstance().addSchedulingLatency(duration);
             // Record scheduling decision time for throughput calculation
             org.patch.utils.RLStatisticsManager.getInstance().recordSchedulingDecision();
@@ -564,8 +574,123 @@ public class SchedulerClient implements AutoCloseable {
         return baseClient.isConnected();
     }
 
+    // ===== EVENT-BASED ASYNC METHODS =====
+    
+    /**
+     * Event-based async version of addTaskToQueue.
+     * Makes async gRPC call, converts latency to simulation time, calculates energy/cost,
+     * and schedules a CloudSim event for the response.
+     * 
+     * @param task Task to schedule
+     * @param availableNodes Available fog nodes
+     * @param policy Scheduling policy
+     * @param queueContext Optional queue context
+     * @param deviceId Device ID for event scheduling
+     * @return PendingSchedulingRequest for tracking the async operation
+     */
+    public PendingSchedulingRequest addTaskToQueueAsync(
+            Task task,
+            List<FogNode> availableNodes,
+            SchedulingPolicy policy,
+            QueueContext queueContext,
+            int deviceId) {
+        // Record start time
+        long realStartTime = System.currentTimeMillis();
+        double simulationStartTime = CloudSim.clock();
+        
+        logger.info(String.format(
+            "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Starting async scheduling for task: %s (Device: %d)",
+            simulationStartTime, task.getTaskId(), deviceId));
+        
+        // Make async gRPC call
+        java.util.concurrent.CompletableFuture<AddTaskToQueueResponse> future;
+        if (queueContext != null) {
+            future = asyncClient.addTaskToQueueAsync(task, availableNodes, policy, queueContext);
+        } else {
+            future = asyncClient.addTaskToQueueAsync(task, availableNodes, policy);
+        }
+        
+        // Estimate message size (rough approximation)
+        long messageSizeBytes = estimateMessageSize(task, availableNodes, queueContext);
+        
+        // Estimate latency (we'll use actual latency when response arrives)
+        // For now, use a conservative estimate for energy/cost calculation
+        double estimatedSimulationLatency = NetworkLatencyConverter.convertToSimulationTime(50); // 50ms estimate
+        
+        // Calculate estimated energy and cost
+        double estimatedEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+            estimatedSimulationLatency, messageSizeBytes);
+        double estimatedCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+            estimatedSimulationLatency, messageSizeBytes);
+        
+        // Create pending request
+        PendingSchedulingRequest pending = new PendingSchedulingRequest(
+            task.getTaskId(), task, future, realStartTime, 
+            simulationStartTime, estimatedEnergy, estimatedCost);
+        
+        // Schedule timeout event
+        long timeoutMs = EnhancedConfigurationLoader.getSimulationConfigLong(
+            "simulation.network.latency.timeout-ms", 5000);
+        
+        logger.info(String.format(
+            "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Created pending request for task: %s (Est. Energy: %.6f J, Est. Cost: %.8f $, Timeout: %d ms)",
+            simulationStartTime, task.getTaskId(), estimatedEnergy, estimatedCost, timeoutMs));
+        double timeoutSimulationSec = NetworkLatencyConverter.convertToSimulationTime(timeoutMs);
+        CloudSim.send(deviceId, deviceId, timeoutSimulationSec, 
+            org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_TIMEOUT, pending);
+        
+        // When future completes, calculate actual latency and schedule event
+        future.whenComplete((response, throwable) -> {
+            long realLatency = System.currentTimeMillis() - realStartTime;
+            double simulationLatency = NetworkLatencyConverter.convertToSimulationTime(realLatency);
+            
+            // Error Handling - Check for exceptions
+            if (throwable != null) {
+                // Error occurred - schedule error event
+                logger.severe(String.format(
+                    "[GRPC-SCHEDULER-ASYNC] Error in async call for task: %s - %s",
+                    task.getTaskId(), throwable.getMessage()));
+                // Error will be handled in timeout handler or response handler
+                return;
+            }
+            
+            // Calculate actual energy and cost
+            double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+                simulationLatency, messageSizeBytes);
+            double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+                simulationLatency, messageSizeBytes);
+            
+            logger.info(String.format(
+                "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Scheduling response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
+                CloudSim.clock(), task.getTaskId(), realLatency, simulationLatency, actualEnergy, actualCost));
+            
+            // Schedule CloudSim event for response
+            CloudSim.send(deviceId, deviceId, simulationLatency, 
+                org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_RESPONSE, pending);
+        });
+        
+        return pending;
+    }
+    
+    /**
+     * Estimate message size for energy/cost calculation
+     */
+    private long estimateMessageSize(Task task, List<FogNode> availableNodes, QueueContext queueContext) {
+        // Rough estimation: task proto + nodes + policy + context
+        long size = 100; // Base overhead
+        size += task.getSerializedSize(); // Task size
+        size += availableNodes.size() * 50; // Per node overhead
+        if (queueContext != null) {
+            size += 20; // Queue context overhead
+        }
+        return size;
+    }
+    
     @Override
     public void close() {
+        if (asyncClient != null) {
+            asyncClient.shutdown();
+        }
         baseClient.close();
     }
 

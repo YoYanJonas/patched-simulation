@@ -21,8 +21,8 @@ public class GrpcClientConfig implements Serializable {
     private final boolean usePlaintext;
     private final long connectTimeout;
     private final TimeUnit connectTimeoutUnit;
-    private final long shutdownTimeout; // FIX: Phase 3 - dedicated shutdown timeout
-    private final TimeUnit shutdownTimeoutUnit; // FIX: Phase 3
+    private final long shutdownTimeout; // 
+    private final TimeUnit shutdownTimeoutUnit; // 
 
     // Retry mechanism settings
     private final int maxRetries;
@@ -60,8 +60,8 @@ public class GrpcClientConfig implements Serializable {
         this.keepAliveTimeout = builder.keepAliveTimeout;
         this.keepAliveWithoutCalls = builder.keepAliveWithoutCalls;
         this.loadBalancingConfig = builder.loadBalancingConfig;
-        this.shutdownTimeout = builder.shutdownTimeout; // FIX: Phase 3
-        this.shutdownTimeoutUnit = builder.shutdownTimeoutUnit; // FIX: Phase 3
+        this.shutdownTimeout = builder.shutdownTimeout; // 
+        this.shutdownTimeoutUnit = builder.shutdownTimeoutUnit; // 
     }
 
     /**
@@ -77,8 +77,8 @@ public class GrpcClientConfig implements Serializable {
         private boolean usePlaintext = false;
         private long connectTimeout = 10;
         private TimeUnit connectTimeoutUnit = TimeUnit.SECONDS;
-        private long shutdownTimeout = 10; // FIX: Phase 3 - default 10 seconds for shutdown
-        private TimeUnit shutdownTimeoutUnit = TimeUnit.SECONDS; // FIX: Phase 3
+        private long shutdownTimeout = 20; // Increased from 10 to 20 seconds for better thread cleanup
+        private TimeUnit shutdownTimeoutUnit = TimeUnit.SECONDS; // 
         private int maxRetries = 3;
         private long retryDelay = 1000;
         private long maxRetryDelay = 30000;
@@ -251,7 +251,7 @@ public class GrpcClientConfig implements Serializable {
         return connectTimeoutUnit;
     }
     
-    // FIX: Phase 3 - shutdown timeout getters
+    // 
     public long getShutdownTimeout() {
         return shutdownTimeout;
     }

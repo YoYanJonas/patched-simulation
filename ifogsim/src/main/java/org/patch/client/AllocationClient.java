@@ -5,6 +5,11 @@ import io.grpc.stub.StreamObserver;
 import org.patch.proto.FogAllocationServiceGrpc;
 import org.patch.proto.IfogsimAllocation.*;
 import org.patch.config.EnhancedConfigurationLoader;
+import org.patch.utils.NetworkLatencyConverter;
+import org.patch.utils.NetworkEnergyCostCalculator;
+import org.patch.models.PendingAllocationRequest;
+import org.patch.models.PendingOutcomeRequest;
+import org.cloudbus.cloudsim.core.CloudSim;
 
 import java.util.Map;
 import java.util.logging.Logger;
@@ -75,6 +80,9 @@ public class AllocationClient implements AutoCloseable {
     private final GrpcClient baseClient;
     private final FogAllocationServiceGrpc.FogAllocationServiceBlockingStub allocationStub;
     private final FogAllocationServiceGrpc.FogAllocationServiceStub asyncStub;
+    
+    // Async client for event-based operations ()
+    private AsyncAllocationClient asyncClient;
 
     /**
      * Constructor using base GrpcClient
@@ -83,6 +91,9 @@ public class AllocationClient implements AutoCloseable {
         this.baseClient = baseClient;
         this.allocationStub = FogAllocationServiceGrpc.newBlockingStub(baseClient.getChannel());
         this.asyncStub = FogAllocationServiceGrpc.newStub(baseClient.getChannel());
+        
+        // Initialize async client for event-based operations ()
+        this.asyncClient = new AsyncAllocationClient(this);
     }
 
     /**
@@ -390,8 +401,222 @@ public class AllocationClient implements AutoCloseable {
         return baseClient.isConnected();
     }
 
+    // ===== EVENT-BASED ASYNC METHODS () =====
+    
+    /**
+     * Event-based async version of allocateTask.
+     * Makes async gRPC call, converts latency to simulation time, calculates energy/cost,
+     * and schedules a CloudSim event for the response.
+     * 
+     * @param taskId Task identifier
+     * @param cpuRequirement CPU requirement
+     * @param memoryRequirement Memory requirement
+     * @param bandwidthRequirement Bandwidth requirement
+     * @param priority Task priority
+     * @param deadlineMs Deadline in milliseconds
+     * @param taskMetadata Task metadata
+     * @param deviceId Device ID for event scheduling
+     * @param tuple Tuple object (for state management - )
+     * @return PendingAllocationRequest for tracking the async operation
+     */
+    public PendingAllocationRequest allocateTaskAsync(
+            String taskId,
+            double cpuRequirement,
+            double memoryRequirement,
+            double bandwidthRequirement,
+            int priority,
+            long deadlineMs,
+            Map<String, String> taskMetadata,
+            int deviceId,
+            org.fog.entities.Tuple tuple) {
+        // Record start time
+        long realStartTime = System.currentTimeMillis();
+        double simulationStartTime = CloudSim.clock();
+        
+        // Make async gRPC call
+        java.util.concurrent.CompletableFuture<TaskAllocationResponse> future = 
+            asyncClient.allocateTaskAsync(taskId, cpuRequirement, memoryRequirement,
+                bandwidthRequirement, priority, deadlineMs, taskMetadata);
+        
+        // Estimate message size (rough approximation)
+        long messageSizeBytes = estimateAllocationMessageSize(taskId, cpuRequirement, 
+            memoryRequirement, taskMetadata);
+        
+        // Estimate latency (we'll use actual latency when response arrives)
+        double estimatedSimulationLatency = NetworkLatencyConverter.convertToSimulationTime(50); // 50ms estimate
+        
+        // Calculate estimated energy and cost
+        double estimatedEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+            estimatedSimulationLatency, messageSizeBytes);
+        double estimatedCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+            estimatedSimulationLatency, messageSizeBytes);
+        
+        // Create pending request with Tuple
+        PendingAllocationRequest pending = new PendingAllocationRequest(
+            taskId, tuple, future, realStartTime, 
+            simulationStartTime, estimatedEnergy, estimatedCost);
+        
+        // Schedule timeout event
+        long timeoutMs = EnhancedConfigurationLoader.getSimulationConfigLong(
+            "simulation.network.latency.timeout-ms", 5000);
+        double timeoutSimulationSec = NetworkLatencyConverter.convertToSimulationTime(timeoutMs);
+        CloudSim.send(deviceId, deviceId, timeoutSimulationSec, 
+            org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_TIMEOUT, pending);
+        
+        logger.info(String.format(
+            "[DEBUG-ASYNC-ALLOCATOR] Time: %.2f - Created pending allocation request for task: %s (Est. Energy: %.6f J, Est. Cost: %.8f $, Timeout: %d ms)",
+            simulationStartTime, taskId, estimatedEnergy, estimatedCost, timeoutMs));
+        
+        // When future completes, calculate actual latency and schedule event
+        future.whenComplete((response, throwable) -> {
+            long realLatency = System.currentTimeMillis() - realStartTime;
+            double simulationLatency = NetworkLatencyConverter.convertToSimulationTime(realLatency);
+            
+            // Error Handling - Check for exceptions
+            if (throwable != null) {
+                // Error occurred - schedule error event
+                logger.severe(String.format(
+                    "[GRPC-ALLOCATOR-ASYNC] Error in async call for task: %s - %s",
+                    taskId, throwable.getMessage()));
+                // Error will be handled in timeout handler or response handler
+                return;
+            }
+            
+            // Calculate actual energy and cost
+            double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+                simulationLatency, messageSizeBytes);
+            double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+                simulationLatency, messageSizeBytes);
+            
+            logger.info(String.format(
+                "[DEBUG-ASYNC-ALLOCATOR] Time: %.2f - Scheduling allocation response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
+                CloudSim.clock(), taskId, realLatency, simulationLatency, actualEnergy, actualCost));
+            
+            // Schedule CloudSim event for response
+            CloudSim.send(deviceId, deviceId, simulationLatency, 
+                org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_RESPONSE, pending);
+        });
+        
+        return pending;
+    }
+    
+    /**
+     * Event-based async version of reportTaskOutcome.
+     * Makes async gRPC call, converts latency to simulation time, calculates energy/cost,
+     * and schedules a CloudSim event for the response.
+     * 
+     * @param taskId Task identifier
+     * @param nodeId Node identifier
+     * @param completedSuccessfully Whether task completed successfully
+     * @param actualExecutionTimeMs Actual execution time
+     * @param actualCpuUsage Actual CPU usage
+     * @param actualMemoryUsage Actual memory usage
+     * @param errorMessage Error message if failed
+     * @param deviceId Device ID for event scheduling
+     * @return PendingOutcomeRequest for tracking the async operation
+     */
+    public PendingOutcomeRequest reportTaskOutcomeAsync(
+            String taskId,
+            String nodeId,
+            boolean completedSuccessfully,
+            long actualExecutionTimeMs,
+            double actualCpuUsage,
+            double actualMemoryUsage,
+            String errorMessage,
+            int deviceId) {
+        // Record start time
+        long realStartTime = System.currentTimeMillis();
+        double simulationStartTime = CloudSim.clock();
+        
+        // Make async gRPC call
+        java.util.concurrent.CompletableFuture<TaskOutcomeResponse> future = 
+            asyncClient.reportTaskOutcomeAsync(taskId, nodeId, completedSuccessfully,
+                actualExecutionTimeMs, actualCpuUsage, actualMemoryUsage, errorMessage);
+        
+        // Estimate message size
+        long messageSizeBytes = estimateOutcomeMessageSize(taskId, nodeId, errorMessage);
+        
+        // Estimate latency
+        double estimatedSimulationLatency = NetworkLatencyConverter.convertToSimulationTime(30); // 30ms estimate
+        
+        // Calculate estimated energy and cost
+        double estimatedEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+            estimatedSimulationLatency, messageSizeBytes);
+        double estimatedCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+            estimatedSimulationLatency, messageSizeBytes);
+        
+        // Create pending request
+        PendingOutcomeRequest pending = new PendingOutcomeRequest(
+            taskId, future, realStartTime, simulationStartTime, estimatedEnergy, estimatedCost);
+        
+        // 
+        long timeoutMs = EnhancedConfigurationLoader.getSimulationConfigLong(
+            "simulation.network.latency.timeout-ms", 5000);
+        double timeoutSimulationSec = NetworkLatencyConverter.convertToSimulationTime(timeoutMs);
+        CloudSim.send(deviceId, deviceId, timeoutSimulationSec, 
+            org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_TIMEOUT, pending);
+        
+        // When future completes, calculate actual latency and schedule event
+        future.whenComplete((response, throwable) -> {
+            long realLatency = System.currentTimeMillis() - realStartTime;
+            double simulationLatency = NetworkLatencyConverter.convertToSimulationTime(realLatency);
+            
+            // 
+            if (throwable != null) {
+                // Error occurred - log but don't fail (outcome reporting is best-effort)
+                logger.warning(String.format(
+                    "[GRPC-ALLOCATOR-OUTCOME-ASYNC] Error in async outcome call for task: %s - %s",
+                    taskId, throwable.getMessage()));
+                return;
+            }
+            
+            // Calculate actual energy and cost
+            double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+                simulationLatency, messageSizeBytes);
+            double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+                simulationLatency, messageSizeBytes);
+            
+            // Schedule CloudSim event for response
+            CloudSim.send(deviceId, deviceId, simulationLatency, 
+                org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_RESPONSE, pending);
+        });
+        
+        return pending;
+    }
+    
+    /**
+     * Estimate message size for allocation request
+     */
+    private long estimateAllocationMessageSize(String taskId, double cpuRequirement,
+            double memoryRequirement, Map<String, String> taskMetadata) {
+        long size = 100; // Base overhead
+        size += taskId.length() * 2; // Task ID (UTF-8)
+        size += 24; // CPU, memory, bandwidth (doubles)
+        size += 8; // Priority, deadline (int, long)
+        if (taskMetadata != null) {
+            size += taskMetadata.size() * 50; // Metadata overhead
+        }
+        return size;
+    }
+    
+    /**
+     * Estimate message size for outcome report
+     */
+    private long estimateOutcomeMessageSize(String taskId, String nodeId, String errorMessage) {
+        long size = 50; // Base overhead
+        size += (taskId != null ? taskId.length() : 0) * 2;
+        size += (nodeId != null ? nodeId.length() : 0) * 2;
+        size += (errorMessage != null ? errorMessage.length() : 0) * 2;
+        size += 16; // Execution time, CPU, memory (long, doubles)
+        size += 1; // Boolean
+        return size;
+    }
+    
     @Override
     public void close() {
+        if (asyncClient != null) {
+            asyncClient.shutdown();
+        }
         baseClient.close();
     }
 
