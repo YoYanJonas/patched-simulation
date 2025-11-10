@@ -34,6 +34,16 @@ public class ExternalTaskGenerator extends SimEntity {
     // Task generation parameters
     private double taskGenerationRate; // tasks per second
     private int taskCounter = 0;
+    
+    // Repeated task generation support
+    private java.util.Random random = new java.util.Random();
+    private java.util.Map<String, Integer> taskPatternToId = new java.util.HashMap<>(); // Pattern -> TaskId for reuse
+    // Repeated task probability - configurable, default 0.6 (60%) for realistic IoT scenarios
+    // IoT systems typically have high repetition: sensors send similar data repeatedly
+    private double repeatedTaskProbability;
+    // Calculate max unique patterns from config: CPU options × Memory options
+    // Default: 6 CPU × 2 Memory = 12 patterns (will start reuse after seeing all patterns)
+    private int maxUniqueTasks;
 
     /**
      * Constructor for external task generator
@@ -49,6 +59,13 @@ public class ExternalTaskGenerator extends SimEntity {
 
         // Initialize configuration
         EnhancedConfigurationLoader.initialize();
+        
+        // Load repeated task probability from config (default: 0.6 = 60% for realistic IoT scenarios)
+        this.repeatedTaskProbability = EnhancedConfigurationLoader.getExternalTaskConfigDouble(
+            "external-tasks.parameters.repeated-task-probability", 0.6);
+        
+        // Calculate max unique patterns from config (after config is loaded)
+        this.maxUniqueTasks = calculateMaxUniquePatterns();
 
         // Schedule task generation if rate is specified
         if (taskGenerationRate > 0) {
@@ -63,6 +80,24 @@ public class ExternalTaskGenerator extends SimEntity {
 
         logger.info("External task generator created - will send tasks to cloud device " + cloudDeviceId
                 + " for RL allocation");
+        logger.info(String.format("Repeated task generation: maxUniquePatterns=%d, reuseProbability=%.1f%%", 
+            maxUniqueTasks, repeatedTaskProbability * 100));
+    }
+    
+    /**
+     * Calculate maximum unique patterns from CPU and Memory options
+     * Formula: CPU options count × Memory options count
+     */
+    private int calculateMaxUniquePatterns() {
+        java.util.List<Long> cpuOptions = EnhancedConfigurationLoader.getExternalTaskConfigList("external-tasks.parameters.cpu.options");
+        java.util.List<Long> memoryOptions = EnhancedConfigurationLoader.getExternalTaskConfigList("external-tasks.parameters.memory.options");
+        
+        int cpuCount = (cpuOptions != null && !cpuOptions.isEmpty()) ? cpuOptions.size() : 1;
+        int memoryCount = (memoryOptions != null && !memoryOptions.isEmpty()) ? memoryOptions.size() : 1;
+        
+        int maxPatterns = cpuCount * memoryCount;
+        // Use exact number: once map size = maxPatterns, we've seen all unique patterns
+        return maxPatterns;
     }
 
     @Override
@@ -160,42 +195,71 @@ public class ExternalTaskGenerator extends SimEntity {
 
     /**
      * Create a random external task for simulation
+     * Supports repeated tasks: reuses task IDs with same CPU/memory patterns
      */
     private ExternalTask createRandomExternalTask() {
         taskCounter++;
 
         // Generate random task parameters using configuration
-        int taskId = taskCounter;
-        int appId = EnhancedConfigurationLoader.getExternalTaskConfigInt("external.tasks.parameters.app.id", 1);
-        int userId = EnhancedConfigurationLoader.getExternalTaskConfigInt("external.tasks.parameters.user.id", 1);
-
+        long cloudletLength;
+        long cloudletFileSize;
+        
         // Try to get CPU from options first, fallback to min/max range
         java.util.List<Long> cpuOptions = EnhancedConfigurationLoader.getExternalTaskConfigList("external-tasks.parameters.cpu.options");
-        long cloudletLength;
         if (cpuOptions != null && !cpuOptions.isEmpty()) {
             // Use discrete options
-            cloudletLength = cpuOptions.get(new java.util.Random().nextInt(cpuOptions.size()));
+            cloudletLength = cpuOptions.get(random.nextInt(cpuOptions.size()));
         } else {
             // Fallback to range-based (backward compatibility)
             long cpuMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.cpu.min", 1000);
             long cpuMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.cpu.max", 10000);
-            cloudletLength = cpuMin + (long) (Math.random() * (cpuMax - cpuMin));
+            cloudletLength = cpuMin + (long) (random.nextDouble() * (cpuMax - cpuMin));
         }
 
         // Try to get Memory from options first, fallback to min/max range
         java.util.List<Long> memoryOptions = EnhancedConfigurationLoader.getExternalTaskConfigList("external-tasks.parameters.memory.options");
-        long cloudletFileSize;
         if (memoryOptions != null && !memoryOptions.isEmpty()) {
             // Use discrete options
-            cloudletFileSize = memoryOptions.get(new java.util.Random().nextInt(memoryOptions.size()));
+            cloudletFileSize = memoryOptions.get(random.nextInt(memoryOptions.size()));
         } else {
             // Fallback to range-based (backward compatibility)
-            long memoryMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.min",
-                    100);
-            long memoryMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.max",
-                    1000);
-            cloudletFileSize = memoryMin + (long) (Math.random() * (memoryMax - memoryMin));
+            long memoryMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.min", 100);
+            long memoryMax = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.memory.max", 1000);
+            cloudletFileSize = memoryMin + (long) (random.nextDouble() * (memoryMax - memoryMin));
         }
+        
+        // Create pattern key for task reuse
+        String patternKey = String.format("%d-%d", cloudletLength, cloudletFileSize);
+        int taskId;
+        
+        // Decide whether to reuse existing task ID or create new one
+        boolean shouldReuse = random.nextDouble() < repeatedTaskProbability && 
+                             taskPatternToId.size() >= maxUniqueTasks &&
+                             taskPatternToId.containsKey(patternKey);
+        
+        if (shouldReuse) {
+            // Reuse existing task ID for this pattern
+            taskId = taskPatternToId.get(patternKey);
+            logger.info(String.format("[REPEATED-TASK] Reusing task ID %d for pattern (CPU:%d, Mem:%d)", 
+                taskId, cloudletLength, cloudletFileSize));
+        } else {
+            // Create new task ID
+            taskId = taskCounter;
+            taskPatternToId.put(patternKey, taskId);
+            if (taskPatternToId.size() > maxUniqueTasks * 2) {
+                // Cleanup: remove oldest entries to prevent memory growth
+                java.util.Iterator<java.util.Map.Entry<String, Integer>> it = taskPatternToId.entrySet().iterator();
+                int toRemove = taskPatternToId.size() - maxUniqueTasks;
+                while (it.hasNext() && toRemove > 0) {
+                    it.next();
+                    it.remove();
+                    toRemove--;
+                }
+            }
+        }
+        
+        int appId = EnhancedConfigurationLoader.getExternalTaskConfigInt("external.tasks.parameters.app.id", 1);
+        int userId = EnhancedConfigurationLoader.getExternalTaskConfigInt("external.tasks.parameters.user.id", 1);
 
         // Get output range from configuration
         long outputMin = EnhancedConfigurationLoader.getExternalTaskConfigLong("external.tasks.parameters.output.min",
@@ -218,7 +282,7 @@ public class ExternalTaskGenerator extends SimEntity {
         // Get configuration values
         String tupleType = EnhancedConfigurationLoader.getExternalTaskConfig("external.tasks.properties.tuple.type",
                 "EXTERNAL");
-        // FIX: Use "processing_module" instead of "external_task" to match deployed application modules
+        // 
         // The application only has "processing_module" and "aggregation_module" deployed
         String moduleName = EnhancedConfigurationLoader.getExternalTaskConfig("external.tasks.properties.module.name",
                 "processing_module");

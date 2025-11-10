@@ -729,8 +729,21 @@ public class RLController extends Controller {
             Map<String, Object> deviceState = new HashMap<>();
             deviceState.put("deviceId", device.getId());
             deviceState.put("deviceName", device.getName());
-            deviceState.put("cpuUtilization", device.getHost().getUtilizationOfCpu());
-            deviceState.put("ramUtilization", device.getHost().getUtilizationOfRam());
+            
+            // Resource utilization (normalized to percentages [0.0, 1.0] for consistency)
+            // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
+            double cpuUtilization = device.getHost().getUtilizationOfCpu();
+            
+            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+            double ramUsedMb = device.getHost().getUtilizationOfRam();
+            int totalRamMb = device.getHost().getRam();
+            double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+            // Clamp to valid range
+            if (ramUtilization < 0.0) ramUtilization = 0.0;
+            if (ramUtilization > 1.0) ramUtilization = 1.0;
+            
+            deviceState.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
+            deviceState.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
             deviceState.put("energyConsumption", device.getEnergyConsumption());
             deviceState.put("totalCost", device.getTotalCost());
             deviceStates.add(deviceState);
@@ -790,8 +803,9 @@ public class RLController extends Controller {
     /**
      * Force stop all streaming observers immediately
      * Called during shutdown to prevent blocking gRPC calls
+     * Made public for cleanup from simulation main
      */
-    private void forceStopAllStreamingObservers() {
+    public void forceStopAllStreamingObservers() {
         logger.warning("[SHUTDOWN] Force stopping all streaming observers...");
         int stoppedCount = 0;
 
@@ -847,8 +861,9 @@ public class RLController extends Controller {
     /**
      * Force close all gRPC channels immediately
      * Called during shutdown to stop blocking operations
+     * Made public for cleanup from simulation main
      */
-    private void forceCloseAllGrpcChannels() {
+    public void forceCloseAllGrpcChannels() {
         logger.warning("[SHUTDOWN] Force closing all gRPC channels...");
         int closedCount = 0;
 
