@@ -22,30 +22,38 @@ func GetAllCacheActions() []Action {
 // MapCacheActionToProto maps RL cache action to proto CacheAction
 // Handles expired cache cases (forces invalidation if expired)
 // Two-action design: ActionCache and ActionDelete
+// fogCacheExists: Whether fog node has local cache (from metadata)
 func MapCacheActionToProto(
 	rlAction Action,
 	cacheExists bool,
 	cacheExpired bool,
+	fogCacheExists bool,
 ) pb.CacheAction {
 	// [DEBUG] Entry point for MapCacheActionToProto
-	fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-ENTRY] MapCacheActionToProto called: RLAction=%v, CacheExists=%t, CacheExpired=%t\n",
-		rlAction.Type, cacheExists, cacheExpired)
+	fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-ENTRY] MapCacheActionToProto called: RLAction=%v, CacheExists=%t, CacheExpired=%t, FogCacheExists=%t\n",
+		rlAction.Type, cacheExists, cacheExpired, fogCacheExists)
 	
 	// If cache expired, force invalidation regardless of RL action
-	if cacheExpired && cacheExists {
-		// [DEBUG] Cache expired, forcing invalidation
-		fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-EXPIRED] Cache expired, forcing invalidation\n")
+	// Also invalidate if fog node has cache but server cache expired (sync both)
+	if cacheExpired && (cacheExists || fogCacheExists) {
+		// [DEBUG] Cache expired, forcing invalidation (server or fog node)
+		fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-EXPIRED] Cache expired, forcing invalidation (server=%t, fog=%t)\n", cacheExists, fogCacheExists)
 		return pb.CacheAction_CACHE_ACTION_INVALIDATE
 	}
 
 	// Two-action design
 	if rlAction.Type == ActionCache {
 		if cacheExists && !cacheExpired {
-			// [DEBUG] Cache exists and not expired, using cache
-			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-CACHE-USE] ActionCache with existing cache, returning USE\n")
+			// [DEBUG] Server cache exists and not expired, using cache
+			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-CACHE-USE] ActionCache with server cache, returning USE\n")
 			return pb.CacheAction_CACHE_ACTION_USE
+		} else if fogCacheExists && !cacheExpired {
+			// [DEBUG] Fog node has cache but server doesn't - tell fog node to re-cache (STORE)
+			// This ensures cache is synchronized and updated
+			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-CACHE-STORE] ActionCache with fog cache only, returning STORE (re-cache)\n")
+			return pb.CacheAction_CACHE_ACTION_STORE
 		} else {
-			// [DEBUG] Cache doesn't exist or expired, storing for future
+			// [DEBUG] No cache anywhere, storing for future
 			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-CACHE-STORE] ActionCache with no cache, returning STORE\n")
 			return pb.CacheAction_CACHE_ACTION_STORE
 		}
@@ -53,8 +61,12 @@ func MapCacheActionToProto(
 
 	if rlAction.Type == ActionDelete {
 		if cacheExists && !cacheExpired {
-			// [DEBUG] Cache exists, invalidating
-			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-DELETE-INVALIDATE] ActionDelete with existing cache, returning INVALIDATE\n")
+			// [DEBUG] Server cache exists, invalidating
+			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-DELETE-INVALIDATE] ActionDelete with server cache, returning INVALIDATE\n")
+			return pb.CacheAction_CACHE_ACTION_INVALIDATE
+		} else if fogCacheExists {
+			// [DEBUG] Fog node has cache but server doesn't - invalidate fog node's cache
+			fmt.Printf("[DEBUG] [CACHE-ACTION-MAP-DELETE-INVALIDATE] ActionDelete with fog cache only, returning INVALIDATE\n")
 			return pb.CacheAction_CACHE_ACTION_INVALIDATE
 		} else {
 			// [DEBUG] No cache to delete

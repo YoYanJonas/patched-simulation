@@ -152,3 +152,10 @@ func (ca *CacheAgent) GetQTable() map[string]map[ActionType]float64 {
 	return ca.qLearningScheduler.GetQTable()
 }
 
+// GetQLearningScheduler returns the underlying Q-learning scheduler for state access
+func (ca *CacheAgent) GetQLearningScheduler() *CacheQLearningScheduler {
+	ca.mu.RLock()
+	defer ca.mu.RUnlock()
+	return ca.qLearningScheduler
+}
+

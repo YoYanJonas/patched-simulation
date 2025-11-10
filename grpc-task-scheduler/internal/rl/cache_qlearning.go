@@ -288,3 +288,96 @@ func (cql *CacheQLearningScheduler) GetStats() map[string]interface{} {
 	}
 }
 
+// Getter methods for state persistence
+func (cql *CacheQLearningScheduler) GetCurrentEpisode() int {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.currentEpisode
+}
+
+func (cql *CacheQLearningScheduler) GetEpisodeTaskCount() int {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.episodeTaskCount
+}
+
+func (cql *CacheQLearningScheduler) GetEpisodeStartTime() time.Time {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.episodeStartTime
+}
+
+func (cql *CacheQLearningScheduler) GetExplorationRate() float64 {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.config.ExplorationRate
+}
+
+func (cql *CacheQLearningScheduler) IsLearning() bool {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.isLearning
+}
+
+func (cql *CacheQLearningScheduler) GetConfig() CacheRLConfig {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.config
+}
+
+func (cql *CacheQLearningScheduler) GetRewardWeights() CacheRewardWeights {
+	cql.mu.RLock()
+	defer cql.mu.RUnlock()
+	return cql.rewardWeights
+}
+
+// Setter methods for state restoration
+func (cql *CacheQLearningScheduler) SetCurrentEpisode(episode int) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	cql.currentEpisode = episode
+}
+
+func (cql *CacheQLearningScheduler) SetEpisodeTaskCount(count int) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	cql.episodeTaskCount = count
+}
+
+func (cql *CacheQLearningScheduler) SetEpisodeStartTime(startTime time.Time) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	cql.episodeStartTime = startTime
+}
+
+func (cql *CacheQLearningScheduler) SetExplorationRate(rate float64) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	cql.config.ExplorationRate = rate
+}
+
+func (cql *CacheQLearningScheduler) SetLearning(learning bool) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	cql.isLearning = learning
+}
+
+func (cql *CacheQLearningScheduler) SetRewardWeights(weights CacheRewardWeights) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	cql.rewardWeights = weights
+}
+
+func (cql *CacheQLearningScheduler) SetQTable(qTable map[string]map[ActionType]float64) {
+	cql.mu.Lock()
+	defer cql.mu.Unlock()
+	// Deep copy
+	cql.qTable = make(map[string]map[ActionType]float64)
+	for stateKey, actions := range qTable {
+		cql.qTable[stateKey] = make(map[ActionType]float64)
+		for actionType, qValue := range actions {
+			cql.qTable[stateKey][actionType] = qValue
+		}
+	}
+}
+
