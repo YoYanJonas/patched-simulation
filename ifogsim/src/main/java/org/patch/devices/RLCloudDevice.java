@@ -20,6 +20,10 @@ import org.fog.placement.ModulePlacement;
 import org.fog.placement.Controller;
 import org.patch.proto.IfogsimAllocation.*;
 import org.patch.proto.IfogsimCommon.*;
+import org.patch.models.PendingAllocationRequest;
+import org.patch.models.PendingOutcomeRequest;
+import org.patch.utils.NetworkLatencyConverter;
+import org.patch.utils.NetworkEnergyCostCalculator;
 
 import org.cloudbus.cloudsim.Host;
 import org.cloudbus.cloudsim.Pe;
@@ -67,6 +71,10 @@ public class RLCloudDevice extends FogDevice {
 
     // Store pending allocation requests
     private Map<String, Tuple> pendingAllocations = new HashMap<>();
+
+    // Pending async allocation requests ()
+    private Map<String, PendingAllocationRequest> pendingAllocationRequests = new HashMap<>();
+    private Map<String, PendingOutcomeRequest> pendingOutcomeRequests = new HashMap<>();
 
     // Allocation client for gRPC communication
     private AllocationClient allocationClient;
@@ -336,6 +344,18 @@ public class RLCloudDevice extends FogDevice {
             case ExtendedFogEvents.ALLOC_OUTCOME_REPORT:
                 handleAllocOutcomeReport(ev);
                 break;
+            case ExtendedFogEvents.GRPC_ALLOCATOR_RESPONSE:
+                handleGrpcAllocatorResponse(ev);
+                break;
+            case ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_RESPONSE:
+                handleGrpcAllocatorOutcomeResponse(ev);
+                break;
+            case ExtendedFogEvents.GRPC_ALLOCATOR_TIMEOUT:
+                handleGrpcAllocatorTimeout(ev);
+                break;
+            case ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_TIMEOUT:
+                handleGrpcAllocatorOutcomeTimeout(ev);
+                break;
             case FogEvents.TUPLE_ARRIVAL:
                 if (rlEnabled) {
                     handleExternalTaskArrival(ev);
@@ -476,7 +496,7 @@ public class RLCloudDevice extends FogDevice {
             if (isExternalTask) {
                 System.out.println(String.format(
                         "[FLOW-CLOUD-ALLOC-START] Time: %.2f - Cloud (ID:%d) - External task %d needs allocation decision (DestModule:%s, CPU:%.0f, Mem:%.0f) - Calling allocator",
-                        CloudSim.clock(), getId(), tuple.getCloudletId(), tuple.getDestModuleName(), 
+                        CloudSim.clock(), getId(), tuple.getCloudletId(), tuple.getDestModuleName(),
                         tuple.getCloudletLength(), tuple.getCloudletFileSize()));
             }
 
@@ -560,7 +580,7 @@ public class RLCloudDevice extends FogDevice {
                     "[FLOW-CLOUD-ALLOC-REQUEST] Time: %.2f - Cloud (ID:%d) - Requesting allocation for task %d (CPU=%.0f, Mem=%.0f, BW=%.0f, Priority=1) - Calling allocator service",
                     currentTime, getId(), tuple.getCloudletId(), tuple.getCloudletLength(),
                     tuple.getCloudletFileSize(), tuple.getCloudletOutputSize()));
-            
+
             logger.info(String.format(
                     "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Task %d arrived at cloud, requesting allocation (CPU=%.2f, Mem=%.2f)",
                     currentTime, getId(), tuple.getCloudletId(), tuple.getCloudletLength(),
@@ -591,7 +611,7 @@ public class RLCloudDevice extends FogDevice {
                     "[FLOW-CLOUD-ALLOC-RESPONSE] Time: %.2f - Cloud (ID:%d) - Allocator response: task %d -> node %s, success=%s, latency=%dms",
                     currentTime, getId(), tuple.getCloudletId(), response.getAllocatedNodeId(), response.getSuccess(),
                     latency));
-            
+
             logger.info(String.format(
                     "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Allocation response received: task %d -> node %s, success=%s, latency=%dms",
                     currentTime, getId(), tuple.getCloudletId(), response.getAllocatedNodeId(), response.getSuccess(),
@@ -752,13 +772,25 @@ public class RLCloudDevice extends FogDevice {
 
         try {
             // Report to go-grpc-server for learning
+            // Get actual host utilization for task outcome reporting
+            // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
+            double cpuUtilization = getHost().getUtilizationOfCpu();
+            
+            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+            double ramUsedMb = getHost().getUtilizationOfRam();
+            int totalRamMb = getHost().getRam();
+            double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+            // Clamp to valid range
+            if (ramUtilization < 0.0) ramUtilization = 0.0;
+            if (ramUtilization > 1.0) ramUtilization = 1.0;
+            
             allocationClient.reportTaskOutcome(
                     String.valueOf(tuple.getCloudletId()),
                     String.valueOf(getId()),
                     success,
                     executionTime,
-                    getHost().getUtilizationOfCpu(),
-                    getHost().getUtilizationOfRam(),
+                    cpuUtilization, // Percentage [0.0, 1.0]
+                    ramUtilization, // Percentage [0.0, 1.0]
                     success ? "" : "Task execution failed");
 
             logger.info("Reported task outcome to allocation service: " + tuple.getCloudletId());
@@ -818,8 +850,21 @@ public class RLCloudDevice extends FogDevice {
             // Cloud device information
             state.put("deviceId", getId());
             state.put("deviceName", getName());
-            state.put("cpuUtilization", getHost().getUtilizationOfCpu());
-            state.put("ramUtilization", getHost().getUtilizationOfRam());
+            
+            // Resource utilization (normalized to percentages [0.0, 1.0] for consistency)
+            // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
+            double cpuUtilization = getHost().getUtilizationOfCpu();
+            
+            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+            double ramUsedMb = getHost().getUtilizationOfRam();
+            int totalRamMb = getHost().getRam();
+            double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+            // Clamp to valid range
+            if (ramUtilization < 0.0) ramUtilization = 0.0;
+            if (ramUtilization > 1.0) ramUtilization = 1.0;
+            
+            state.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
+            state.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
             state.put("bwUtilization", getHost().getUtilizationOfBw());
 
             // Fog nodes information
@@ -894,8 +939,17 @@ public class RLCloudDevice extends FogDevice {
                         taskCount = correspondingDevice.getHost().getVmList().size();
                     }
 
+                    // CPU: CpuUsage is 0-100 percentage, convert to [0.0, 1.0]
                     double cpuUtil = fogNode.getCurrentUsage().getCpuUsage() / 100.0;
-                    double memUtil = fogNode.getCurrentUsage().getMemoryUsageMb() / 100.0;
+                    
+                    // Memory: MemoryUsageMb is actual MB used, convert to percentage [0.0, 1.0]
+                    double memUtil = 0.0;
+                    if (fogNode.getCapacity() != null && fogNode.getCapacity().getMemoryMb() > 0) {
+                        memUtil = (double) fogNode.getCurrentUsage().getMemoryUsageMb() / (double) fogNode.getCapacity().getMemoryMb();
+                        // Clamp to [0.0, 1.0]
+                        if (memUtil < 0.0) memUtil = 0.0;
+                        if (memUtil > 1.0) memUtil = 1.0;
+                    }
 
                     // Create node state request
                     NodeStateRequest nodeStateRequest = NodeStateRequest.newBuilder()
@@ -1107,9 +1161,13 @@ public class RLCloudDevice extends FogDevice {
                     .build();
 
             // Create the current usage information
+            // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0], convert to 0-100 integer
+            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), use directly
+            double ramUsedMb = device.getHost().getUtilizationOfRam();
+            
             ResourceUsage currentUsage = ResourceUsage.newBuilder()
-                    .setCpuUsage(Math.round(device.getHost().getUtilizationOfCpu() * 100)) // Convert to percentage
-                    .setMemoryUsageMb(Math.round(device.getHost().getUtilizationOfRam() * 100)) // Convert to percentage
+                    .setCpuUsage(Math.round(device.getHost().getUtilizationOfCpu() * 100)) // Convert percentage to 0-100
+                    .setMemoryUsageMb(Math.round(ramUsedMb)) // Already in MB, use directly
                     .build();
 
             // Create the fog node proto object
@@ -1484,6 +1542,399 @@ public class RLCloudDevice extends FogDevice {
         String error = (String) ev.getData();
         logger.severe("Allocation error: " + error);
         // Handle error recovery or fallback logic
+    }
+
+    /**
+     * Handle gRPC allocator response event ()
+     * Processes async allocation response, records energy/cost, and updates task
+     * state
+     */
+    private void handleGrpcAllocatorResponse(SimEvent ev) {
+        PendingAllocationRequest pending = (PendingAllocationRequest) ev.getData();
+        String taskId = pending.getTaskId();
+        double currentTime = CloudSim.clock();
+
+        logger.info(String.format(
+                "[GRPC-ALLOCATOR-RESPONSE] Time: %.2f - Processing async allocator response for task: %s",
+                currentTime, taskId));
+
+        // Validate pending request state
+        PendingAllocationRequest storedPending = pendingAllocationRequests.get(taskId);
+        if (storedPending == null) {
+            // Request not found in map - might be orphaned or already processed
+            logger.warning(String.format(
+                    "[DEBUG-PENDING-ALLOCATION] Time: %.2f - Device: %s (ID:%d) - Pending request not found for task: %s (may be orphaned, total pending: %d)",
+                    currentTime, getName(), getId(), taskId, pendingAllocationRequests.size()));
+            // Still try to process the response from the event data
+        } else if (storedPending != pending) {
+            // Different pending request found - log warning but continue
+            logger.warning(String.format(
+                    "[DEBUG-PENDING-ALLOCATION] Time: %.2f - Device: %s (ID:%d) - Pending request mismatch for task: %s (stored != event)",
+                    currentTime, getName(), getId(), taskId));
+        } else {
+            logger.info(String.format(
+                    "[DEBUG-PENDING-ALLOCATION] Time: %.2f - Device: %s (ID:%d) - Pending request found and validated for task: %s",
+                    currentTime, getName(), getId(), taskId));
+        }
+
+        try {
+            // Check if future completed successfully
+            if (pending.getFuture().isCompletedExceptionally()) {
+                logger.severe(String.format(
+                        "[GRPC-ALLOCATOR-RESPONSE] Time: %.2f - Async allocator call failed for task: %s",
+                        currentTime, taskId));
+                pendingAllocationRequests.remove(taskId);
+                return;
+            }
+
+            // Get response
+            TaskAllocationResponse response = pending.getFuture().get();
+
+            // Calculate actual latency and energy/cost
+            long realLatency = System.currentTimeMillis() - pending.getRealStartTime();
+            double simulationLatency = NetworkLatencyConverter.convertToSimulationTime(realLatency);
+
+            // Estimate message size
+            long messageSizeBytes = estimateAllocationMessageSize(taskId);
+            double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+                    simulationLatency, messageSizeBytes);
+            double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+                    simulationLatency, messageSizeBytes);
+
+            // Record energy and cost in statistics
+            RLStatisticsManager.getInstance().addAllocationEnergy(actualEnergy);
+            RLStatisticsManager.getInstance().addAllocationCost(actualCost);
+            RLStatisticsManager.getInstance().addAllocationLatency(realLatency);
+            RLStatisticsManager.getInstance().incrementAllocationDecisions();
+
+            logger.info(String.format(
+                    "[GRPC-ALLOCATOR-RESPONSE] Time: %.2f - Task: %s, Success: %s, Node: %s, Latency: %dms (sim: %.4f sec), Energy: %.6f J, Cost: %.8f $",
+                    currentTime, taskId, response.getSuccess(), response.getAllocatedNodeId(),
+                    realLatency, simulationLatency, actualEnergy, actualCost));
+
+            // 
+            org.fog.entities.Tuple tuple = pending.getTuple();
+            if (tuple != null) {
+                // Update pendingAllocations map if needed
+                pendingAllocations.put(taskId, tuple);
+            }
+
+            // Process the response (use existing handleAllocationResponse method)
+            handleAllocationResponse(response);
+
+            // 
+            pendingAllocationRequests.remove(taskId);
+            pendingAllocations.remove(taskId); // Also remove from old pendingAllocations map
+
+        } catch (Exception e) {
+            logger.severe(String.format(
+                    "[GRPC-ALLOCATOR-RESPONSE] Time: %.2f - Error processing async allocator response for task: %s - %s",
+                    currentTime, taskId, e.getMessage()));
+            e.printStackTrace();
+            pendingAllocationRequests.remove(taskId);
+        }
+    }
+
+    /**
+     * Handle gRPC allocator outcome response event ()
+     * Processes async outcome reporting response and records energy/cost
+     */
+    private void handleGrpcAllocatorOutcomeResponse(SimEvent ev) {
+        PendingOutcomeRequest pending = (PendingOutcomeRequest) ev.getData();
+        String taskId = pending.getTaskId();
+        double currentTime = CloudSim.clock();
+
+        logger.info(String.format(
+                "[GRPC-ALLOCATOR-OUTCOME-RESPONSE] Time: %.2f - Processing async outcome response for task: %s",
+                currentTime, taskId));
+
+        // Validate pending request state
+        PendingOutcomeRequest storedPending = pendingOutcomeRequests.get(taskId);
+        if (storedPending == null) {
+            logger.warning(String.format(
+                    "[DEBUG-PENDING-OUTCOME] Time: %.2f - Device: %s (ID:%d) - Pending request not found for task: %s (may be orphaned, total pending: %d)",
+                    currentTime, getName(), getId(), taskId, pendingOutcomeRequests.size()));
+        } else if (storedPending != pending) {
+            logger.warning(String.format(
+                    "[DEBUG-PENDING-OUTCOME] Time: %.2f - Device: %s (ID:%d) - Pending request mismatch for task: %s (stored != event)",
+                    currentTime, getName(), getId(), taskId));
+        } else {
+            logger.info(String.format(
+                    "[DEBUG-PENDING-OUTCOME] Time: %.2f - Device: %s (ID:%d) - Pending request found and validated for task: %s",
+                    currentTime, getName(), getId(), taskId));
+        }
+
+        try {
+            // Check if future completed successfully
+            if (pending.getFuture().isCompletedExceptionally()) {
+                logger.warning(String.format(
+                        "[GRPC-ALLOCATOR-OUTCOME-RESPONSE] Time: %.2f - Async outcome call failed for task: %s",
+                        currentTime, taskId));
+                pendingOutcomeRequests.remove(taskId);
+                return;
+            }
+
+            // Get response
+            TaskOutcomeResponse response = pending.getFuture().get();
+
+            // Calculate actual latency and energy/cost
+            long realLatency = System.currentTimeMillis() - pending.getRealStartTime();
+            double simulationLatency = NetworkLatencyConverter.convertToSimulationTime(realLatency);
+
+            // Estimate message size
+            long messageSizeBytes = estimateOutcomeMessageSize(taskId);
+            double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
+                    simulationLatency, messageSizeBytes);
+            double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
+                    simulationLatency, messageSizeBytes);
+
+            // Record energy and cost in statistics
+            RLStatisticsManager.getInstance().addAllocationEnergy(actualEnergy);
+            RLStatisticsManager.getInstance().addAllocationCost(actualCost);
+
+            logger.info(String.format(
+                    "[GRPC-ALLOCATOR-OUTCOME-RESPONSE] Time: %.2f - Task: %s, Latency: %dms (sim: %.4f sec), Energy: %.6f J, Cost: %.8f $",
+                    currentTime, taskId, realLatency, simulationLatency, actualEnergy, actualCost));
+
+            // Remove from pending requests
+            pendingOutcomeRequests.remove(taskId);
+
+        } catch (Exception e) {
+            logger.warning(String.format(
+                    "[GRPC-ALLOCATOR-OUTCOME-RESPONSE] Time: %.2f - Error processing async outcome response for task: %s - %s",
+                    currentTime, taskId, e.getMessage()));
+            pendingOutcomeRequests.remove(taskId);
+        }
+    }
+
+    /**
+     * Estimate message size for allocation request (helper method)
+     */
+    private long estimateAllocationMessageSize(String taskId) {
+        long size = 100; // Base overhead
+        size += (taskId != null ? taskId.length() : 0) * 2;
+        return size;
+    }
+
+    /**
+     * Estimate message size for outcome report (helper method)
+     */
+    private long estimateOutcomeMessageSize(String taskId) {
+        long size = 50; // Base overhead
+        size += (taskId != null ? taskId.length() : 0) * 2;
+        return size;
+    }
+
+    // ===== PHASE 4: STATE MANAGEMENT HELPERS =====
+
+    /**
+     * Store pending allocation request ()
+     * Should be called when async allocation request is made
+     * 
+     * @param pending Pending allocation request to store
+     */
+    public void storePendingAllocationRequest(PendingAllocationRequest pending) {
+        if (pending != null) {
+            pendingAllocationRequests.put(pending.getTaskId(), pending);
+            logger.fine(String.format(
+                    "[STATE-MGMT] Stored pending allocation request for task: %s (total pending: %d)",
+                    pending.getTaskId(), pendingAllocationRequests.size()));
+        }
+    }
+
+    /**
+     * Store pending outcome request ()
+     * Should be called when async outcome request is made
+     * 
+     * @param pending Pending outcome request to store
+     */
+    public void storePendingOutcomeRequest(PendingOutcomeRequest pending) {
+        if (pending != null) {
+            pendingOutcomeRequests.put(pending.getTaskId(), pending);
+            logger.fine(String.format(
+                    "[STATE-MGMT] Stored pending outcome request for task: %s (total pending: %d)",
+                    pending.getTaskId(), pendingOutcomeRequests.size()));
+        }
+    }
+
+    /**
+     * Get pending allocation request ()
+     * 
+     * @param taskId Task identifier
+     * @return Pending request or null if not found
+     */
+    public PendingAllocationRequest getPendingAllocationRequest(String taskId) {
+        return pendingAllocationRequests.get(taskId);
+    }
+
+    /**
+     * Get pending outcome request ()
+     * 
+     * @param taskId Task identifier
+     * @return Pending request or null if not found
+     */
+    public PendingOutcomeRequest getPendingOutcomeRequest(String taskId) {
+        return pendingOutcomeRequests.get(taskId);
+    }
+
+    /**
+     * Cleanup orphaned pending requests ()
+     * Removes requests that are older than specified timeout
+     * 
+     * @param timeoutMs Timeout in milliseconds
+     */
+    public void cleanupOrphanedPendingRequests(long timeoutMs) {
+        long currentTime = System.currentTimeMillis();
+        List<String> allocationToRemove = new ArrayList<>();
+        List<String> outcomeToRemove = new ArrayList<>();
+
+        // Cleanup allocation requests
+        for (Map.Entry<String, PendingAllocationRequest> entry : pendingAllocationRequests.entrySet()) {
+            PendingAllocationRequest pending = entry.getValue();
+            long age = currentTime - pending.getRealStartTime();
+            if (age > timeoutMs) {
+                allocationToRemove.add(entry.getKey());
+                logger.warning(String.format(
+                        "[STATE-MGMT] Cleaning up orphaned pending allocation request for task: %s (age: %dms)",
+                        entry.getKey(), age));
+            }
+        }
+
+        // Cleanup outcome requests
+        for (Map.Entry<String, PendingOutcomeRequest> entry : pendingOutcomeRequests.entrySet()) {
+            PendingOutcomeRequest pending = entry.getValue();
+            long age = currentTime - pending.getRealStartTime();
+            if (age > timeoutMs) {
+                outcomeToRemove.add(entry.getKey());
+                logger.warning(String.format(
+                        "[STATE-MGMT] Cleaning up orphaned pending outcome request for task: %s (age: %dms)",
+                        entry.getKey(), age));
+            }
+        }
+
+        // Remove orphaned requests
+        for (String taskId : allocationToRemove) {
+            pendingAllocationRequests.remove(taskId);
+        }
+        for (String taskId : outcomeToRemove) {
+            pendingOutcomeRequests.remove(taskId);
+        }
+
+        if (!allocationToRemove.isEmpty() || !outcomeToRemove.isEmpty()) {
+            logger.info(String.format(
+                    "[STATE-MGMT] Cleaned up %d orphaned allocation requests and %d orphaned outcome requests (remaining: %d allocation, %d outcome)",
+                    allocationToRemove.size(), outcomeToRemove.size(),
+                    pendingAllocationRequests.size(), pendingOutcomeRequests.size()));
+        }
+    }
+
+    /**
+     * Handle gRPC allocator timeout event ()
+     * Processes timeout for async allocation request and falls back to local
+     * allocation
+     */
+    private void handleGrpcAllocatorTimeout(SimEvent ev) {
+        PendingAllocationRequest pending = (PendingAllocationRequest) ev.getData();
+        String taskId = pending.getTaskId();
+        double currentTime = CloudSim.clock();
+
+        logger.warning(String.format(
+                "[DEBUG-ALLOCATOR-TIMEOUT] Time: %.2f - Device: %s (ID:%d) - Allocator call timed out for task: %s",
+                currentTime, getName(), getId(), taskId));
+
+        // Check if request already completed (race condition: response arrived before
+        // timeout)
+        if (pending.getFuture().isDone() && !pending.getFuture().isCompletedExceptionally()) {
+            logger.info(String.format(
+                    "[DEBUG-ALLOCATOR-TIMEOUT] Time: %.2f - Device: %s (ID:%d) - Task %s already completed, ignoring timeout",
+                    currentTime, getName(), getId(), taskId));
+            return;
+        }
+        
+        logger.info(String.format(
+                "[DEBUG-ALLOCATOR-TIMEOUT] Time: %.2f - Device: %s (ID:%d) - Timeout confirmed, proceeding with fallback for task: %s",
+                currentTime, getName(), getId(), taskId));
+
+        // 
+        try {
+            org.fog.entities.Tuple tuple = pending.getTuple();
+            if (tuple != null) {
+                logger.info(String.format(
+                        "[GRPC-ALLOCATOR-TIMEOUT] Time: %.2f - Falling back to local allocation for task: %s",
+                        currentTime, taskId));
+
+                // Create fallback response
+                TaskAllocationResponse fallbackResponse = createFallbackAllocationResponse(
+                        taskId, tuple.getCloudletLength(), tuple.getCloudletFileSize());
+
+                // Process fallback response
+                handleAllocationResponse(fallbackResponse);
+            } else {
+                logger.warning(String.format(
+                        "[GRPC-ALLOCATOR-TIMEOUT] Time: %.2f - No tuple available for fallback, task: %s",
+                        currentTime, taskId));
+            }
+        } catch (Exception e) {
+            logger.severe(String.format(
+                    "[GRPC-ALLOCATOR-TIMEOUT] Time: %.2f - Error in fallback allocation for task: %s - %s",
+                    currentTime, taskId, e.getMessage()));
+            e.printStackTrace();
+        } finally {
+            // Clean up pending request
+            pendingAllocationRequests.remove(taskId);
+            pendingAllocations.remove(taskId);
+        }
+    }
+
+    /**
+     * Handle gRPC allocator outcome timeout event (
+     * Timeouts)
+     * Processes timeout for async outcome reporting (best-effort, no fallback
+     * needed)
+     */
+    private void handleGrpcAllocatorOutcomeTimeout(SimEvent ev) {
+        PendingOutcomeRequest pending = (PendingOutcomeRequest) ev.getData();
+        String taskId = pending.getTaskId();
+        double currentTime = CloudSim.clock();
+
+        logger.warning(String.format(
+                "[DEBUG-OUTCOME-TIMEOUT] Time: %.2f - Device: %s (ID:%d) - Outcome report timed out for task: %s",
+                currentTime, getName(), getId(), taskId));
+
+        // Check if request already completed
+        if (pending.getFuture().isDone() && !pending.getFuture().isCompletedExceptionally()) {
+            logger.info(String.format(
+                    "[DEBUG-OUTCOME-TIMEOUT] Time: %.2f - Device: %s (ID:%d) - Task %s already completed, ignoring timeout",
+                    currentTime, getName(), getId(), taskId));
+            return;
+        }
+
+        // Outcome reporting is best-effort, just log and clean up
+        logger.info(String.format(
+                "[DEBUG-OUTCOME-TIMEOUT] Time: %.2f - Device: %s (ID:%d) - Outcome report timeout for task: %s (best-effort, no fallback)",
+                currentTime, getName(), getId(), taskId));
+
+        // Clean up pending request
+        pendingOutcomeRequests.remove(taskId);
+    }
+
+    /**
+     * Create fallback allocation response ()
+     */
+    private TaskAllocationResponse createFallbackAllocationResponse(String taskId,
+            double cpuRequirement, double memoryRequirement) {
+        String fallbackNodeId = EnhancedConfigurationLoader.getGrpcConfig(
+                "grpc.fallback.node.id", "fallback-node-1");
+        long executionTime = EnhancedConfigurationLoader.getGrpcConfigLong(
+                "grpc.fallback.execution.time", 5000);
+        long currentTime = System.currentTimeMillis();
+
+        return TaskAllocationResponse.newBuilder()
+                .setSuccess(true)
+                .setAllocatedNodeId(fallbackNodeId)
+                .setExpectedCompletionTimeMs(currentTime + executionTime)
+                .setMessage("Using fallback allocation - gRPC timeout")
+                .build();
     }
 
     /**
