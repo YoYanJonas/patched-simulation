@@ -60,7 +60,8 @@ message QueueContext {
 }
 
 message AddTaskToQueueResponse {
-  string task_id = 1;
+  string task_id = 1;                // TaskId (pattern-based, may be reused)
+  string cloudlet_id = 9;            // CloudletId (unique instance identifier)
   bool success = 2;
   int64 queue_position = 3;
   int64 estimated_wait_time_ms = 4;
@@ -235,6 +236,7 @@ message TaskCompletionReport {
   repeated CompletedTask tasks = 2;
   SystemPerformanceMetrics metrics = 3;
   int64 completion_timestamp = 4;
+  FogNode node_status = 5;                // Real CPU/Memory usage from iFogSim at completion time
 }
 
 message CompletedTask {

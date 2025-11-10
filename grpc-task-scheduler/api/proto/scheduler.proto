@@ -55,6 +55,8 @@ message Task {
   int64 deadline = 10;             // Task deadline as Unix timestamp
   repeated string dependencies = 8; // Task IDs this task depends on
   map<string, string> metadata = 9; // Additional task metadata
+  bool local_cache_exists = 11;    // Whether fog node has local cache for this task (for cache synchronization)
+  int64 output_size = 12;          // Output data size in bytes (for network transfer time calculation)
 }
 
 enum TaskType {
@@ -118,7 +120,8 @@ message QueueContext {
 }
 
 message AddTaskToQueueResponse {
-  string task_id = 1;
+  string task_id = 1;                // TaskId (pattern-based, may be reused)
+  string cloudlet_id = 9;            // CloudletId (unique instance identifier)
   bool success = 2;
   string message = 3;
   int64 queue_position = 4;
@@ -262,6 +265,7 @@ message TaskCompletionReport {
   repeated CompletedTask tasks = 2;
   SystemPerformanceMetrics metrics = 3;
   int64 completion_timestamp = 4;
+  FogNode node_status = 5;                 // Real CPU/Memory usage from iFogSim at completion time
 }
 
 message CompletedTask {
