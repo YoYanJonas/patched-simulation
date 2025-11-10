@@ -34,13 +34,15 @@ COPY scripts/ scripts/
 RUN chmod +x scripts/generate_stubs.sh && \
     ./scripts/generate_stubs.sh
 
-# Stage 3: Copy source code and build
-# This layer rebuilds when source code changes
+# Stage 3: Copy source code (granular COPY for better cache invalidation)
+# This layer invalidates when source code changes
 # BUT dependencies are already cached from Stage 1
-COPY . .
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
 
 # Build binary - uses cached dependencies from Stage 1
-# Only rebuilds when source code changes
+# Rebuilds when source code (Stage 3) or proto files (Stage 2) change
 RUN go build -o server ./cmd/server/main.go
 
 # Final stage: minimal runtime image
