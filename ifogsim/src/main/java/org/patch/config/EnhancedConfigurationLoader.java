@@ -1037,6 +1037,39 @@ public class EnhancedConfigurationLoader {
                 return getEnvString("SIMULATION_STATISTICS_RESET_INTERVAL", defaultValue);
             case "simulation.statistics.percentage-calculation":
                 return getEnvString("SIMULATION_STATISTICS_PERCENTAGE", defaultValue);
+            // Network latency conversion configuration ()
+            case "simulation.network.latency.scale-factor":
+                return getConfigValue("simulation.network.latency.scale-factor", "NETWORK_LATENCY_SCALE_FACTOR",
+                        defaultValue);
+            case "simulation.network.latency.model":
+                return getConfigValue("simulation.network.latency.model", "NETWORK_LATENCY_MODEL", defaultValue);
+            case "simulation.network.latency.timeout-ms":
+                return getConfigValue("simulation.network.latency.timeout-ms", "NETWORK_LATENCY_TIMEOUT_MS",
+                        defaultValue);
+            // Network energy configuration ()
+            case "simulation.network.energy.base":
+                return getConfigValue("simulation.network.energy.base", "NETWORK_ENERGY_BASE", defaultValue);
+            case "simulation.network.energy.latency-factor":
+                return getConfigValue("simulation.network.energy.latency-factor", "NETWORK_ENERGY_LATENCY_FACTOR",
+                        defaultValue);
+            case "simulation.network.energy.size-factor":
+                return getConfigValue("simulation.network.energy.size-factor", "NETWORK_ENERGY_SIZE_FACTOR",
+                        defaultValue);
+            // Network cost configuration ()
+            case "simulation.network.cost.base":
+                return getConfigValue("simulation.network.cost.base", "NETWORK_COST_BASE", defaultValue);
+            case "simulation.network.cost.latency-factor":
+                return getConfigValue("simulation.network.cost.latency-factor", "NETWORK_COST_LATENCY_FACTOR",
+                        defaultValue);
+            case "simulation.network.cost.size-factor":
+                return getConfigValue("simulation.network.cost.size-factor", "NETWORK_COST_SIZE_FACTOR", defaultValue);
+            // Timeout configuration ()
+            // Note: timeout-ms already defined above, skipping duplicate
+            case "simulation.network.retry.max-attempts":
+                return getConfigValue("simulation.network.retry.max-attempts", "NETWORK_RETRY_MAX_ATTEMPTS",
+                        defaultValue);
+            case "simulation.network.retry.enabled":
+                return getConfigValue("simulation.network.retry.enabled", "NETWORK_RETRY_ENABLED", defaultValue);
             default:
                 return defaultValue;
         }
