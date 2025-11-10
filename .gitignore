@@ -154,3 +154,4 @@ models/**/*.pkl
 !models/*/.gitkeep
 
 grpc-task-scheduler/server
+grpc-task-scheduler/main
