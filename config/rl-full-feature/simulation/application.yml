@@ -117,6 +117,7 @@ sensors:
       options: [500, 1000, 2000, 4000, 8000, 16000] # 6 options (MIPS)
     memory:
       options: [500, 2000] # 2 options (bytes)
+    repeated-task-probability: 0.6 # 60% chance of reusing task ID for same pattern (realistic for IoT)
 
 # External Task Generation Configuration
 external-tasks:
@@ -145,6 +146,9 @@ external-tasks:
       # Legacy support: min/max still supported for backward compatibility
       min: 500
       max: 2000
+
+    # Repeated task probability (for cache testing)
+    repeated-task-probability: 0.6 # 60% chance of reusing task ID for same pattern (realistic for IoT)
 
     # Output size (bytes)
     output:

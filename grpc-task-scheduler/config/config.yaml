@@ -27,7 +27,7 @@ model_persistence:
   model_name: 'task_scheduler_v1'
   save_interval: '10m'
   save_on_shutdown: true
-  backup_count: 3
+  backup_count: 0  # Backups disabled
   models_path: './models'
 
 # Metrics configuration

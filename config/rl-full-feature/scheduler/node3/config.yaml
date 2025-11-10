@@ -65,7 +65,7 @@ rl:
   # Episode configuration
   episode_config:
     type: 'task_based' # task_based or time_based
-    tasks_per_episode: 20 # Number of tasks per episode (when type is task_based)
+    tasks_per_episode: 75 # Number of tasks per episode (when type is task_based)
     time_per_episode_minutes: 5 # Minutes per episode (when type is time_based)
     reset_on_episode_end: false # Whether to reset learning parameters on episode end
 
@@ -185,7 +185,7 @@ single_node:
   node_id: 'fog_node_003' # node3
   node_name: 'Fog Node 3'
   max_concurrent_tasks: 8
-  default_algorithm: 'qlearning' # Use RL algorithm
+  default_algorithm: 'fifo' # Proto enum algorithm (RL is handled by AlgorithmManager below)
   default_objective: 'balanced' # References multi_objective profiles
 
 # Task queue configuration
