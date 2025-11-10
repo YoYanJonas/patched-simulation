@@ -8,6 +8,7 @@ import org.patch.proto.IfogsimScheduler.*;
 import org.patch.proto.IfogsimCommon.*;
 import org.fog.entities.Tuple;
 import org.cloudbus.cloudsim.core.CloudSim;
+import org.patch.config.EnhancedConfigurationLoader;
 
 import java.util.*;
 import java.util.logging.Logger;
@@ -26,12 +27,25 @@ public class SchedulerIntegration {
     private final ScheduledQueue scheduledQueue;
     private final TaskCacheManager cacheManager;
     private final int deviceId;
+    // Optional reference to RLFogDevice for storing pending async requests
+    private org.patch.devices.RLFogDevice rlFogDevice;
 
     // Configuration
     private final int maxBatchSize;
 
     // Debug counter for tracking send attempts
     private int sendAttemptCount = 0;
+
+    // Repeated task generation support for sensors
+    private java.util.Random random = new java.util.Random();
+    private java.util.Map<String, String> taskPatternToId = new java.util.HashMap<>(); // Pattern -> TaskId for reuse
+    // Repeated task probability - configurable, default 0.6 (60%) for realistic IoT scenarios
+    // IoT sensors typically send similar data repeatedly (temperature, motion, etc.)
+    private double repeatedTaskProbability;
+    // Calculate max unique patterns from config: CPU options × Memory options
+    // Default: 6 CPU × 2 Memory = 12 patterns (will start reuse after seeing all
+    // patterns)
+    private int maxUniqueTasks;
 
     /**
      * Constructor
@@ -52,9 +66,48 @@ public class SchedulerIntegration {
         this.scheduledQueue = scheduledQueue;
         this.cacheManager = cacheManager;
         this.deviceId = deviceId;
+        this.rlFogDevice = null;
 
         // Configuration
         this.maxBatchSize = 10; // Maximum 10 tasks per batch
+
+        // Load repeated task probability from config (default: 0.6 = 60% for realistic IoT scenarios)
+        this.repeatedTaskProbability = EnhancedConfigurationLoader.getSimulationConfigDouble(
+            "sensors.parameters.repeated-task-probability", 0.6);
+
+        // Calculate max unique patterns from config
+        this.maxUniqueTasks = calculateMaxUniquePatterns();
+    }
+
+    /**
+     * Set RLFogDevice reference for storing pending async requests
+     * 
+     * @param rlFogDevice The RLFogDevice instance
+     */
+    public void setRLFogDevice(org.patch.devices.RLFogDevice rlFogDevice) {
+        this.rlFogDevice = rlFogDevice;
+
+        logger.info(String.format("SchedulerIntegration: maxUniquePatterns=%d, reuseProbability=%.1f%%",
+                maxUniqueTasks, repeatedTaskProbability * 100));
+    }
+
+    /**
+     * Calculate maximum unique patterns from CPU and Memory options
+     * Formula: CPU options count × Memory options count
+     */
+    private int calculateMaxUniquePatterns() {
+        // Use getSensorConfigList for sensor configuration
+        java.util.List<Long> cpuOptions = EnhancedConfigurationLoader
+                .getSensorConfigList("sensors.parameters.cpu.options");
+        java.util.List<Long> memoryOptions = EnhancedConfigurationLoader
+                .getSensorConfigList("sensors.parameters.memory.options");
+
+        int cpuCount = (cpuOptions != null && !cpuOptions.isEmpty()) ? cpuOptions.size() : 1;
+        int memoryCount = (memoryOptions != null && !memoryOptions.isEmpty()) ? memoryOptions.size() : 1;
+
+        int maxPatterns = cpuCount * memoryCount;
+        // Use exact number: once map size = maxPatterns, we've seen all unique patterns
+        return maxPatterns;
     }
 
     /**
@@ -161,13 +214,14 @@ public class SchedulerIntegration {
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND-DETAILS] Time: %.2f - FogNode (ID:%d) - Tasks=%d, QueueContext(total=%d, unscheduled=%d, scheduled=%d)",
                     sendTime, deviceId, protoTasks.size(), totalQueueSize, unscheduledSize, scheduledSize));
-            
+
             // Log first 3 task IDs for tracing
             if (!protoTasks.isEmpty()) {
                 StringBuilder taskIds = new StringBuilder();
                 int maxTasks = Math.min(3, protoTasks.size());
                 for (int i = 0; i < maxTasks; i++) {
-                    if (i > 0) taskIds.append(",");
+                    if (i > 0)
+                        taskIds.append(",");
                     taskIds.append(protoTasks.get(i).getTaskId());
                 }
                 if (protoTasks.size() > 3) {
@@ -177,7 +231,7 @@ public class SchedulerIntegration {
                         "[FLOW-FOG-SCHEDULER-SEND-TASKIDS] Time: %.2f - FogNode (ID:%d) - Task IDs being sent: [%s]",
                         sendTime, deviceId, taskIds.toString()));
             }
-            
+
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND-CALL] Time: %.2f - FogNode (ID:%d) - NOW CALLING scheduler.addTasksToQueue (BLOCKING gRPC call)",
                     sendTime, deviceId));
@@ -210,50 +264,64 @@ public class SchedulerIntegration {
                 }
             }
 
-            // Send to scheduler gRPC server (BLOCKS until all responses received)
-            List<AddTaskToQueueResponse> responses = schedulerClient.addTasksToQueue(
-                    protoTasks, availableNodes, policy, queueContext);
-
-            // [DEBUG] Log after gRPC call - ENHANCED
-            double receiveTime = CloudSim.clock();
-            System.out.println(String.format(
-                    "[FLOW-FOG-SCHEDULER-SEND-RECEIVED] Time: %.2f - FogNode (ID:%d) - gRPC call COMPLETED - Received %d responses from scheduler",
-                    receiveTime, deviceId, responses.size()));
+            // EVENT-BASED ASYNC: Send each task individually using async method
+            // This allows network latency to advance simulation time and record energy/cost
+            List<org.patch.models.PendingSchedulingRequest> pendingRequests = new ArrayList<>();
             
-            // Log response details for first 3 responses
-            if (!responses.isEmpty()) {
-                StringBuilder responseDetails = new StringBuilder();
-                int maxResponses = Math.min(3, responses.size());
-                for (int i = 0; i < maxResponses; i++) {
-                    AddTaskToQueueResponse resp = responses.get(i);
-                    if (i > 0) responseDetails.append(" | ");
-                    responseDetails.append(String.format("TaskID=%s, Success=%s, Position=%d, Cached=%s",
-                            resp.getTaskId(), resp.getSuccess(), resp.getQueuePosition(), resp.getIsCachedTask()));
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND-CALL] Time: %.2f - FogNode (ID:%d) - NOW CALLING scheduler.addTaskToQueueAsync for %d tasks (ASYNC, NON-BLOCKING)",
+                    sendTime, deviceId, protoTasks.size()));
+            
+            for (Task protoTask : protoTasks) {
+                // Call async method for each task
+                org.patch.models.PendingSchedulingRequest pending = schedulerClient.addTaskToQueueAsync(
+                        protoTask, availableNodes, policy, queueContext, deviceId);
+                
+                // Store pending request in RLFogDevice if available
+                if (rlFogDevice != null) {
+                    rlFogDevice.storePendingSchedulingRequest(pending);
+                    logger.info(String.format(
+                        "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Device: %d - Stored pending request for task: %s in RLFogDevice",
+                        CloudSim.clock(), deviceId, protoTask.getTaskId()));
+                } else {
+                    // Fallback: store locally (but responses won't be processed correctly)
+                    pendingRequests.add(pending);
+                    logger.warning(String.format(
+                        "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Device: %d - RLFogDevice not set - pending request for task: %s stored locally only",
+                        CloudSim.clock(), deviceId, protoTask.getTaskId()));
                 }
-                if (responses.size() > 3) {
-                    responseDetails.append(" ... (+").append(responses.size() - 3).append(" more)");
-                }
-                System.out.println(String.format(
-                        "[FLOW-FOG-SCHEDULER-SEND-RESPONSE-DETAILS] Time: %.2f - FogNode (ID:%d) - Response details: [%s]",
-                        receiveTime, deviceId, responseDetails.toString()));
             }
             
+            // Note: Responses will be handled via GRPC_SCHEDULER_RESPONSE events
+            // We don't wait for responses here - they arrive asynchronously via CloudSim events
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND-ASYNC] Time: %.2f - FogNode (ID:%d) - Sent %d async scheduling requests, waiting for responses via events",
+                    CloudSim.clock(), deviceId, protoTasks.size()));
+            
+            // [DEBUG] Log after async calls initiated
+            double receiveTime = CloudSim.clock();
+            System.out.println(String.format(
+                    "[FLOW-FOG-SCHEDULER-SEND-ASYNC-INITIATED] Time: %.2f - FogNode (ID:%d) - Initiated %d async scheduling requests (responses will arrive via events)",
+                    receiveTime, deviceId, protoTasks.size()));
+
+            // Note: Response details will be logged in handleGrpcSchedulerResponse() event handler
+            // No need to log here since responses arrive asynchronously
+
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND-NOTE] Time: %.2f - FogNode (ID:%d) - Tasks already removed from unscheduled queue. Scheduled queue will be updated via streaming endpoint (GetSortedQueue)",
                     receiveTime, deviceId));
 
             if (sendAttemptCount <= 20 || sendAttemptCount % 10 == 0) {
                 System.out.println(
-                        String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Received %d responses from scheduler",
-                                deviceId, sendAttemptCount, responses.size()));
+                        String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Initiated %d async scheduling requests",
+                                deviceId, sendAttemptCount, protoTasks.size()));
             }
-            logger.info("Received " + responses.size() + " responses from scheduler");
+            logger.info("Initiated " + protoTasks.size() + " async scheduling requests");
 
-            // Process responses - tasks already removed from unscheduledQueue
+            // Note: Responses are processed asynchronously via GRPC_SCHEDULER_RESPONSE events
+            // in RLFogDevice.handleGrpcSchedulerResponse()
             // Scheduled queue will be updated via StreamingQueueObserver (GetSortedQueue)
-            // NOTE: Responses are informational only - scheduled queue comes from streaming
-            // endpoint!
-            processSchedulerResponses(responses, taskIdsSent, taskInfoMap);
+            // processSchedulerResponses() is no longer called here - handled in event handler
 
         } catch (Exception e) {
             System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: EXCEPTION - %s",
@@ -302,19 +370,123 @@ public class SchedulerIntegration {
 
             // Map tuple type to TaskType (if needed, use helper)
             TaskType taskType = mapTupleTypeToTaskType(tuple.getTupleType());
-            // Tuple doesn't have priority - use default (can be enhanced later if priority is stored elsewhere)
+            // Tuple doesn't have priority - use default (can be enhanced later if priority
+            // is stored elsewhere)
             int priority = 5; // Default priority
 
+            // Create pattern key for task reuse (CPU-Memory pattern)
+            String patternKey = String.format("%d-%d", tuple.getCloudletLength(), tuple.getCloudletFileSize());
+            String taskId;
+
+            // Decide whether to reuse existing task ID or create new one
+            boolean shouldReuse = random.nextDouble() < repeatedTaskProbability &&
+                    taskPatternToId.size() >= maxUniqueTasks &&
+                    taskPatternToId.containsKey(patternKey);
+
+            if (shouldReuse) {
+                // Reuse existing task ID for this pattern
+                taskId = taskPatternToId.get(patternKey);
+                logger.info(String.format(
+                        "[REPEATED-TASK-SENSOR] Reusing task ID %s for pattern (CPU:%d, Mem:%d) - Original tuple ID: %d",
+                        taskId, tuple.getCloudletLength(), tuple.getCloudletFileSize(), tuple.getCloudletId()));
+            } else {
+                // Use tuple's cloudlet ID (unique per tuple instance)
+                taskId = String.valueOf(tuple.getCloudletId());
+                taskPatternToId.put(patternKey, taskId);
+                if (taskPatternToId.size() > maxUniqueTasks * 2) {
+                    // Cleanup: remove oldest entries to prevent memory growth
+                    java.util.Iterator<java.util.Map.Entry<String, String>> it = taskPatternToId.entrySet().iterator();
+                    int toRemove = taskPatternToId.size() - maxUniqueTasks;
+                    while (it.hasNext() && toRemove > 0) {
+                        it.next();
+                        it.remove();
+                        toRemove--;
+                    }
+                }
+            }
+
+            // Check local cache status before creating proto task
+            boolean localCacheExists = false;
+            if (cacheManager != null) {
+                TaskCacheManager.CacheResult cacheResult = cacheManager.checkCache(taskId);
+                localCacheExists = (cacheResult == TaskCacheManager.CacheResult.HIT_VALID);
+                logger.fine(String.format(
+                    "[LOCAL-CACHE-CHECK] Task %s: local_cache_exists=%s (cacheResult=%s)",
+                    taskId, localCacheExists, cacheResult));
+            }
+
+            // [DEBUG-LOG] Log TaskId and cloudlet_id metadata for ACK failure investigation
+            long cloudletId = tuple.getCloudletId();
+            String cloudletIdStr = String.valueOf(cloudletId);
+            System.out.println(String.format(
+                    "[DEBUG-KEY-CREATION] SchedulerIntegration: TaskId='%s', cloudletId=%d, cloudlet_id metadata='%s', TaskId==cloudlet_id? %s",
+                    taskId, cloudletId, cloudletIdStr, taskId.equals(cloudletIdStr)));
+            logger.info(String.format(
+                    "[DEBUG-KEY-CREATION] SchedulerIntegration: TaskId='%s', cloudletId=%d, cloudlet_id metadata='%s', TaskId==cloudlet_id? %s",
+                    taskId, cloudletId, cloudletIdStr, taskId.equals(cloudletIdStr)));
+
+            // Get VM MIPS for execution time calculation
+            // Try to get from RLFogDevice if available, otherwise use default
+            long vmMips = 1000; // Default MIPS (from config: devices.fog.default-mips)
+            if (rlFogDevice != null && rlFogDevice.getHost() != null && !rlFogDevice.getHost().getVmList().isEmpty()) {
+                // Get MIPS from first available VM
+                org.cloudbus.cloudsim.Vm vm = rlFogDevice.getHost().getVmList().get(0);
+                vmMips = (long) vm.getMips();
+                if (vmMips <= 0) {
+                    vmMips = 1000; // Fallback to default
+                }
+            } else {
+                // Try to get from configuration
+                vmMips = (long) EnhancedConfigurationLoader.getDeviceConfigDouble(
+                    "devices.fog.default-mips", 1000.0);
+            }
+
+            // Calculate execution time from cloudletLength and VM MIPS
+            // execution_time (ms) = (cloudletLength (MI) / VM_MIPS) * 1000
+            long cloudletLength = tuple.getCloudletLength();
+            long executionTimeMs = (cloudletLength * 1000) / vmMips;
+            if (executionTimeMs <= 0) {
+                executionTimeMs = 1; // Minimum 1ms to pass server validation
+            }
+
+            // Convert cloudletFileSize (bytes) to memory_requirement (MB)
+            long cloudletFileSize = tuple.getCloudletFileSize();
+            long memoryRequirementMb = cloudletFileSize / (1024 * 1024);
+            if (memoryRequirementMb <= 0) {
+                memoryRequirementMb = 1; // Minimum 1 MB to pass server validation
+            }
+
+            // Convert cloudletOutputSize (bytes) to output_size (bytes) - direct mapping
+            long cloudletOutputSize = tuple.getCloudletOutputSize();
+            if (cloudletOutputSize <= 0) {
+                // Fallback: estimate from memory_requirement if output size is not set
+                cloudletOutputSize = tuple.getCloudletFileSize(); // Use input size as estimate
+                if (cloudletOutputSize <= 0) {
+                    cloudletOutputSize = 1024 * 1024; // Default 1 MB in bytes
+                }
+            }
+
             Task protoTask = Task.newBuilder()
-                    .setTaskId(String.valueOf(tuple.getCloudletId()))
+                    .setTaskId(taskId)  // Reused TaskId (e.g., "1") - still used for cache key
                     .setTaskName(tuple.getTupleType())
                     .setTaskType(taskType)
-                    .setCpuRequirement(tuple.getCloudletLength())
-                    .setMemoryRequirement(tuple.getCloudletFileSize())
-                    .setExecutionTime(tuple.getCloudletLength())
+                    .setCpuRequirement(tuple.getCloudletLength())  // ✅ CORRECT: MI → MI
+                    .setMemoryRequirement(memoryRequirementMb)      // ✅ CORRECT: bytes → MB
+                    .setExecutionTime(executionTimeMs)              // ✅ CORRECT: Calculated from MI and MIPS
+                    .setOutputSize(cloudletOutputSize)              // ✅ CORRECT: bytes → bytes
                     .setPriority(priority) // Default priority (Tuple doesn't have priority field)
                     .setDeadline(System.currentTimeMillis() + 300000) // 5 minutes deadline
-                    .build(); // Metadata and dependencies would need to be added via TupleFactory if available
+                    .putMetadata("cloudlet_id", cloudletIdStr)  // ✅ Store unique cloudletId
+                    .setLocalCacheExists(localCacheExists)  // ✅ NEW: Local cache status for server (proper proto field)
+                    .build();
+            
+            // [DEBUG-LOG] Log final proto task values
+            System.out.println(String.format(
+                    "[DEBUG-KEY-CREATION] SchedulerIntegration: Final protoTask.getTaskId()='%s', protoTask.getMetadataMap().get('cloudlet_id')='%s'",
+                    protoTask.getTaskId(), protoTask.getMetadataMap().get("cloudlet_id")));
+            logger.info(String.format(
+                    "[DEBUG-KEY-CREATION] SchedulerIntegration: Final protoTask.getTaskId()='%s', protoTask.getMetadataMap().get('cloudlet_id')='%s'",
+                    protoTask.getTaskId(), protoTask.getMetadataMap().get("cloudlet_id")));
 
             protoTasks.add(protoTask);
 
@@ -472,7 +644,9 @@ public class SchedulerIntegration {
                     (long) CloudSim.clock(),
                     (long) (CloudSim.clock() + 1000), // 1 second execution time in simulation time
                     false, // Not cached
-                    null // No cache key
+                    null, // No cache key
+                    taskInfo.getTaskId(),  // ✅ Use scheduler-assigned TaskId
+                    org.patch.proto.IfogsimCommon.CacheAction.CACHE_ACTION_NONE  // ✅ Default cache action (fallback)
             );
 
             scheduledQueue.addTask(scheduledTask);
