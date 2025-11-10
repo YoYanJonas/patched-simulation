@@ -25,9 +25,14 @@ if [ ! -d "$CONFIG_SRC" ]; then
     exit 1
 fi
 
-# Create report directory structure
 echo "Creating report directory structure..."
-mkdir -p "$REPORT_DIR"/{simulation,scheduler/{node1,node2,node3},allocator,configs}
+mkdir -p "$REPORT_DIR"/{simulation,scheduler/{node1,node2,node3}/logs,allocator/logs,configs}
+
+if [ -d "$REPORT_DIR" ]; then
+    chown -R "$USER:$USER" "$REPORT_DIR" 2>/dev/null || true
+    chmod -R u+w "$REPORT_DIR" 2>/dev/null || true
+    echo "  ✓ Report directories created with proper ownership"
+fi
 
 # Copy config snapshot
 echo "Creating config snapshot..."

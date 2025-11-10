@@ -23,28 +23,34 @@ echo ""
 echo "Collecting server logs from containers..."
 echo "================================================================================"
 
-# Create log directories
 mkdir -p "$REPORT_DIR/allocator/logs"
 mkdir -p "$REPORT_DIR/scheduler/node1/logs"
 mkdir -p "$REPORT_DIR/scheduler/node2/logs"
 mkdir -p "$REPORT_DIR/scheduler/node3/logs"
 
-# Function to collect logs from a service
 collect_logs() {
     local service=$1
     local log_dir=$2
     local log_file="$log_dir/server.log"
+    local temp_file="/tmp/${service}_server.log.$$"
     
     echo "Collecting logs from $service..."
-    # Check if container exists (running, stopped, or exited) - use -a to include stopped
     if docker compose ps -a "$service" 2>/dev/null | grep -q -E "Up|Exited|Created"; then
-        # Use --no-color and capture both stdout and stderr
-        docker compose logs --no-color "$service" > "$log_file" 2>&1
-        if [ -f "$log_file" ] && [ -s "$log_file" ]; then
+        docker compose logs --no-color "$service" > "$temp_file" 2>&1
+        if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
+            if mv "$temp_file" "$log_file" 2>/dev/null; then
+                chmod 644 "$log_file" 2>/dev/null || true
+                chown "$USER:$USER" "$log_file" 2>/dev/null || true
+            else
+                cp "$temp_file" "$log_file" 2>/dev/null
+                chmod 644 "$log_file" 2>/dev/null || true
+                chown "$USER:$USER" "$log_file" 2>/dev/null || true
+                rm -f "$temp_file"
+            fi
+            
             local line_count=$(wc -l < "$log_file" 2>/dev/null || echo "0")
             echo "  ✓ Saved to: $log_file ($line_count lines)"
             
-            # Check for errors in logs
             local error_count=$(grep -iE "error|fatal|panic|failed|exception" "$log_file" 2>/dev/null | wc -l || echo "0")
             if [ "$error_count" -gt 0 ]; then
                 echo "  ⚠ Warning: Found $error_count potential errors in logs"
@@ -52,7 +58,6 @@ collect_logs() {
                 grep -iE "error|fatal|panic|failed|exception" "$log_file" 2>/dev/null | head -3 | sed 's/^/      /'
             fi
             
-            # Check for task flow indicators (allocator/scheduler)
             if [[ "$service" == "allocator" ]]; then
                 local task_received=$(grep -iE "\[ALLOCATOR-RECEIVE\]|AllocateTask request" "$log_file" 2>/dev/null | wc -l || echo "0")
                 local node_registered=$(grep -iE "\[ALLOCATOR-NODE-REGISTERED\]" "$log_file" 2>/dev/null | wc -l || echo "0")
@@ -64,14 +69,13 @@ collect_logs() {
             fi
         else
             echo "  ✗ Failed to collect logs from $service (empty or no logs)"
-            rm -f "$log_file"
+            rm -f "$temp_file"
         fi
     else
         echo "  ⚠ Container $service not found or never started (logs may have been removed)"
     fi
 }
 
-# Collect logs from all services
 collect_logs "allocator" "$REPORT_DIR/allocator/logs"
 collect_logs "scheduler-1" "$REPORT_DIR/scheduler/node1/logs"
 collect_logs "scheduler-2" "$REPORT_DIR/scheduler/node2/logs"
