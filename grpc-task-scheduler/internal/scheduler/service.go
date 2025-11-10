@@ -248,8 +248,18 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 
 	// [DEBUG] Building response
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESPONSE-BUILD-BEFORE] About to build AddTaskToQueueResponse")
+	
+	// Extract cloudletId from task metadata (unique instance identifier)
+	cloudletId := ""
+	if req.Task.Metadata != nil {
+		if cid, ok := req.Task.Metadata["cloudlet_id"]; ok && cid != "" {
+			cloudletId = cid
+		}
+	}
+	
 	response := &pb.AddTaskToQueueResponse{
 		TaskId:              req.Task.TaskId,
+		CloudletId:          cloudletId,
 		Success:             true,
 		Message:             "task added to queue successfully",
 		QueuePosition:       queuePosition,
@@ -290,9 +300,17 @@ func (s *SchedulerService) ReportTaskCompletion(ctx context.Context, req *pb.Tas
 		}, nil
 	}
 
+	// [DEBUG] Entry point for task completion report
+	fmt.Printf("[DEBUG] [SERVICE-COMPLETE-ENTRY] ReportTaskCompletion called: TaskID=%s, HasNodeStatus=%t\n", 
+		req.TaskId, req.NodeStatus != nil)
+	logger.GetLogger().Infof("[SERVICE-COMPLETE-ENTRY] ReportTaskCompletion: TaskID=%s, HasNodeStatus=%t", 
+		req.TaskId, req.NodeStatus != nil)
+
 	// Delegate to SchedulerEngine - keeps service layer clean
 	err := s.schedulerEngine.ProcessTaskCompletion(req)
 	if err != nil {
+		fmt.Printf("[DEBUG] [SERVICE-COMPLETE-ERROR] ProcessTaskCompletion failed: TaskID=%s, Error=%v\n", 
+			req.TaskId, err)
 		s.metrics.IncrementFailedRequests()
 		return &pb.TaskCompletionAck{
 			Success: false,
@@ -300,8 +318,9 @@ func (s *SchedulerService) ReportTaskCompletion(ctx context.Context, req *pb.Tas
 		}, nil
 	}
 
+	fmt.Printf("[DEBUG] [SERVICE-COMPLETE-SUCCESS] Task completion processed successfully: TaskID=%s\n", req.TaskId)
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Task completion processed: %s", req.TaskId)
+	logger.GetLogger().Infof("[SERVICE-COMPLETE-SUCCESS] Task completion processed: %s", req.TaskId)
 
 	return &pb.TaskCompletionAck{
 		Success: true,
@@ -496,6 +515,14 @@ func (s *SchedulerService) GetAgent() *rl.Agent {
 		return nil
 	}
 	return s.schedulerEngine.GetAgent()
+}
+
+// GetCacheAgent returns the cache RL agent from the scheduler engine
+func (s *SchedulerService) GetCacheAgent() *rl.CacheAgent {
+	if s.schedulerEngine == nil {
+		return nil
+	}
+	return s.schedulerEngine.GetCacheAgent()
 }
 
 // GetSortedQueue returns the current sorted queue
