@@ -58,12 +58,24 @@ func NewTaskEntry(task *pb.Task) *TaskEntry {
 	}
 }
 
-// GetTaskID returns the task ID
+// GetTaskID returns the task ID (pattern-based, may be reused for repeated tasks)
 func (te *TaskEntry) GetTaskID() string {
 	if te.Task == nil {
 		return ""
 	}
 	return te.Task.TaskId
+}
+
+// GetCloudletId returns the cloudletId from task metadata (unique instance identifier)
+// This is the unique identifier assigned by CloudSim for each task instance
+func (te *TaskEntry) GetCloudletId() string {
+	if te.Task == nil || te.Task.Metadata == nil {
+		return ""
+	}
+	if cid, ok := te.Task.Metadata["cloudlet_id"]; ok && cid != "" {
+		return cid
+	}
+	return ""
 }
 
 // GetEstimatedDuration returns the estimated execution duration
