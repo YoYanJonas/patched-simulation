@@ -9,6 +9,7 @@ import (
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // Interface definitions to avoid circular imports
@@ -367,23 +368,43 @@ func (a *Agent) Stop() {
 }
 
 // ProcessTaskCompletion processes task completion for RL experience collection
-// NOTE: This method should not be used directly - use ProcessTaskCompletionWithNodeManager instead
-// This method exists for interface compatibility but will fail without real node manager
+// NOTE: This method should not be used directly - use ProcessTaskCompletionWithNodeStatus instead
+// This method exists for interface compatibility but will fail without real node status
 func (a *Agent) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport) error {
-	return fmt.Errorf("ProcessTaskCompletion requires real node manager - use ProcessTaskCompletionWithNodeManager instead")
+	return fmt.Errorf("ProcessTaskCompletion requires real node status - use ProcessTaskCompletionWithNodeStatus instead")
 }
 
-// ProcessTaskCompletionWithNodeManager processes task completion with node manager context
-func (a *Agent) ProcessTaskCompletionWithNodeManager(task TaskEntry, report *pb.TaskCompletionReport, nodeManager SingleNodeManager) error {
+// ProcessTaskCompletionWithNodeStatus processes task completion with node status from completion report
+func (a *Agent) ProcessTaskCompletionWithNodeStatus(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
+	fmt.Printf("[DEBUG] [AGENT-COMPLETE-ENTRY] ProcessTaskCompletionWithNodeStatus called: TaskID=%s, QueueLength=%d, HasNodeStatus=%t\n", 
+		report.TaskId, queueLength, nodeStatus != nil)
+	logger.GetLogger().Infof("[AGENT-COMPLETE-ENTRY] ProcessTaskCompletionWithNodeStatus: TaskID=%s, QueueLength=%d, HasNodeStatus=%t", 
+		report.TaskId, queueLength, nodeStatus != nil)
+	
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if !a.isEnabled || a.algorithmManager == nil {
+		fmt.Printf("[DEBUG] [AGENT-COMPLETE-ERROR] Agent disabled or not initialized: TaskID=%s, Enabled=%t, Manager=%t\n", 
+			report.TaskId, a.isEnabled, a.algorithmManager != nil)
+		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] Agent disabled or not initialized: TaskID=%s, Enabled=%t, Manager=%t", 
+			report.TaskId, a.isEnabled, a.algorithmManager != nil)
 		return fmt.Errorf("agent is disabled or not initialized")
 	}
 
-	// Delegate to algorithm manager with proper nodeManager reference
-	return a.algorithmManager.ProcessTaskCompletion(task, report, nodeManager)
+	// Delegate to algorithm manager with node status and actual queue length from completion report
+	fmt.Printf("[DEBUG] [AGENT-COMPLETE-CALL] Calling algorithmManager.ProcessTaskCompletion: TaskID=%s\n", report.TaskId)
+	err := a.algorithmManager.ProcessTaskCompletion(task, report, nodeStatus, queueLength)
+	if err != nil {
+		fmt.Printf("[DEBUG] [AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: TaskID=%s, Error=%v\n", 
+			report.TaskId, err)
+		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: TaskID=%s, Error=%v", 
+			report.TaskId, err)
+	} else {
+		fmt.Printf("[DEBUG] [AGENT-COMPLETE-SUCCESS] algorithmManager.ProcessTaskCompletion succeeded: TaskID=%s\n", report.TaskId)
+		logger.GetLogger().Infof("[AGENT-COMPLETE-SUCCESS] algorithmManager.ProcessTaskCompletion succeeded: TaskID=%s", report.TaskId)
+	}
+	return err
 }
 
 // GetAlgorithmManager returns the algorithm manager for model persistence

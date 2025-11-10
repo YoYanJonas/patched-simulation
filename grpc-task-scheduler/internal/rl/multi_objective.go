@@ -5,6 +5,7 @@ import (
 	"math"
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 
 	"time"
 )
@@ -70,7 +71,7 @@ func NewMultiObjectiveRewardCalculator(
 
 	baseCalculator := NewRewardCalculator(weights)
 
-	return &MultiObjectiveRewardCalculator{
+	calc := &MultiObjectiveRewardCalculator{
 		RewardCalculator:    baseCalculator,
 		config:              moConfig,
 		activeProfile:       moConfig.ActiveProfile,
@@ -81,6 +82,13 @@ func NewMultiObjectiveRewardCalculator(
 		paretoFront:         make([]ObjectiveVector, 0),
 		adaptationHistory:   make([]WeightAdaptation, 0, 20),
 	}
+
+	logger.GetLogger().Infof("[MULTI-OBJ-INIT] Multi-objective calculator created: Profile=%s, Scalarization=%s, AdaptationEnabled=%t, AdaptationWindow=%d",
+		moConfig.ActiveProfile, moConfig.ScalarizationMethod, moConfig.AdaptationEnabled, moConfig.AdaptationWindow)
+	logger.GetLogger().Infof("[MULTI-OBJ-INIT] Initial weights: Latency=%.3f, Throughput=%.3f, ResourceEff=%.3f, Fairness=%.3f, DeadlineMiss=%.3f, EnergyEff=%.3f",
+		weights.Latency, weights.Throughput, weights.ResourceEfficiency, weights.Fairness, weights.DeadlineMiss, weights.EnergyEfficiency)
+
+	return calc
 }
 
 // CalculateMultiObjectiveReward calculates reward considering multiple objectives
@@ -232,41 +240,94 @@ func (morc *MultiObjectiveRewardCalculator) augmentedTchebycheff(
 
 // Weight adaptation methods
 func (morc *MultiObjectiveRewardCalculator) adaptWeights(episode int) {
+	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-ENTRY] adaptWeights called: Episode=%d, HistorySize=%d, Window=%d",
+		episode, len(morc.performanceHistory), morc.adaptationWindow)
+
 	if len(morc.performanceHistory) < morc.adaptationWindow {
+		logger.GetLogger().Debugf("[MULTI-OBJ-ADAPT-SKIP] Insufficient history: HistorySize=%d < Window=%d",
+			len(morc.performanceHistory), morc.adaptationWindow)
 		return
 	}
 
 	// Get recent performance window
 	recentHistory := morc.performanceHistory[len(morc.performanceHistory)-morc.adaptationWindow:]
 
+	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-HISTORY] Using recent history: Window=%d episodes",
+		len(recentHistory))
+
 	// Calculate objective trends
 	trends := morc.calculateObjectiveTrends(recentHistory)
+
+	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-TRENDS] Objective trends: Latency=%.3f, Throughput=%.3f, ResourceEff=%.3f, Fairness=%.3f, DeadlineMiss=%.3f, EnergyEff=%.3f",
+		trends["latency"], trends["throughput"], trends["resource_efficiency"],
+		trends["fairness"], trends["deadline_miss"], trends["energy_efficiency"])
 
 	// Calculate new weights based on performance
 	oldWeights := morc.GetRewardWeights()
 	newWeights := morc.calculateAdaptedWeights(trends, oldWeights)
 
+	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-WEIGHTS] Weight changes: Latency=%.3f->%.3f, Throughput=%.3f->%.3f, ResourceEff=%.3f->%.3f, Fairness=%.3f->%.3f, DeadlineMiss=%.3f->%.3f, EnergyEff=%.3f->%.3f",
+		oldWeights.Latency, newWeights.Latency,
+		oldWeights.Throughput, newWeights.Throughput,
+		oldWeights.ResourceEfficiency, newWeights.ResourceEfficiency,
+		oldWeights.Fairness, newWeights.Fairness,
+		oldWeights.DeadlineMiss, newWeights.DeadlineMiss,
+		oldWeights.EnergyEfficiency, newWeights.EnergyEfficiency)
+
 	// Apply adaptation if significant
-	if morc.shouldApplyAdaptation(oldWeights, newWeights) {
+	shouldApply := morc.shouldApplyAdaptation(oldWeights, newWeights)
+	maxChange := 0.0
+	if shouldApply {
+		changes := []float64{
+			math.Abs(newWeights.Latency - oldWeights.Latency),
+			math.Abs(newWeights.Throughput - oldWeights.Throughput),
+			math.Abs(newWeights.ResourceEfficiency - oldWeights.ResourceEfficiency),
+			math.Abs(newWeights.Fairness - oldWeights.Fairness),
+			math.Abs(newWeights.DeadlineMiss - oldWeights.DeadlineMiss),
+			math.Abs(newWeights.EnergyEfficiency - oldWeights.EnergyEfficiency),
+		}
+		for _, change := range changes {
+			if change > maxChange {
+				maxChange = change
+			}
+		}
+	}
+
+	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-APPLY] Adaptation check: MaxChange=%.3f, Threshold=0.05, ShouldApply=%t",
+		maxChange, shouldApply)
+
+	if shouldApply {
 		performanceChange := morc.calculatePerformanceChange(recentHistory)
+
+		reason := morc.generateAdaptationReason(trends)
+		logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-REASON] Adaptation reason: %s, PerformanceChange=%.3f",
+			reason, performanceChange)
 
 		adaptation := WeightAdaptation{
 			Timestamp:   time.Now(),
 			Episode:     episode,
 			OldWeights:  oldWeights,
 			NewWeights:  newWeights,
-			Reason:      morc.generateAdaptationReason(trends),
+			Reason:      reason,
 			Performance: performanceChange,
 		}
 
 		morc.SetRewardWeights(newWeights)
 		morc.adaptationHistory = append(morc.adaptationHistory, adaptation)
 
+		logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-SUCCESS] Weight adaptation applied: Episode=%d, AdaptationHistorySize=%d",
+			episode, len(morc.adaptationHistory))
+
 		// Limit adaptation history
 		if len(morc.adaptationHistory) > 20 {
 			morc.adaptationHistory = morc.adaptationHistory[1:]
+			logger.GetLogger().Debugf("[MULTI-OBJ-ADAPT-HISTORY] Adaptation history trimmed to 20 entries")
 		}
+	} else {
+		logger.GetLogger().Debugf("[MULTI-OBJ-ADAPT-SKIP] Adaptation skipped: Change too small (%.3f < 0.05)", maxChange)
 	}
+
+	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-EXIT] adaptWeights completed: Episode=%d", episode)
 }
 
 func (morc *MultiObjectiveRewardCalculator) calculateObjectiveTrends(
@@ -449,6 +510,8 @@ func (morc *MultiObjectiveRewardCalculator) recordPerformance(performance Object
 }
 
 func (morc *MultiObjectiveRewardCalculator) updateParetoFront(objectives ObjectiveVector) {
+	oldSize := len(morc.paretoFront)
+
 	// Simple Pareto front maintenance
 	// Add new point and remove dominated ones
 
@@ -461,24 +524,39 @@ func (morc *MultiObjectiveRewardCalculator) updateParetoFront(objectives Objecti
 		}
 	}
 
+	logger.GetLogger().Debugf("[MULTI-OBJ-PARETO-UPDATE] Updating Pareto front: Episode=%d, OldSize=%d, Dominated=%t",
+		objectives.Episode, oldSize, dominated)
+
 	if !dominated {
 		// Add new point
 		morc.paretoFront = append(morc.paretoFront, objectives)
 
 		// Remove points dominated by the new one
+		removedCount := 0
 		newFront := make([]ObjectiveVector, 0)
 		for _, existing := range morc.paretoFront {
 			if !morc.dominates(objectives, existing) {
 				newFront = append(newFront, existing)
+			} else {
+				removedCount++
 			}
 		}
 		morc.paretoFront = newFront
 
+		logger.GetLogger().Infof("[MULTI-OBJ-PARETO-ADDED] Point added to front: Episode=%d, RemovedDominated=%d, NewSize=%d",
+			objectives.Episode, removedCount, len(morc.paretoFront))
+
 		// Limit Pareto front size
 		if len(morc.paretoFront) > 50 {
 			// Keep most recent points
+			trimmed := len(morc.paretoFront) - 50
 			morc.paretoFront = morc.paretoFront[len(morc.paretoFront)-50:]
+			logger.GetLogger().Debugf("[MULTI-OBJ-PARETO-TRIM] Pareto front trimmed: Removed=%d, NewSize=%d",
+				trimmed, len(morc.paretoFront))
 		}
+	} else {
+		logger.GetLogger().Debugf("[MULTI-OBJ-PARETO-DOMINATED] New point dominated, not added: Episode=%d, FrontSize=%d",
+			objectives.Episode, oldSize)
 	}
 }
 
@@ -568,16 +646,31 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 	action Action,
 	completedTasks []*pb.CompletedTask,
 	systemMetrics *pb.SystemPerformanceMetrics, // Corresponds to report.Metrics
+	nodeStatus *pb.FogNode, // NEW: Node status at completion time
 ) (float64, error) {
 
-	// Convert proto metrics to internal SystemPerformanceMetrics
-	currentMetrics := morc.calculateMetricsFromReport(completedTasks, systemMetrics)
+	taskID := "unknown"
+	if len(completedTasks) > 0 {
+		taskID = completedTasks[0].TaskId
+	}
+
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-ENTRY] CalculateDelayedReward called: TaskID=%s, CompletedTasks=%d, NodeStatus=%t",
+		taskID, len(completedTasks), nodeStatus != nil)
+
+	// Convert proto metrics to internal SystemPerformanceMetrics (use node status for resource utilization)
+	currentMetrics := morc.calculateMetricsFromReport(completedTasks, systemMetrics, nodeStatus)
+
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-METRICS] Metrics extracted: Latency=%.2fms, Throughput=%.2f, ResourceUtil=%.3f, Fairness=%.3f, DeadlineMisses=%d, EnergyEff=%.3f",
+		currentMetrics.AverageLatencyMs, currentMetrics.TotalThroughput, currentMetrics.ResourceUtilization,
+		currentMetrics.FairnessIndex, currentMetrics.DeadlineMisses, currentMetrics.EnergyEfficiency)
 
 	// GET EPISODE NUMBER: Extract from performance history or use default
 	currentEpisode := 1
 	if len(morc.performanceHistory) > 0 {
 		currentEpisode = morc.performanceHistory[len(morc.performanceHistory)-1].Episode + 1
 	}
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-EPISODE] Episode number determined: %d (from history=%t, historySize=%d)",
+		currentEpisode, len(morc.performanceHistory) > 0, len(morc.performanceHistory))
 
 	// Convert to objectives
 	objectives := ObjectiveVector{
@@ -591,11 +684,21 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 		Timestamp:          time.Now(),
 	}
 
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-NORMALIZE] Normalized objectives: Latency=%.3f, Throughput=%.3f, ResourceEff=%.3f, Fairness=%.3f, DeadlineMiss=%.3f, EnergyEff=%.3f",
+		objectives.Latency, objectives.Throughput, objectives.ResourceEfficiency, objectives.Fairness, objectives.DeadlineMiss, objectives.EnergyEfficiency)
+
 	// Get current weights (may be adapted)
 	currentWeights := morc.GetRewardWeights()
 
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-WEIGHTS] Current weights: Latency=%.3f, Throughput=%.3f, ResourceEff=%.3f, Fairness=%.3f, DeadlineMiss=%.3f, EnergyEff=%.3f",
+		currentWeights.Latency, currentWeights.Throughput, currentWeights.ResourceEfficiency,
+		currentWeights.Fairness, currentWeights.DeadlineMiss, currentWeights.EnergyEfficiency)
+
 	// Apply scalarization method
 	scalarizedReward := morc.scalarizeObjectives(objectives, currentWeights)
+
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-SCALARIZE] Scalarization method=%s, scalarized reward=%.3f, Profile=%s",
+		morc.scalarizationMethod, scalarizedReward, morc.activeProfile)
 
 	// Record performance for adaptation
 	performance := ObjectivePerformance{
@@ -608,13 +711,30 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 	}
 	morc.recordPerformance(performance)
 
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-RECORD] Performance recorded: Episode=%d, Reward=%.3f, HistorySize=%d",
+		currentEpisode, scalarizedReward, len(morc.performanceHistory))
+
 	// Update Pareto front
+	oldParetoSize := len(morc.paretoFront)
 	morc.updateParetoFront(objectives)
+	newParetoSize := len(morc.paretoFront)
+	if newParetoSize != oldParetoSize {
+		logger.GetLogger().Infof("[MULTI-OBJ-PARETO-UPDATE] Pareto front updated: Size=%d->%d, Episode=%d",
+			oldParetoSize, newParetoSize, currentEpisode)
+	}
 
 	// Adapt weights if enabled
 	if morc.adaptationEnabled && len(morc.performanceHistory) >= morc.adaptationWindow {
+		logger.GetLogger().Infof("[MULTI-OBJ-REWARD-ADAPT] Triggering weight adaptation: HistorySize=%d >= Window=%d",
+			len(morc.performanceHistory), morc.adaptationWindow)
 		morc.adaptWeights(currentEpisode)
+	} else {
+		logger.GetLogger().Debugf("[MULTI-OBJ-REWARD-ADAPT] Weight adaptation skipped: Enabled=%t, HistorySize=%d < Window=%d",
+			morc.adaptationEnabled, len(morc.performanceHistory), morc.adaptationWindow)
 	}
+
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-EXIT] CalculateDelayedReward returning: TaskID=%s, Reward=%.3f, Episode=%d",
+		taskID, scalarizedReward, currentEpisode)
 
 	return scalarizedReward, nil
 }
@@ -623,16 +743,54 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 // This converts protobuf metrics to internal metrics format.
 func (morc *MultiObjectiveRewardCalculator) calculateMetricsFromReport(
 	tasks []*pb.CompletedTask, // ← CHANGED: Now accepts pointers directly
-	metrics *pb.SystemPerformanceMetrics) SystemPerformanceMetrics {
+	metrics *pb.SystemPerformanceMetrics,
+	nodeStatus *pb.FogNode, // NEW: Node status at completion time
+) SystemPerformanceMetrics {
 
 	// Convert protobuf metrics to internal format
 	derivedMetrics := SystemPerformanceMetrics{
 		TotalThroughput:     metrics.TotalThroughput,
 		AverageLatencyMs:    metrics.AverageLatencyMs,
 		EnergyEfficiency:    metrics.EnergyEfficiency,
-		ResourceUtilization: metrics.ResourceUtilization,
+		ResourceUtilization: metrics.ResourceUtilization, // Will be overridden if nodeStatus available
 		DeadlineMisses:      metrics.DeadlineMisses,
 		FairnessIndex:       metrics.FairnessIndex,
+	}
+
+	// NEW: Use node status for resource utilization calculation
+	if nodeStatus != nil && nodeStatus.CurrentUsage != nil && nodeStatus.Capacity != nil {
+		// Calculate CPU utilization percentage (clamp to [0.0, 1.0])
+		cpuUtilPercent := float64(nodeStatus.CurrentUsage.CpuUsage) / 100.0 // Already percentage
+		if cpuUtilPercent < 0.0 {
+			cpuUtilPercent = 0.0
+		}
+		if cpuUtilPercent > 1.0 {
+			cpuUtilPercent = 1.0
+		}
+
+		// Calculate Memory utilization percentage
+		memoryUtilPercent := 0.0
+		if nodeStatus.Capacity.MemoryMb > 0 {
+			memoryUtilPercent = float64(nodeStatus.CurrentUsage.MemoryUsageMb) / float64(nodeStatus.Capacity.MemoryMb)
+			// Clamp to [0.0, 1.0] to handle edge cases
+			if memoryUtilPercent < 0.0 {
+				memoryUtilPercent = 0.0
+			}
+			if memoryUtilPercent > 1.0 {
+				memoryUtilPercent = 1.0
+			}
+		}
+
+		// Resource utilization = average of CPU and Memory
+		derivedMetrics.ResourceUtilization = (cpuUtilPercent + memoryUtilPercent) / 2.0
+
+		logger.GetLogger().Infof("[MULTI-OBJ-METRICS-NODE] Node=%s, CPU=%.2f%%, Memory=%.2f%%, ResourceUtil=%.3f",
+			nodeStatus.NodeId, cpuUtilPercent*100, memoryUtilPercent*100, derivedMetrics.ResourceUtilization)
+	} else {
+		// Fallback to systemMetrics if node status not available
+		derivedMetrics.ResourceUtilization = metrics.ResourceUtilization
+		logger.GetLogger().Warnf("[MULTI-OBJ-METRICS-NO-NODE] Node status not available, using systemMetrics.ResourceUtilization=%.3f",
+			derivedMetrics.ResourceUtilization)
 	}
 
 	// If you need to derive additional metrics from tasks, do it here:

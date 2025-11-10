@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
 )
 
@@ -96,16 +97,23 @@ func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager) *Sta
 	}
 
 	// [DEBUG] Resource utilization
-	// Resource utilization from node manager
+	// NOTE: During scheduling, node status is not available (tasks haven't executed yet)
+	// CPU/Memory will be 0.0, but this is OK because:
+	// 1. Queue length and task priorities are the main features for scheduling decisions
+	// 2. Node status will be available in completion report for delayed reward calculation
 	if nodeManager != nil {
 		fmt.Printf("[DEBUG] [STATE-EXTRACT-NODE-BEFORE] About to get node manager metrics\n")
-		state.CPUUtilization = nodeManager.GetCPUUtilization()
-		state.MemoryUtilization = nodeManager.GetMemoryUtilization()
+		// Keep for backward compatibility, but values will be 0.0
+		// Real node status comes from completion report
+		state.CPUUtilization = nodeManager.GetCPUUtilization() // Will be 0.0
+		state.MemoryUtilization = nodeManager.GetMemoryUtilization() // Will be 0.0
 		state.SystemLoad = (state.CPUUtilization + state.MemoryUtilization) / 2.0
 		state.ResourcePressure = math.Max(state.CPUUtilization, state.MemoryUtilization)
 		// [DEBUG] Node metrics retrieved
 		fmt.Printf("[DEBUG] [STATE-EXTRACT-NODE-AFTER] Node metrics: CPU=%.2f, Memory=%.2f, Load=%.2f, Pressure=%.2f\n",
 			state.CPUUtilization, state.MemoryUtilization, state.SystemLoad, state.ResourcePressure)
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-SCHEDULING] Node status not available during scheduling (CPU=%.2f%%, Mem=%.2f%%) - will use completion report for delayed reward\n",
+			state.CPUUtilization*100, state.MemoryUtilization*100)
 
 		// Performance indicators (placeholder - would be calculated from historical data)
 		state.RecentThroughput = float64(state.QueueLength) / 10.0 // Simplified
@@ -582,4 +590,60 @@ func ValidateStateDiscretization() error {
 	}
 
 	return nil
+}
+
+// ExtractStateFeaturesFromNodeStatus creates state features from node status at completion time
+// This is used for delayed reward calculation when we have node status from completion report
+func ExtractStateFeaturesFromNodeStatus(
+	tasks []TaskEntry,
+	nodeStatus *pb.FogNode,
+	queueLength int,
+) *StateFeatures {
+	state := &StateFeatures{
+		QueueLength: queueLength,
+		Timestamp:   time.Now(),
+	}
+
+	// Extract CPU/Memory from node status
+	if nodeStatus != nil && nodeStatus.CurrentUsage != nil {
+		// CPU utilization (already percentage 0-100)
+		state.CPUUtilization = float64(nodeStatus.CurrentUsage.CpuUsage) / 100.0 // Convert to 0.0-1.0
+
+		// Memory utilization (calculate percentage)
+		// Safety check: ensure Capacity exists and is valid
+		if nodeStatus.Capacity != nil && nodeStatus.Capacity.MemoryMb > 0 {
+			// Calculate percentage: actual MB used / total MB capacity
+			state.MemoryUtilization = float64(nodeStatus.CurrentUsage.MemoryUsageMb) / float64(nodeStatus.Capacity.MemoryMb)
+			// Clamp to [0.0, 1.0] to handle edge cases
+			if state.MemoryUtilization < 0.0 {
+				state.MemoryUtilization = 0.0
+			}
+			if state.MemoryUtilization > 1.0 {
+				state.MemoryUtilization = 1.0
+			}
+		} else {
+			// Fallback: if capacity is missing or invalid, set to 0
+			state.MemoryUtilization = 0.0
+		}
+
+		// System load = average of CPU and Memory
+		state.SystemLoad = (state.CPUUtilization + state.MemoryUtilization) / 2.0
+		state.ResourcePressure = math.Max(state.CPUUtilization, state.MemoryUtilization)
+	} else {
+		// If node status is missing, set all resource metrics to 0
+		state.CPUUtilization = 0.0
+		state.MemoryUtilization = 0.0
+		state.SystemLoad = 0.0
+		state.ResourcePressure = 0.0
+	}
+
+	// Calculate task statistics (if tasks provided)
+	if len(tasks) > 0 {
+		state.calculateTaskStatistics(tasks)
+	}
+
+	// Apply fuzzy categorization
+	state.applyFuzzyCategories()
+
+	return state
 }

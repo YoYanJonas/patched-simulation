@@ -4,6 +4,7 @@ import (
 	"fmt"
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 	"sync"
 	"time"
 )
@@ -106,9 +107,9 @@ func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *Sta
 	fmt.Printf("[DEBUG] [EXP-MGR-STORE-EXIT] StoreIncompleteExperience returning: TaskID=%s\n", taskID)
 }
 
-func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCompletionReport) error {
+func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
 	// [DEBUG] Entry point for CompleteExperience
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-ENTRY] CompleteExperience called: TaskID=%s\n", taskID)
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-ENTRY] CompleteExperience called: TaskID=%s, QueueLength=%d\n", taskID, queueLength)
 	
 	// [DEBUG] About to acquire lock
 	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-BEFORE] About to acquire Lock\n")
@@ -130,18 +131,29 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	}
 	
 	// [DEBUG] Incomplete experience found
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-FOUND] Incomplete experience found: TaskID=%s\n", taskID)
+	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-FOUND] Incomplete experience found: TaskID=%s, OldQueueLength=%d, NewQueueLength=%d\n", 
+		taskID, incompleteExp.State.QueueLength, queueLength)
 
-	reward, err := em.calculateDelayedReward(incompleteExp, report)
+	// Calculate delayed reward with node status
+	reward, err := em.calculateDelayedReward(incompleteExp, report, nodeStatus)
 	if err != nil {
 		return fmt.Errorf("failed to calculate reward: %w", err)
 	}
 
+	// Create next state from node status (for Q-learning update)
+	// Use actual current queue length (passed from scheduler engine)
+	// This is more accurate than approximating from incomplete experience
+	nextState := ExtractStateFeaturesFromNodeStatus(
+		[]TaskEntry{}, // No tasks needed for next state
+		nodeStatus,
+		queueLength, // Use actual queue length at completion time
+	)
+
 	experience := &Experience{
-		State:     incompleteExp.State,
+		State:     incompleteExp.State, // State at scheduling time
 		Action:    incompleteExp.Action,
 		Reward:    reward,
-		NextState: em.getCurrentState(),
+		NextState: nextState, // State at completion time (with real node status)
 		Done:      false,
 		Timestamp: time.Now(),
 	}
@@ -149,13 +161,17 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	// Update Q-learning policy
 	// [DEBUG] About to update Q-learning policy
 	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-BEFORE] About to update Q-learning policy: TaskID=%s\n", taskID)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Updating Q-learning policy: TaskID=%s, State=%s, Action=%s, Reward=%.3f",
+		taskID, experience.State.GetStateKey(), experience.Action.Description, experience.Reward)
 	if err := em.qLearningScheduler.UpdatePolicy(experience); err != nil {
 		// [DEBUG] Error updating policy
 		fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-ERROR] Failed to update Q-learning policy: %v\n", err)
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] ERROR: Failed to update Q-learning policy: %v", err)
 		return err
 	}
 	// [DEBUG] Policy updated successfully
 	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-SUCCESS] Q-learning policy updated successfully: TaskID=%s\n", taskID)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Q-learning policy updated successfully: TaskID=%s", taskID)
 
 	// Store complete experience and track stability
 	// [DEBUG] About to store complete experience
@@ -801,6 +817,9 @@ func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
 		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-DISABLED] Memory management disabled, skipping age updates\n")
 	}
 	
+	logger.GetLogger().Infof("[EXP-MGR-EPISODE] MarkEpisodeComplete completed: Episode=%d, IncompleteExperiences=%d, CompleteExperiences=%d, CleanupCounter=%d",
+		episodeNumber, len(em.incompleteExperiences), len(em.completeExperiences), em.episodeCleanupCounter)
+
 	// [DEBUG] About to return
 	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-EXIT] MarkEpisodeComplete returning: Episode=%d\n", episodeNumber)
 }
@@ -823,17 +842,38 @@ func (em *ExperienceManager) updateMemoryUsageUnsafe() {
 	em.memoryUsageBytes = experienceBytes + incompleteBytes + qValueBytes + stabilityBytes
 }
 
-func (em *ExperienceManager) calculateDelayedReward(incompleteExp *IncompleteExperience, report *pb.TaskCompletionReport) (float64, error) {
+func (em *ExperienceManager) calculateDelayedReward(incompleteExp *IncompleteExperience, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode) (float64, error) {
+	taskID := "unknown"
+	if len(report.Tasks) > 0 {
+		taskID = report.Tasks[0].TaskId
+	}
+
+	logger.GetLogger().Infof("[REWARD-CALC] Calculating delayed reward: TaskID=%s, MultiObj=%t, CompletedTasks=%d, NodeStatus=%t",
+		taskID, em.multiObjectiveCalc != nil, len(report.Tasks), nodeStatus != nil)
+
 	if em.multiObjectiveCalc != nil {
-		return em.multiObjectiveCalc.CalculateDelayedReward(
+		// Pass node status to multi-objective calculator
+		reward, err := em.multiObjectiveCalc.CalculateDelayedReward(
 			incompleteExp.State,
 			incompleteExp.Action,
 			report.Tasks,
 			report.Metrics,
+			nodeStatus, // NEW: Pass node status
 		)
+		if err != nil {
+			logger.GetLogger().Errorf("[REWARD-CALC] Multi-objective reward calculation failed: TaskID=%s, Error=%v",
+				taskID, err)
+			return 0.0, err
+		}
+		logger.GetLogger().Infof("[REWARD-CALC-RESULT] Multi-objective reward calculated: TaskID=%s, Reward=%.3f",
+			taskID, reward)
+		return reward, nil
 	}
 
-	return em.calculateSimpleReward(report), nil
+	reward := em.calculateSimpleReward(report)
+	logger.GetLogger().Infof("[REWARD-SIMPLE] Simple reward calculated: TaskID=%s, Reward=%.3f, Latency=%.2fms, Throughput=%.2f, DeadlineMisses=%d",
+		taskID, reward, report.Metrics.AverageLatencyMs, report.Metrics.TotalThroughput, report.Metrics.DeadlineMisses)
+	return reward, nil
 }
 
 func (em *ExperienceManager) calculateSimpleReward(report *pb.TaskCompletionReport) float64 {

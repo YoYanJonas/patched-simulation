@@ -7,6 +7,7 @@ import (
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // AlgorithmType represents different algorithm types
@@ -322,46 +323,55 @@ func (am *AlgorithmManager) String() string {
 }
 
 // ProcessTaskCompletion processes task completion through RL algorithms
-func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeManager SingleNodeManager) error {
+func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
+	fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion called: TaskID=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t\n", 
+		report.TaskId, am.config.RLEnabled, queueLength, nodeStatus != nil)
+	logger.GetLogger().Infof("[ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion: TaskID=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t", 
+		report.TaskId, am.config.RLEnabled, queueLength, nodeStatus != nil)
+	
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
 	// Only process if we have RL algorithms enabled
 	if !am.config.RLEnabled {
+		fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-SKIP] RL not enabled: TaskID=%s\n", report.TaskId)
+		logger.GetLogger().Warnf("[ALG-MGR-COMPLETE-SKIP] RL not enabled: TaskID=%s", report.TaskId)
 		return nil // No RL processing needed
 	}
 
 	// Validate inputs
 	if task == nil {
+		fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-ERROR] Task is nil: TaskID=%s\n", report.TaskId)
 		return fmt.Errorf("task is nil")
 	}
 
 	if report == nil {
+		fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-ERROR] Report is nil: TaskID=%s\n", task.GetTaskID())
 		return fmt.Errorf("completion report is nil for task %s", task.GetTaskID())
 	}
 
 	// Find Q-Learning algorithm to handle experience completion
+	fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-CHECK] Checking for QLearning algorithm: TaskID=%s, HasQLearning=%t\n", 
+		report.TaskId, am.rlAlgorithms[AlgorithmQLearning] != nil)
 	if qlearningAlg, exists := am.rlAlgorithms[AlgorithmQLearning]; exists {
 		// Cast to QLearningScheduler to access experience management
 		if qlScheduler, ok := qlearningAlg.(*QLearningScheduler); ok {
-			// Process with comprehensive error handling
-			err := qlScheduler.ProcessTaskCompletion(task, report)
+			fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-CALL] Calling qlScheduler.ProcessTaskCompletion: TaskID=%s\n", report.TaskId)
+			// Process with comprehensive error handling (pass node status and actual queue length)
+			err := qlScheduler.ProcessTaskCompletion(task, report, nodeStatus, queueLength)
 			if err != nil {
-				// Log error but record performance anyway for tracking
-				fmt.Printf("Error processing task completion for %s: %v\n", task.GetTaskID(), err)
-
-				// Still record performance metrics for analysis if nodeManager provided
-				if nodeManager != nil {
-					am.RecordPerformance(AlgorithmQLearning, nodeManager, []TaskEntry{task})
-				}
-
+				// Log error but don't fail completely - allows system to continue
+				fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: TaskID=%s, Error=%v\n", 
+					task.GetTaskID(), err)
+				logger.GetLogger().Errorf("[ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: TaskID=%s, Error=%v", 
+					task.GetTaskID(), err)
 				return fmt.Errorf("task completion processing failed: %w", err)
 			}
+			fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: TaskID=%s\n", report.TaskId)
+			logger.GetLogger().Infof("[ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: TaskID=%s", report.TaskId)
 
-			// Record performance metrics for episode-aware tracking
-			if nodeManager != nil {
-				am.RecordPerformance(AlgorithmQLearning, nodeManager, []TaskEntry{task})
-			}
+			// Note: RecordPerformance is skipped here because nodeManager is not available
+			// Performance tracking can be done separately if needed, but it's not critical for reward calculation
 
 			// Experience completed and Q-table updated
 			fmt.Printf("Task completion processed successfully for %s (RL experience updated)\n", task.GetTaskID())
