@@ -130,10 +130,68 @@ public class RL3FogSimulation {
             logger.info("Simulation completed successfully");
             logger.info("================================================================================");
 
+            // Step 11: Cleanup gRPC clients and force JVM shutdown to prevent thread
+            // cleanup warnings
+            cleanupAndExit(0);
+
         } catch (Exception e) {
             logger.severe("Simulation failed: " + e.getMessage());
             e.printStackTrace();
-            System.exit(1);
+            cleanupAndExit(1);
+        }
+    }
+
+    /**
+     * Cleanup all gRPC clients and force JVM shutdown to prevent thread cleanup
+     * warnings
+     * This ensures gRPC worker threads are terminated before Maven tries to destroy
+     * thread group
+     */
+    private static void cleanupAndExit(int exitCode) {
+        try {
+            logger.info("[DEBUG-CLEANUP] Starting cleanup of gRPC clients and resources...");
+
+            // Close all gRPC clients through controller if available
+            if (controller != null) {
+                try {
+                    logger.info("[DEBUG-CLEANUP] Force closing all gRPC channels...");
+                    // Force close all gRPC channels
+                    controller.forceCloseAllGrpcChannels();
+                    logger.info("[DEBUG-CLEANUP] Force stopping all streaming observers...");
+                    // Stop all streaming observers
+                    controller.forceStopAllStreamingObservers();
+                    logger.info("[DEBUG-CLEANUP] All gRPC clients closed successfully");
+                } catch (Exception e) {
+                    logger.warning(String.format("[DEBUG-CLEANUP] Error during gRPC cleanup: %s", e.getMessage()));
+                    e.printStackTrace();
+                }
+            } else {
+                logger.warning("[DEBUG-CLEANUP] Controller is null, skipping gRPC cleanup");
+            }
+
+            // Give threads a moment to terminate (gRPC worker threads are daemon threads)
+            // They should terminate quickly after channels are closed
+            logger.info("[DEBUG-CLEANUP] Waiting 500ms for gRPC worker threads to terminate...");
+            try {
+                Thread.sleep(500); // 500ms should be enough for daemon threads
+                logger.info("[DEBUG-CLEANUP] Wait complete, threads should have terminated");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warning("[DEBUG-CLEANUP] Wait interrupted");
+            }
+
+            logger.info("[DEBUG-CLEANUP] Cleanup complete, exiting JVM to prevent thread cleanup warnings");
+
+        } catch (Exception e) {
+            logger.warning(String.format("[DEBUG-CLEANUP] Error during cleanup: %s", e.getMessage()));
+            e.printStackTrace();
+        } finally {
+            // Force JVM shutdown to prevent Maven exec plugin from trying to destroy thread
+            // group
+            // This prevents IllegalThreadStateException when gRPC worker threads are still
+            // alive
+            logger.info(String.format("[DEBUG-CLEANUP] Calling System.exit(%d)", exitCode));
+            System.exit(exitCode);
         }
     }
 
@@ -559,12 +617,29 @@ public class RL3FogSimulation {
             org.fog.utils.Config.MAX_SIMULATION_TIME = org.fog.utils.Config.SIMULATION_TIME + 60;
         }
 
-        // Start and stop simulation
-        CloudSim.startSimulation();
-        CloudSim.stopSimulation();
+        // Start simulation - startSimulation() returns the final clock value BEFORE
+        // reset
+        logger.info("[DEBUG-SIMULATION] Starting CloudSim simulation...");
+        double finalSimulationTime = CloudSim.startSimulation();
+        logger.info(String.format(
+                "[DEBUG-SIMULATION] CloudSim.startSimulation() returned: %.2f seconds (captured from return value)",
+                finalSimulationTime));
+
+        // Note: stopSimulation() is already called internally by startSimulation()
+        // Don't call it again - it would be redundant
+        logger.info("[DEBUG-SIMULATION] Simulation stopped internally by CloudSim.startSimulation()");
+
+        // Store simulation time for report generation
+        simulationEndTime = finalSimulationTime;
+        logger.info(String.format(
+                "[DEBUG-SIMULATION] Stored simulation end time: %.2f seconds",
+                simulationEndTime));
 
         logger.info("Simulation completed");
     }
+
+    // Store simulation end time for report generation
+    private static double simulationEndTime = 0.0;
 
     /**
      * Print simulation results and generate report files
@@ -618,7 +693,13 @@ public class RL3FogSimulation {
             List<Map<String, Object>> fogData = collectFogDevicesData();
 
             // Generate reports with collected data
-            reportGenerator.generateReports(cloudData, fogData, CloudSim.clock());
+            // Use captured simulation time (CloudSim.clock() may be 0.0 after stop)
+            double reportTime = simulationEndTime > 0.0 ? simulationEndTime : CloudSim.clock();
+            logger.info(String.format(
+                    "[DEBUG-REPORT] Generating reports with simulation time: %.2f seconds (captured: %.2f, CloudSim.clock(): %.2f)",
+                    reportTime, simulationEndTime, CloudSim.clock()));
+            reportGenerator.generateReports(cloudData, fogData, reportTime);
+            logger.info("[DEBUG-REPORT] Reports generated successfully");
 
         } catch (Exception e) {
             logger.severe("Error generating report files: " + e.getMessage());
