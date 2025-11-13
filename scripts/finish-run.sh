@@ -32,47 +32,60 @@ collect_logs() {
     local service=$1
     local log_dir=$2
     local log_file="$log_dir/server.log"
-    local temp_file="/tmp/${service}_server.log.$$"
     
     echo "Collecting logs from $service..."
-    if docker compose ps -a "$service" 2>/dev/null | grep -q -E "Up|Exited|Created"; then
-        docker compose logs --no-color "$service" > "$temp_file" 2>&1
-        if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
-            if mv "$temp_file" "$log_file" 2>/dev/null; then
-                chmod 644 "$log_file" 2>/dev/null || true
-                chown "$USER:$USER" "$log_file" 2>/dev/null || true
-            else
-                cp "$temp_file" "$log_file" 2>/dev/null
+    
+    # Server writes logs directly to report directory via REPORT_PATH env var
+    # Logs are written to $REPORT_PATH/logs/server.log inside container
+    # Which is mounted to $REPORT_DIR/scheduler/nodeX/logs/server.log on host
+    # So we just need to check if the log file exists and copy it
+    
+    if [ -f "$log_file" ] && [ -s "$log_file" ]; then
+        # Log file already exists (written by server directly)
+        local line_count=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+        echo "  ✓ Found log file: $log_file ($line_count lines)"
+        
+        # Ensure proper permissions
+        chmod 644 "$log_file" 2>/dev/null || true
+        chown "$USER:$USER" "$log_file" 2>/dev/null || true
+        
+        local error_count=$(grep -iE "error|fatal|panic|failed|exception" "$log_file" 2>/dev/null | wc -l || echo "0")
+        if [ "$error_count" -gt 0 ]; then
+            echo "  ⚠ Warning: Found $error_count potential errors in logs"
+            echo "    Sample errors:"
+            grep -iE "error|fatal|panic|failed|exception" "$log_file" 2>/dev/null | head -3 | sed 's/^/      /'
+        fi
+        
+        if [[ "$service" == "allocator" ]]; then
+            local task_received=$(grep -iE "\[ALLOCATOR-RECEIVE\]|AllocateTask request" "$log_file" 2>/dev/null | wc -l || echo "0")
+            local node_registered=$(grep -iE "\[ALLOCATOR-NODE-REGISTERED\]" "$log_file" 2>/dev/null | wc -l || echo "0")
+            echo "    Allocator stats: Tasks received: $task_received, Nodes registered: $node_registered"
+        elif [[ "$service" =~ ^scheduler-[0-9]+$ ]]; then
+            local task_received=$(grep -iE "\[SCHEDULER-RECEIVE\]|AddTaskToQueue request" "$log_file" 2>/dev/null | wc -l || echo "0")
+            local task_processed=$(grep -iE "\[SCHEDULER-SUCCESS\]" "$log_file" 2>/dev/null | wc -l || echo "0")
+            echo "    Scheduler stats: Tasks received: $task_received, Tasks processed: $task_processed"
+        fi
+    else
+        # Log file doesn't exist - server may not have written logs yet
+        # Fallback: try to get logs from container (with timeout to prevent hanging)
+        echo "  ⚠ Log file not found, attempting to collect from container (with timeout)..."
+        local temp_file="/tmp/${service}_server.log.$$"
+        if timeout 5 docker compose logs --no-color --tail 10000 "$service" > "$temp_file" 2>&1; then
+            if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
+                mv "$temp_file" "$log_file" 2>/dev/null || cp "$temp_file" "$log_file"
                 chmod 644 "$log_file" 2>/dev/null || true
                 chown "$USER:$USER" "$log_file" 2>/dev/null || true
                 rm -f "$temp_file"
-            fi
-            
-            local line_count=$(wc -l < "$log_file" 2>/dev/null || echo "0")
-            echo "  ✓ Saved to: $log_file ($line_count lines)"
-            
-            local error_count=$(grep -iE "error|fatal|panic|failed|exception" "$log_file" 2>/dev/null | wc -l || echo "0")
-            if [ "$error_count" -gt 0 ]; then
-                echo "  ⚠ Warning: Found $error_count potential errors in logs"
-                echo "    Sample errors:"
-                grep -iE "error|fatal|panic|failed|exception" "$log_file" 2>/dev/null | head -3 | sed 's/^/      /'
-            fi
-            
-            if [[ "$service" == "allocator" ]]; then
-                local task_received=$(grep -iE "\[ALLOCATOR-RECEIVE\]|AllocateTask request" "$log_file" 2>/dev/null | wc -l || echo "0")
-                local node_registered=$(grep -iE "\[ALLOCATOR-NODE-REGISTERED\]" "$log_file" 2>/dev/null | wc -l || echo "0")
-                echo "    Allocator stats: Tasks received: $task_received, Nodes registered: $node_registered"
-            elif [[ "$service" =~ ^scheduler-[0-9]+$ ]]; then
-                local task_received=$(grep -iE "\[SCHEDULER-RECEIVE\]|AddTaskToQueue request" "$log_file" 2>/dev/null | wc -l || echo "0")
-                local task_processed=$(grep -iE "\[SCHEDULER-SUCCESS\]" "$log_file" 2>/dev/null | wc -l || echo "0")
-                echo "    Scheduler stats: Tasks received: $task_received, Tasks processed: $task_processed"
+                local line_count=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+                echo "  ✓ Collected from container: $log_file ($line_count lines)"
+            else
+                echo "  ✗ Failed to collect logs from $service (empty or no logs)"
+                rm -f "$temp_file"
             fi
         else
-            echo "  ✗ Failed to collect logs from $service (empty or no logs)"
+            echo "  ✗ Failed to collect logs from $service (timeout or container not found)"
             rm -f "$temp_file"
         fi
-    else
-        echo "  ⚠ Container $service not found or never started (logs may have been removed)"
     fi
 }
 
