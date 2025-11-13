@@ -33,6 +33,9 @@ type QLearningScheduler struct {
 	// Performance optimization: frequently accessed states cache
 	frequentStates map[string]time.Time // Track frequently accessed states
 	cacheCleanup   time.Time            // Last cache cleanup time
+
+	// Model persistence callback (lightweight - just marks dirty flag)
+	onDirty func() // Callback to mark model as dirty when Q-table updates
 }
 
 // Experience represents a learning experience
@@ -434,6 +437,12 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 		// [DEBUG] State already exists in Q-table
 		fmt.Printf("[DEBUG] [QLEARNING-SELECT-Q-EXISTS] State already exists in Q-table\n")
 	}
+	
+	// Check if deadline is disabled and log
+	deadlineDisabled := q.rewardWeights.DeadlineMiss == 0.0
+	if deadlineDisabled {
+		logger.GetLogger().Debugf("[Q-LEARNING-SELECT] Deadline disabled (weight=0.0), ActionDeadlineAware filtered from selection")
+	}
 
 	// Epsilon-greedy action selection
 	explorationRate := q.config.ExplorationRate
@@ -486,22 +495,36 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 }
 
 // getRandomAction returns a random action with optimized access
+// Filters out ActionDeadlineAware if deadline is disabled
 func (q *QLearningScheduler) getRandomAction() Action {
-	// Pre-allocate actions slice for better performance
-	actions := GetAllActions()
+	// Get all actions and filter out deadline-aware if disabled
+	actions := q.getAvailableActions()
+	if len(actions) == 0 {
+		// Fallback to ActionNone if no actions available
+		allActions := GetAllActions()
+		return allActions[0] // ActionNone
+	}
 	return actions[q.rng.Intn(len(actions))]
 }
 
 // getBestActionOptimized finds the best action with optimized Q-table lookup
+// Filters out ActionDeadlineAware if deadline is disabled
 func (q *QLearningScheduler) getBestActionOptimized(stateKey string) Action {
 	stateActions := q.qTable[stateKey]
 	
 	// Pre-allocate for better performance
 	bestAction := ActionNone
 	bestValue := math.Inf(-1)
+	
+	// Check if deadline is disabled (weight = 0.0)
+	deadlineDisabled := q.rewardWeights.DeadlineMiss == 0.0
 
 	// Optimized iteration with early exit for common cases
 	for actionType, qValue := range stateActions {
+		// Filter out ActionDeadlineAware if deadline is disabled
+		if deadlineDisabled && actionType == ActionDeadlineAware {
+			continue
+		}
 		if qValue > bestValue {
 			bestValue = qValue
 			bestAction = actionType
@@ -522,6 +545,29 @@ func (q *QLearningScheduler) getActionByType(actionType ActionType) Action {
 		}
 	}
 	return actions[0] // Fallback
+}
+
+// getAvailableActions returns available actions, filtering out ActionDeadlineAware if deadline is disabled
+func (q *QLearningScheduler) getAvailableActions() []Action {
+	allActions := GetAllActions()
+	
+	// Check if deadline is disabled (weight = 0.0)
+	deadlineDisabled := q.rewardWeights.DeadlineMiss == 0.0
+	
+	if !deadlineDisabled {
+		// Deadline enabled, return all actions
+		return allActions
+	}
+	
+	// Deadline disabled, filter out ActionDeadlineAware
+	filteredActions := make([]Action, 0, len(allActions))
+	for _, action := range allActions {
+		if action.Type != ActionDeadlineAware {
+			filteredActions = append(filteredActions, action)
+		}
+	}
+	
+	return filteredActions
 }
 
 // cleanupFrequentStatesCache removes old entries from frequent states cache
@@ -584,6 +630,11 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 	newQ := currentQ + q.config.LearningRate*(targetQ-currentQ)
 	q.qTable[currentStateKey][experience.Action.Type] = newQ
 
+	// Mark model as dirty (lightweight - no I/O, just sets flag)
+	if q.onDirty != nil {
+		q.onDirty()
+	}
+
 	newSize := len(q.qTable)
 
 	// Log Q-table update (CHANGED TO INFO LEVEL)
@@ -616,10 +667,12 @@ func (q *QLearningScheduler) getActionDescription(actionType ActionType) string 
 }
 
 // initializeStateQValues initializes Q-values for a state
+// Filters out ActionDeadlineAware if deadline is disabled
 func (q *QLearningScheduler) initializeStateQValues(stateKey string) {
 	if _, exists := q.qTable[stateKey]; !exists {
 		q.qTable[stateKey] = make(map[ActionType]float64)
-		actions := GetAllActions()
+		// Use getAvailableActions to filter out ActionDeadlineAware if disabled
+		actions := q.getAvailableActions()
 		for _, action := range actions {
 			q.qTable[stateKey][action.Type] = 0.0
 		}
@@ -634,6 +687,13 @@ func (q *QLearningScheduler) IsLearning() bool {
 // SetLearningMode sets the learning mode
 func (q *QLearningScheduler) SetLearningMode(enabled bool) {
 	q.isLearning = enabled
+}
+
+// SetDirtyCallback sets the callback to mark model as dirty when Q-table updates
+// This is a lightweight callback (no I/O) - just sets a flag in ModelStorage
+func (q *QLearningScheduler) SetDirtyCallback(callback func()) {
+	q.onDirty = callback
+	logger.GetLogger().Debugf("[Q-LEARNING] Dirty callback set for model persistence")
 }
 
 // UpdateRewardWeights updates the reward calculator weights

@@ -879,8 +879,8 @@ func (em *ExperienceManager) calculateDelayedReward(incompleteExp *IncompleteExp
 func (em *ExperienceManager) calculateSimpleReward(report *pb.TaskCompletionReport) float64 {
 	reward := 0.0
 
-	// Penalty for deadline misses
-	reward -= float64(report.Metrics.DeadlineMisses) * 10.0
+	// Later Feature: deadline-aware penalty disabled
+	// reward -= float64(report.Metrics.DeadlineMisses) * 10.0
 
 	// Reward for low latency
 	if report.Metrics.AverageLatencyMs > 0 {

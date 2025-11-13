@@ -191,14 +191,14 @@ func (sf *StateFeatures) calculateTaskDistribution(tasks []TaskEntry) {
 			shortTaskCount++
 		}
 
-		// Urgent tasks (deadline within next hour)
-		if task.GetDeadline() > 0 {
-			deadlineTime := time.Unix(task.GetDeadline(), 0)
-			timeToDeadline := time.Until(deadlineTime).Hours()
-			if timeToDeadline <= 1.0 && timeToDeadline > 0 {
-				urgentTaskCount++
-			}
-		}
+		// Later Feature: deadline-aware urgency detection disabled
+		// if task.GetDeadline() > 0 {
+		//     deadlineTime := time.Unix(task.GetDeadline(), 0)
+		//     timeToDeadline := time.Until(deadlineTime).Hours()
+		//     if timeToDeadline <= 1.0 && timeToDeadline > 0 {
+		//         urgentTaskCount++
+		//     }
+		// }
 	}
 
 	count := float64(len(tasks))
