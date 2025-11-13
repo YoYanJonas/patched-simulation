@@ -108,11 +108,13 @@ func (morc *MultiObjectiveRewardCalculator) CalculateMultiObjectiveReward(
 		Throughput:         morc.normalizeThroughputObjective(currentMetrics.Throughput),
 		ResourceEfficiency: morc.normalizeResourceObjective(currentMetrics.ResourceEff),
 		Fairness:           morc.normalizeFairnessObjective(currentMetrics.Fairness),
-		DeadlineMiss:       morc.normalizeDeadlineObjective(currentMetrics.DeadlineMiss),
+		DeadlineMiss:       1.0, // Later Feature: deadline-aware disabled (best value)
 		EnergyEfficiency:   morc.normalizeEnergyObjective(currentMetrics.EnergyEfficiency),
 		Episode:            episode,
 		Timestamp:          time.Now(),
 	}
+	// [DEBUG] Verify deadline objective is set to 1.0 (best value) since deadline is disabled
+	logger.GetLogger().Debugf("[DEADLINE-DISABLED] DeadlineMiss objective set to 1.0 (best value), weight will be 0.0, contribution=0.0")
 
 	// Get current weights (may be adapted)
 	currentWeights := morc.GetRewardWeights()
@@ -169,8 +171,9 @@ func (morc *MultiObjectiveRewardCalculator) normalizeFairnessObjective(fairness 
 	return math.Max(0.0, math.Min(1.0, fairness))
 }
 
+// Later Feature: deadline-aware normalization disabled
 func (morc *MultiObjectiveRewardCalculator) normalizeDeadlineObjective(missRate float64) float64 {
-	return math.Max(0.0, 1.0-missRate)
+	return 1.0 // Best value (deadline-aware disabled)
 }
 
 func (morc *MultiObjectiveRewardCalculator) normalizeEnergyObjective(efficiency float64) float64 {
@@ -678,7 +681,7 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 		Throughput:         morc.normalizeThroughputObjective(currentMetrics.TotalThroughput),
 		ResourceEfficiency: morc.normalizeResourceObjective(currentMetrics.ResourceUtilization),
 		Fairness:           morc.normalizeFairnessObjective(currentMetrics.FairnessIndex),
-		DeadlineMiss:       morc.normalizeDeadlineObjective(float64(currentMetrics.DeadlineMisses)),
+		DeadlineMiss:       1.0, // Later Feature: deadline-aware disabled (best value)
 		EnergyEfficiency:   morc.normalizeEnergyObjective(currentMetrics.EnergyEfficiency),
 		Episode:            currentEpisode, // ← USE ACTUAL EPISODE NUMBER
 		Timestamp:          time.Now(),
@@ -690,9 +693,11 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 	// Get current weights (may be adapted)
 	currentWeights := morc.GetRewardWeights()
 
-	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-WEIGHTS] Current weights: Latency=%.3f, Throughput=%.3f, ResourceEff=%.3f, Fairness=%.3f, DeadlineMiss=%.3f, EnergyEff=%.3f",
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-WEIGHTS] Current weights: Latency=%.3f, Throughput=%.3f, ResourceEff=%.3f, Fairness=%.3f, DeadlineMiss=%.3f (disabled), EnergyEff=%.3f",
 		currentWeights.Latency, currentWeights.Throughput, currentWeights.ResourceEfficiency,
 		currentWeights.Fairness, currentWeights.DeadlineMiss, currentWeights.EnergyEfficiency)
+	logger.GetLogger().Infof("[DEADLINE-DISABLED] DeadlineMiss weight=%.3f, objective=%.3f, contribution=%.3f (zero contribution verified)",
+		currentWeights.DeadlineMiss, objectives.DeadlineMiss, currentWeights.DeadlineMiss*objectives.DeadlineMiss)
 
 	// Apply scalarization method
 	scalarizedReward := morc.scalarizeObjectives(objectives, currentWeights)

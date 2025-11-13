@@ -3,6 +3,7 @@ package rl
 import (
 	"math"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 	"time"
 )
 
@@ -149,9 +150,9 @@ func (rc *RewardCalculator) calculateFairnessReward(fairness float64) float64 {
 	return fairness
 }
 
+// Later Feature: deadline-aware reward disabled
 func (rc *RewardCalculator) calculateDeadlineReward(missRate float64) float64 {
-	// Heavily penalize deadline misses
-	return math.Max(0.0, 1.0-missRate*2.0) // Double penalty for missed deadlines
+	return 1.0 // Maximum reward (deadline-aware disabled)
 }
 
 func (rc *RewardCalculator) calculateEnergyReward(energyEff float64) float64 {
@@ -279,26 +280,13 @@ func (rc *RewardCalculator) calculateFairness(tasks []TaskEntry) float64 {
 	return 1.0 / (1.0 + cv)
 }
 
+// Later Feature: deadline-aware miss rate calculation disabled
 func (rc *RewardCalculator) calculateDeadlineMissRate(tasks []TaskEntry) float64 {
-	if len(tasks) == 0 {
-		return 0.0
+	// [DEBUG] Verify deadline miss rate always returns 0.0
+	if len(tasks) > 0 {
+		logger.GetLogger().Debugf("[DEADLINE-DISABLED] calculateDeadlineMissRate: %d tasks, returning 0.0 (deadline disabled)", len(tasks))
 	}
-
-	missedDeadlines := 0
-	for _, task := range tasks {
-		// Estimate completion time
-		estimatedCompletion := task.GetArrivalTime().Add(
-			time.Since(task.GetArrivalTime()) +
-				time.Duration(task.GetExecutionTimeMs())*time.Millisecond)
-
-		// Check against deadline
-		deadlineTime := time.Unix(task.GetDeadline(), 0)
-		if estimatedCompletion.After(deadlineTime) {
-			missedDeadlines++
-		}
-	}
-
-	return float64(missedDeadlines) / float64(len(tasks))
+	return 0.0 // No misses (deadline-aware disabled)
 }
 
 func (rc *RewardCalculator) calculateQueueStability(state *StateFeatures) float64 {
