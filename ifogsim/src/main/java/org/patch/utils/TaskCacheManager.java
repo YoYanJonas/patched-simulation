@@ -20,6 +20,10 @@ public class TaskCacheManager {
     private int cacheMisses = 0;
     private int cacheInvalidations = 0;
     private int cacheStores = 0;
+    
+    // Track unique tasks and repeats
+    private final Set<String> uniqueTasksSeen = ConcurrentHashMap.newKeySet();
+    private int repeatedTasks = 0; // Tasks seen more than once
 
     // Configuration
     private final long cacheTTLMs;
@@ -51,6 +55,12 @@ public class TaskCacheManager {
      * @return Cache result indicating hit/miss/invalid
      */
     public CacheResult checkCache(String taskId) {
+        // Track unique tasks
+        boolean isFirstTime = uniqueTasksSeen.add(taskId);
+        if (!isFirstTime) {
+            repeatedTasks++;
+        }
+        
         CacheEntry entry = cache.get(taskId);
 
         if (entry == null) {
@@ -195,7 +205,7 @@ public class TaskCacheManager {
         stats.put("cacheInvalidations", cacheInvalidations);
         stats.put("cacheStores", cacheStores);
 
-        // Calculate hit rate
+        // Calculate traditional hit rate: hits / (hits + misses)
         int totalRequests = cacheHits + cacheMisses;
         double hitRate = totalRequests > 0 ? (double) cacheHits / totalRequests : 0.0;
         stats.put("hitRate", hitRate);
@@ -204,6 +214,19 @@ public class TaskCacheManager {
         int totalCacheOperations = cacheHits + cacheStores;
         double invalidationRate = totalCacheOperations > 0 ? (double) cacheInvalidations / totalCacheOperations : 0.0;
         stats.put("invalidationRate", invalidationRate);
+        
+        // New metrics: based on unique tasks
+        int uniqueTasks = uniqueTasksSeen.size();
+        stats.put("uniqueTasks", uniqueTasks);
+        stats.put("repeatedTasks", repeatedTasks);
+        
+        // Repeat rate: what percentage of unique tasks were repeated
+        double repeatRate = uniqueTasks > 0 ? (double) repeatedTasks / uniqueTasks : 0.0;
+        stats.put("repeatRate", repeatRate);
+        
+        // Unique hit rate: hits per unique task
+        double uniqueHitRate = uniqueTasks > 0 ? (double) cacheHits / uniqueTasks : 0.0;
+        stats.put("uniqueHitRate", uniqueHitRate);
 
         return stats;
     }

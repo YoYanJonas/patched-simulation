@@ -7,7 +7,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.logging.Logger;
-import java.util.logging.Level;
 
 /**
  * Centralized RL Statistics Manager for iFogSim Integration
@@ -57,6 +56,9 @@ public class RLStatisticsManager {
     private volatile double totalExecutionTime = 0.0;
     private volatile double totalExecutionEnergy = 0.0;
     private volatile double totalExecutionCost = 0.0;
+
+    // Deadline misses tracking
+    private final AtomicLong deadlineMisses = new AtomicLong(0);
 
     // Simulation state
     private volatile double simulationStartTime = 0.0;
@@ -371,6 +373,17 @@ public class RLStatisticsManager {
         return totalExecutionCost / total;
     }
 
+    // ===== DEADLINE MISSES TRACKING =====
+    // Later Feature: deadline-aware tracking disabled
+
+    public void incrementDeadlineMisses() {
+        // No-op: deadline-aware disabled
+    }
+
+    public long getDeadlineMisses() {
+        return 0; // Later Feature: deadline-aware disabled
+    }
+
     // ===== ENERGY AND COST CALCULATION UTILITIES =====
 
     /**
@@ -500,6 +513,7 @@ public class RLStatisticsManager {
         stats.put("averageExecutionEnergy", getAverageExecutionEnergy());
         stats.put("totalExecutionCost", getTotalExecutionCost());
         stats.put("averageExecutionCost", getAverageExecutionCost());
+        stats.put("deadlineMisses", getDeadlineMisses());
 
         // Simulation state
         stats.put("simulationTime", getSimulationTime());
@@ -537,6 +551,7 @@ public class RLStatisticsManager {
         totalExecutionTime = 0.0;
         totalExecutionEnergy = 0.0;
         totalExecutionCost = 0.0;
+        deadlineMisses.set(0);
 
         simulationStartTime = CloudSim.clock();
         customMetrics.clear();
