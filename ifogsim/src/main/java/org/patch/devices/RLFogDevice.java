@@ -27,6 +27,7 @@ import org.patch.proto.IfogsimCommon.*;
 import org.patch.models.PendingSchedulingRequest;
 import org.patch.utils.NetworkLatencyConverter;
 import org.patch.utils.NetworkEnergyCostCalculator;
+import org.patch.utils.SystemMetricsCalculator;
 import org.patch.config.EnhancedConfigurationLoader;
 
 import org.cloudbus.cloudsim.Host;
@@ -855,6 +856,22 @@ public class RLFogDevice extends FogDevice {
                     "[DEBUG-KEY-COMPLETION] reportTaskCompletion: cloudletId=%d, TaskId to send='%s' (String.valueOf(cloudletId))",
                     cloudletId, taskIdToSend));
 
+            // Later Feature: deadline-aware tracking disabled
+            // if (!success) {
+            //     RLStatisticsManager.getInstance().incrementDeadlineMisses();
+            //     logger.fine(String.format("[SYSTEM-METRICS] Task %s failed, incrementing deadline misses", taskIdToSend));
+            // }
+
+            // Calculate system metrics from iFogSim data
+            SystemPerformanceMetrics metrics = SystemMetricsCalculator.calculateMetrics(
+                    this,  // Current fog device
+                    null   // Optional: all fog devices (can enhance later for fairness)
+            );
+
+            // ⚠️ CRITICAL: Use CloudSim.clock() for completionTimestamp, NOT System.currentTimeMillis()
+            // Convert simulation time to milliseconds if proto requires it
+            long completionTimestampMs = (long) (CloudSim.clock() * 1000); // ✅ Simulation time in ms
+
             // Report to grpc-task-scheduler for learning
             TaskCompletionReport report = TaskCompletionReport.newBuilder()
                     .setTaskId(taskIdToSend)
@@ -862,10 +879,11 @@ public class RLFogDevice extends FogDevice {
                             .setTaskId(taskIdToSend)
                             .setAssignedNodeId(String.valueOf(getId()))
                             .setActualExecutionTimeMs(reportedExecutionTime)
-                            .setDeadlineMet(success)
+                            .setDeadlineMet(true) // Later Feature: deadline-aware disabled (always true)
                             .build())
-                    .setCompletionTimestamp(System.currentTimeMillis())
-                    .setNodeStatus(nodeStatus) // NEW: Real node status
+                    .setCompletionTimestamp(completionTimestampMs) // ✅ Simulation time, not real-world time
+                    .setNodeStatus(nodeStatus) // Real node status
+                    .setMetrics(metrics)  // ✅ NEW: Add calculated system metrics
                     .build();
 
             // [DEBUG-LOG] Log final TaskId value in report
@@ -1871,10 +1889,16 @@ public class RLFogDevice extends FogDevice {
         Object hits = cacheManagerStats.get("cacheHits");
         Object misses = cacheManagerStats.get("cacheMisses");
         Object hitRate = cacheManagerStats.get("hitRate");
+        Object uniqueTasks = cacheManagerStats.get("uniqueTasks");
+        Object repeatRate = cacheManagerStats.get("repeatRate");
+        Object uniqueHitRate = cacheManagerStats.get("uniqueHitRate");
         logger.info(String.format(
-                "[DEBUG-CACHE-STATS] Device: %s (ID:%d) - Retrieving cache stats: Hits=%s, Misses=%s, HitRate=%.2f%%, Size=%s",
+                "[DEBUG-CACHE-STATS] Device: %s (ID:%d) - Retrieving cache stats: Hits=%s, Misses=%s, HitRate=%.2f%%, UniqueTasks=%s, RepeatRate=%.2f%%, UniqueHitRate=%.2f%%, Size=%s",
                 getName(), getId(), hits, misses,
                 hitRate != null ? ((Double) hitRate * 100) : 0.0,
+                uniqueTasks,
+                repeatRate != null ? ((Double) repeatRate * 100) : 0.0,
+                uniqueHitRate != null ? ((Double) uniqueHitRate * 100) : 0.0,
                 cacheManagerStats.get("cacheSize")));
 
         Map<String, Object> stats = new HashMap<>();
@@ -1884,6 +1908,10 @@ public class RLFogDevice extends FogDevice {
         stats.put("cacheHitCount", hits);
         stats.put("cacheMissCount", misses);
         stats.put("cacheHitRate", hitRate);
+        // New metrics
+        stats.put("uniqueTasks", uniqueTasks);
+        stats.put("repeatRate", repeatRate);
+        stats.put("uniqueHitRate", uniqueHitRate);
         return stats;
     }
 

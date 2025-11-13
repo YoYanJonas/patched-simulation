@@ -1397,8 +1397,7 @@ public class RLCloudDevice extends FogDevice {
                     EnhancedConfigurationLoader.getSimulationConfigDouble("simulation.allocation.default-bandwidth",
                             0.0), // Bandwidth requirement
                     EnhancedConfigurationLoader.getSimulationConfigInt("simulation.allocation.default-priority", 1), // Priority
-                    (long) (CloudSim.clock() + EnhancedConfigurationLoader
-                            .getSimulationConfigLong("simulation.allocation.default-deadline", 30000)), // Deadline
+                    0L, // Later Feature: deadline-aware disabled
                     createTaskMetadata(task));
 
             // [DEBUG] Log allocation response
