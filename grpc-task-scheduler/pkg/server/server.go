@@ -32,6 +32,8 @@ type Server struct {
 	listener          net.Listener
 	monitoringService *monitoring.MonitoringService
 	schedulerService  *scheduler.SchedulerService // ADD: Store scheduler service reference
+	periodicSaveCtx   context.Context              // Context for periodic save goroutine
+	periodicSaveCancel context.CancelFunc          // Cancel function for periodic save
 }
 
 // NewServer creates a new gRPC server instance
@@ -119,14 +121,15 @@ func (s *Server) Start() error {
 	}
 
 	// Start model persistence (with cache agent periodic save)
-	ctx := context.Background()
+	// Use cancellable context so we can notify periodic save on shutdown
+	s.periodicSaveCtx, s.periodicSaveCancel = context.WithCancel(context.Background())
 	cacheAgentGetter := func() *rl.CacheAgent {
 		return s.getCacheAgentFromSystem()
 	}
-	go s.modelStorage.StartPeriodicSave(ctx, cacheAgentGetter)
+	go s.modelStorage.StartPeriodicSave(s.periodicSaveCtx, cacheAgentGetter)
 
-	// ADD: Start scheduler service
-	s.schedulerService.Start(ctx)
+	// ADD: Start scheduler service (use background context for service lifecycle)
+	s.schedulerService.Start(context.Background())
 	
 	logger.GetLogger().Info("[SCHEDULER-SERVER-START] Scheduler gRPC server ready to accept connections")
 	logger.GetLogger().Infof("[SCHEDULER-SERVER-LISTEN] Starting gRPC server on %s", addr)
@@ -149,7 +152,16 @@ func (s *Server) Start() error {
 func (s *Server) Stop(ctx context.Context) error {
 	logger.GetLogger().Info("[SCHEDULER-SERVER-STOP] Shutting down scheduler gRPC server...")
 
-	// ADD: Save model on shutdown
+	// Cancel periodic save context to trigger shutdown save in StartPeriodicSave goroutine
+	// This ensures the periodic save goroutine's ctx.Done() case runs
+	if s.periodicSaveCancel != nil {
+		logger.GetLogger().Info("[SCHEDULER-SERVER-STOP] Cancelling periodic save context...")
+		s.periodicSaveCancel()
+		// Give periodic save goroutine a moment to complete its shutdown save
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// ADD: Save model on shutdown (also saves via SaveModelOnShutdown for redundancy)
 	if err := s.SaveModelOnShutdown(); err != nil {
 		logger.GetLogger().Errorf("Failed to save model on shutdown: %v", err)
 	}
@@ -228,6 +240,16 @@ func (s *Server) LoadModelOnStartup() error {
 	}
 
 	logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Model loaded and applied successfully")
+
+	// Wire up dirty flag callback for Q-learning scheduler
+	// This ensures model is marked as dirty when Q-table updates (lightweight, no I/O)
+	currentAlg = algorithmManager.GetCurrentAlgorithm()
+	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+		qlAlg.SetDirtyCallback(func() {
+			s.modelStorage.MarkDirty()
+		})
+		logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Dirty flag callback wired up for Q-learning scheduler")
+	}
 
 	// Load cache agent state
 	cacheAgent := s.getCacheAgentFromSystem()

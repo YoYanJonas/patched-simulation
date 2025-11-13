@@ -357,6 +357,15 @@ func (ms *ModelStorage) GetModel() interface{} {
 	return ms.modelData
 }
 
+// MarkDirty marks the model as dirty (Q-table updated, needs saving)
+// This is a lightweight operation (no I/O) - just sets a flag
+func (ms *ModelStorage) MarkDirty() {
+	ms.mutex.Lock()
+	defer ms.mutex.Unlock()
+	ms.dirty = true
+	logger.GetLogger().Debugf("[MODEL-DIRTY] Model marked as dirty (Q-table updated)")
+}
+
 // UpdateModel updates the model in memory (FAST - no I/O)
 func (ms *ModelStorage) UpdateModel(newModel interface{}) {
 	ms.mutex.Lock()
@@ -477,8 +486,9 @@ func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, cacheAgentGetter 
 				}
 			}
 		case <-ctx.Done():
-			// Final save on shutdown
-			if ms.config.SaveOnShutdown && ms.dirty {
+			// Final save on shutdown - always save if enabled (regardless of dirty flag)
+			// This ensures model is saved even if periodic save hasn't run yet
+			if ms.config.SaveOnShutdown {
 				logger.GetLogger().Info("Performing final RL model save on shutdown...")
 				if err := ms.saveModel(); err != nil {
 					logger.GetLogger().Errorf("Failed to save RL model on shutdown: %v", err)
