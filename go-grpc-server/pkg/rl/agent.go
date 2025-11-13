@@ -236,7 +236,7 @@ func (a *Agent) Learn(prevState SystemState, selectedNode string,
 		return
 	}
 
-	// Calculate reward based on outcome and state changes
+	// Later Feature: deadline-aware disabled (always 0)
 	reward := CalculateReward(prevState, newState, success, executionTimeMs, 0)
 
 	// Update the active algorithm
@@ -320,7 +320,8 @@ func CalculateReward(prevState SystemState, newState SystemState, success bool,
 	// Start with base reward for success
 	reward := 5.0
 
-	// Add reward components based on execution time
+	// Later Feature: deadline-aware reward disabled (uses fixed thresholds when deadlineMs=0)
+	// Deadline-aware logic (disabled - deadlineMs always 0)
 	if deadlineMs > 0 {
 		if executionTimeMs <= deadlineMs {
 			// Task completed within deadline - positive reward

@@ -244,7 +244,7 @@ func (s *FogAllocationService) AllocateTask(ctx context.Context, request *pb.Tas
 	// Store the decision for learning and future evaluation
 	s.decisionStore.StoreDecision(taskID, selectedNode, systemState)
 
-	// Track when the task was allocated for deadline tracking
+	// Later Feature: deadline-aware tracking disabled (taskTimers not used for RL)
 	s.taskTimers.Store(taskID, time.Now())
 
 	s.logger.Info(fmt.Sprintf("[ALLOCATOR-SUCCESS] Task %s allocated to node %s using %s algorithm (available nodes were: %v)",
