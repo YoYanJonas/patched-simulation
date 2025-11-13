@@ -911,6 +911,22 @@ public class RL3FogSimulation {
             logger.info(String.format("  Cache Misses: %s", cacheStats.get("cacheMissCount")));
             logger.info(String.format("  Cache Hit Rate: %.2f%%",
                     ((Double) cacheStats.get("cacheHitRate")) * 100));
+            
+            // New metrics
+            Object uniqueTasks = cacheStats.get("uniqueTasks");
+            Object repeatRate = cacheStats.get("repeatRate");
+            Object uniqueHitRate = cacheStats.get("uniqueHitRate");
+            if (uniqueTasks != null) {
+                logger.info(String.format("  Unique Tasks: %s", uniqueTasks));
+            }
+            if (repeatRate != null) {
+                logger.info(String.format("  Repeat Rate: %.2f%% (%% of unique tasks repeated)",
+                        ((Double) repeatRate) * 100));
+            }
+            if (uniqueHitRate != null) {
+                logger.info(String.format("  Unique Hit Rate: %.2f%% (hits per unique task)",
+                        ((Double) uniqueHitRate) * 100));
+            }
         }
     }
 }

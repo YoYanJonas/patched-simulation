@@ -34,7 +34,7 @@ public class ExternalTaskGenerator extends SimEntity {
     // Task generation parameters
     private double taskGenerationRate; // tasks per second
     private int taskCounter = 0;
-    
+
     // Repeated task generation support
     private java.util.Random random = new java.util.Random();
     private java.util.Map<String, Integer> taskPatternToId = new java.util.HashMap<>(); // Pattern -> TaskId for reuse
