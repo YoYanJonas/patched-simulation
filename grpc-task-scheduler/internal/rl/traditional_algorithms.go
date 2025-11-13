@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"scheduler-grpc-server/pkg/config"
 	"sort"
-	"time"
 )
 
 // Constructor functions for traditional algorithms
@@ -186,10 +185,10 @@ func (e *EDFAlgorithm) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager
 	scheduled := make([]TaskEntry, len(tasks))
 	copy(scheduled, tasks)
 
+	// Later Feature: deadline-aware EDF disabled (behaves like FIFO)
+	// Deadline-aware disabled: sort by arrival time (FIFO)
 	sort.Slice(scheduled, func(i, j int) bool {
-		deadlineI := time.Unix(scheduled[i].GetDeadline(), 0)
-		deadlineJ := time.Unix(scheduled[j].GetDeadline(), 0)
-		return deadlineI.Before(deadlineJ)
+		return scheduled[i].GetArrivalTime().Before(scheduled[j].GetArrivalTime())
 	})
 
 	e.updateStats(len(tasks))

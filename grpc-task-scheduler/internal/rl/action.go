@@ -1,6 +1,9 @@
 package rl
 
-import "fmt"
+import (
+	"fmt"
+	"scheduler-grpc-server/pkg/logger"
+)
 
 // ActionType represents different types of scheduling actions
 type ActionType int
@@ -37,7 +40,7 @@ func GetAllActions() []Action {
 		{Type: ActionPromoteHighPriority, Description: "Promote high priority tasks to front", Priority: 0.6},
 		{Type: ActionPromoteShortJobs, Description: "Promote short execution time tasks", Priority: 0.6},
 		{Type: ActionBalancedScheduling, Description: "Balance priority and execution time", Priority: 0.7},
-		{Type: ActionDeadlineAware, Description: "Prioritize tasks close to deadline", Priority: 0.9},
+		{Type: ActionDeadlineAware, Description: "FIFO scheduling (deadline disabled)", Priority: 0.5},
 		{Type: ActionResourceOptimized, Description: "Optimize for resource utilization", Priority: 0.8},
 	}
 }
@@ -130,11 +133,9 @@ func ApplyAction(action Action, tasks []TaskEntry) []TaskEntry {
 		return result
 
 	case ActionDeadlineAware:
-		// [DEBUG] Deadline aware
-		fmt.Printf("[DEBUG] [ACTION-APPLY-DEADLINE] ActionDeadlineAware: sorting by deadline\n")
-		result := sortByDeadline(reordered)
-		fmt.Printf("[DEBUG] [ACTION-APPLY-DEADLINE-DONE] Sorted by deadline: %d tasks\n", len(result))
-		return result
+		// Later Feature: deadline-aware disabled - using FIFO
+		logger.GetLogger().Infof("[ACTION] FIFO scheduling (deadline disabled)")
+		return reordered // Return unchanged (deadline-aware disabled)
 
 	case ActionResourceOptimized:
 		// [DEBUG] Resource optimized
@@ -235,15 +236,9 @@ func sortByBalanced(tasks []TaskEntry) []TaskEntry {
 	return tasks
 }
 
+// Later Feature: deadline-aware sorting disabled
 func sortByDeadline(tasks []TaskEntry) []TaskEntry {
-	n := len(tasks)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if tasks[j].GetDeadline() > tasks[j+1].GetDeadline() {
-				tasks[j], tasks[j+1] = tasks[j+1], tasks[j]
-			}
-		}
-	}
+	// Deadline-aware disabled: return unchanged (FIFO)
 	return tasks
 }
 
