@@ -146,7 +146,7 @@ public class AllocationClient implements AutoCloseable {
                     .setMemoryRequirement(memoryRequirement)
                     .setBandwidthRequirement(bandwidthRequirement)
                     .setPriority(priority)
-                    .setDeadlineMs(deadlineMs)
+                    .setDeadlineMs(0) // Later Feature: deadline-aware disabled
                     .putAllTaskMetadata(taskMetadata)
                     .build();
 

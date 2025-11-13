@@ -475,7 +475,7 @@ public class SchedulerIntegration {
                     .setExecutionTime(executionTimeMs)              // ✅ CORRECT: Calculated from MI and MIPS
                     .setOutputSize(cloudletOutputSize)              // ✅ CORRECT: bytes → bytes
                     .setPriority(priority) // Default priority (Tuple doesn't have priority field)
-                    .setDeadline(System.currentTimeMillis() + 300000) // 5 minutes deadline
+                    .setDeadline(0) // Later Feature: deadline-aware disabled
                     .putMetadata("cloudlet_id", cloudletIdStr)  // ✅ Store unique cloudletId
                     .setLocalCacheExists(localCacheExists)  // ✅ NEW: Local cache status for server (proper proto field)
                     .build();
