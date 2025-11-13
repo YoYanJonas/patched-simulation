@@ -773,7 +773,24 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Converting Q-table to string format: %d states", len(originalQTable))
 	convertedQTable := ms.convertQTableToStringFormat(originalQTable)
-	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion complete: %d states converted to string format", len(convertedQTable))
+	convertedQTableSize := len(convertedQTable)
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion complete: InputStates=%d, OutputStates=%d", len(originalQTable), convertedQTableSize)
+	
+	// Validate conversion result
+	if len(originalQTable) > 0 && convertedQTableSize == 0 {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: Q-table conversion resulted in empty table! Input had %d states but output has 0 states", len(originalQTable))
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] This indicates all actions were filtered out or invalid. Check action type validation.")
+	} else if len(originalQTable) > 0 && convertedQTableSize < len(originalQTable) {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] WARNING: Q-table conversion lost states! Input had %d states but output has %d states (lost %d states)",
+			len(originalQTable), convertedQTableSize, len(originalQTable)-convertedQTableSize)
+	}
+	
+	// Count total actions in converted Q-table
+	totalConvertedActions := 0
+	for _, actions := range convertedQTable {
+		totalConvertedActions += len(actions)
+	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Converted Q-table statistics: States=%d, TotalActions=%d", convertedQTableSize, totalConvertedActions)
 	
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Creating QLearningModelData structure...")
 	qData := &QLearningModelData{
@@ -791,6 +808,14 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 		QTableSize:          len(originalQTable),
 		LastUpdateTimestamp: time.Now(),
 	}
+	
+	// Validate QData structure
+	if qData.QTable == nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: QData.QTable is nil after creation!")
+		qData.QTable = make(map[string]map[string]float64) // Initialize empty map to prevent nil pointer
+	}
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] QLearningModelData created: QTableSize=%d, Episode=%d, IsLearning=%v",
+		len(qData.QTable), qData.CurrentEpisode, qData.IsLearning)
 
 	// Update model data
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Updating model data structure...")
@@ -1227,10 +1252,16 @@ func (ms *ModelStorage) calculateAverageQValue(qTable map[string]map[rl.ActionTy
 
 // Helper method to convert Q-table format for saving (ActionType to string)
 func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.ActionType]float64) map[string]map[string]float64 {
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] convertQTableToStringFormat: Entry - Input Q-table size: %d states", len(qTable))
+	
 	stringQTable := make(map[string]map[string]float64)
 	
 	actionCounts := make(map[rl.ActionType]int)
 	invalidActionCount := 0
+	statesProcessed := 0
+	statesWithActions := 0
+	statesEmptyAfterConversion := 0
+	
 	validActionTypes := map[rl.ActionType]bool{
 		rl.ActionNone:                true,
 		rl.ActionScheduleNext:         true,
@@ -1243,9 +1274,16 @@ func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.Act
 		rl.ActionDeadlineAware:        true,
 		rl.ActionResourceOptimized:   true,
 	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] convertQTableToStringFormat: Valid action types: %v", validActionTypes)
 
 	for stateKey, actions := range qTable {
+		statesProcessed++
+		originalActionCount := len(actions)
 		stringQTable[stateKey] = make(map[string]float64)
+		actionsConverted := 0
+
+		logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] convertQTableToStringFormat: Processing state=%s, OriginalActions=%d", stateKey, originalActionCount)
 
 		for actionType, qValue := range actions {
 			// Validate action type before conversion
@@ -1257,16 +1295,49 @@ func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.Act
 			}
 			
 			actionStr := ms.actionTypeToString(actionType)
+			if actionStr == "" {
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] actionTypeToString returned empty string for actionType=%d, state=%s", actionType, stateKey)
+				invalidActionCount++
+				continue
+			}
+			
 			stringQTable[stateKey][actionStr] = qValue
 			actionCounts[actionType]++
+			actionsConverted++
+		}
+		
+		if actionsConverted > 0 {
+			statesWithActions++
+		} else if originalActionCount > 0 {
+			statesEmptyAfterConversion++
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] State %s had %d actions but all were filtered/invalid - resulting in empty state", stateKey, originalActionCount)
 		}
 	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] convertQTableToStringFormat: Processing complete - StatesProcessed=%d, StatesWithActions=%d, StatesEmptyAfterConversion=%d, InvalidActions=%d",
+		statesProcessed, statesWithActions, statesEmptyAfterConversion, invalidActionCount)
 	
 	if invalidActionCount > 0 {
 		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Found %d invalid action types in Q-table during save - these were skipped", invalidActionCount)
 	}
 	
-	// Log action distribution
+	// Filter out states with empty action maps (they would serialize as empty objects and cause issues)
+	filteredQTable := make(map[string]map[string]float64)
+	emptyStatesRemoved := 0
+	for stateKey, actions := range stringQTable {
+		if len(actions) > 0 {
+			filteredQTable[stateKey] = actions
+		} else {
+			emptyStatesRemoved++
+			logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] Removing empty state from Q-table: %s (no valid actions after conversion)", stateKey)
+		}
+	}
+	
+	if emptyStatesRemoved > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Removed %d empty states from Q-table (states with no valid actions after conversion)", emptyStatesRemoved)
+	}
+	
+	// Log action distribution (ALWAYS log, even if empty)
 	actionSummary := ""
 	for actionType, count := range actionCounts {
 		if count > 0 {
@@ -1279,10 +1350,15 @@ func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.Act
 	}
 	
 	if actionSummary != "" {
-		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion: %s, Invalid=%d", actionSummary, invalidActionCount)
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion: %s, Invalid=%d, EmptyStatesRemoved=%d", actionSummary, invalidActionCount, emptyStatesRemoved)
+	} else {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Q-table conversion: NO ACTIONS CONVERTED (actionSummary is empty) - InputStates=%d, OutputStates=%d, FilteredStates=%d, InvalidActions=%d, EmptyStatesRemoved=%d",
+			statesProcessed, len(stringQTable), len(filteredQTable), invalidActionCount, emptyStatesRemoved)
 	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] convertQTableToStringFormat: Exit - Output Q-table size: %d states (after filtering %d empty states)", len(filteredQTable), emptyStatesRemoved)
 
-	return stringQTable
+	return filteredQTable
 }
 
 // Helper method to convert Q-table format for loading (string to ActionType)
@@ -1663,10 +1739,20 @@ func (ms *ModelStorage) saveToFile() error {
 
 	// Check Q-table size before marshaling
 	qTableSize := 0
+	totalActionsInQTable := 0
 	if ms.currentModel.QLearningData != nil && ms.currentModel.QLearningData.QTable != nil {
 		qTableSize = len(ms.currentModel.QLearningData.QTable)
+		for _, actions := range ms.currentModel.QLearningData.QTable {
+			totalActionsInQTable += len(actions)
+		}
+		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Q-table size in model: %d states, %d total actions", qTableSize, totalActionsInQTable)
+		
+		if qTableSize > 0 && totalActionsInQTable == 0 {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: Q-table has %d states but 0 actions! All states are empty.", qTableSize)
+		}
+	} else {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile: QLearningData or QTable is nil")
 	}
-	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Q-table size in model: %d states", qTableSize)
 
 	// Marshal model data to JSON
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Marshaling model data to JSON...")
