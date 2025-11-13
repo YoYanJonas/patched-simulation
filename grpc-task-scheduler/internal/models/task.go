@@ -6,6 +6,7 @@ import (
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/internal/rl"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // TaskStatus represents the current status of a task
@@ -180,9 +181,9 @@ var (
 		return a.QueuedAt.Before(b.QueuedAt)
 	}
 
-	// ByDeadline sorts by estimated end time
+	// Later Feature: deadline-aware disabled (behaves like FIFO)
 	ByDeadline TaskComparator = func(a, b *TaskEntry) bool {
-		return a.EstimatedEnd.Before(b.EstimatedEnd)
+		return a.QueuedAt.Before(b.QueuedAt) // FIFO instead of deadline
 	}
 )
 
@@ -198,11 +199,13 @@ func (te *TaskEntry) GetExecutionTimeMs() int64 {
 	return te.Task.ExecutionTime
 }
 
+// Later Feature: deadline-aware disabled
 func (te *TaskEntry) GetDeadline() int64 {
-	if te.Task == nil {
-		return 0
+	// [DEBUG] Verify deadline always returns 0
+	if te.Task != nil && te.Task.Deadline != 0 {
+		logger.GetLogger().Warnf("[DEADLINE-DISABLED] Task %s has non-zero deadline %d, but GetDeadline() returns 0", te.Task.TaskId, te.Task.Deadline)
 	}
-	return te.Task.Deadline
+	return 0 // Deadline-aware disabled
 }
 
 func (te *TaskEntry) GetCPURequirement() float64 {

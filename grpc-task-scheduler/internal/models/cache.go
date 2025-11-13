@@ -198,24 +198,48 @@ func (tcm *TaskCacheManager) GetCacheStats() map[string]interface{} {
 	tcm.mu.RLock()
 	defer tcm.mu.RUnlock()
 
+	uniqueTasks := len(tcm.entries)
 	return map[string]interface{}{
 		"total_tasks":         tcm.totalTasks,
 		"repeated_tasks":      tcm.repeatedTasks,
 		"cache_hits":          tcm.cacheHits,
 		"cache_misses":        tcm.cacheMisses,
-		"unique_tasks":        len(tcm.entries),
+		"unique_tasks":        uniqueTasks,
 		"repeated_task_ratio": tcm.GetRepeatedTaskRatio(),
-		"hit_rate":            tcm.getHitRate(),
+		"hit_rate":            tcm.getHitRate(),           // Traditional: hits/(hits+misses)
+		"repeat_rate":         tcm.getRepeatRate(),        // New: repeatedTasks/uniqueTasks
+		"unique_hit_rate":     tcm.getUniqueHitRate(),     // New: hits/uniqueTasks
 	}
 }
 
 // getHitRate calculates cache hit rate (internal, use GetHitRate() for external access)
+// Traditional hit rate: hits / (hits + misses)
 func (tcm *TaskCacheManager) getHitRate() float64 {
 	total := tcm.cacheHits + tcm.cacheMisses
 	if total == 0 {
 		return 0.0
 	}
 	return float64(tcm.cacheHits) / float64(total)
+}
+
+// getRepeatRate calculates repeat rate: what percentage of unique tasks were repeated
+// Formula: repeatedTasks / uniqueTasks
+func (tcm *TaskCacheManager) getRepeatRate() float64 {
+	uniqueTasks := len(tcm.entries)
+	if uniqueTasks == 0 {
+		return 0.0
+	}
+	return float64(tcm.repeatedTasks) / float64(uniqueTasks)
+}
+
+// getUniqueHitRate calculates unique hit rate: hits per unique task
+// Formula: hits / uniqueTasks
+func (tcm *TaskCacheManager) getUniqueHitRate() float64 {
+	uniqueTasks := len(tcm.entries)
+	if uniqueTasks == 0 {
+		return 0.0
+	}
+	return float64(tcm.cacheHits) / float64(uniqueTasks)
 }
 
 // GetEntry returns the cache entry for a cache key (TaskId) if it exists

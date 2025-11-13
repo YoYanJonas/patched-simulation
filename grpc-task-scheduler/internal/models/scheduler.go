@@ -1150,25 +1150,21 @@ func (se *SchedulerEngine) deriveTaskSuccess(req *pb.TaskCompletionReport) bool 
 		// Look for the specific task
 		for _, completedTask := range req.Tasks {
 			if completedTask.TaskId == req.TaskId {
-				return completedTask.DeadlineMet // Use deadline met as success indicator
+				return completedTask.DeadlineMet // Later Feature: always true (deadline-aware disabled)
 			}
 		}
 	}
 
-	// Fallback: if no deadline misses reported, assume success
-	if req.Metrics != nil {
-		return req.Metrics.DeadlineMisses == 0
-	}
-
-	return true // Default to success
+	// Later Feature: deadline-aware check disabled
+	return true // Assume success (deadline-aware disabled)
 }
 
 func (se *SchedulerEngine) deriveErrorMessage(req *pb.TaskCompletionReport) string {
-	// Check if task failed based on deadline or other metrics
+	// Later Feature: deadline-aware check disabled
 	if !se.deriveTaskSuccess(req) {
-		if req.Metrics != nil && req.Metrics.DeadlineMisses > 0 {
-			return "deadline missed"
-		}
+		// if req.Metrics != nil && req.Metrics.DeadlineMisses > 0 {
+		//     return "deadline missed"
+		// }
 		return "task execution failed"
 	}
 	return ""
@@ -1535,7 +1531,7 @@ func (se *SchedulerEngine) taskEntryToProtoTaskWithCache(taskEntry *TaskEntry) *
 		ExecutionTime:   taskEntry.Task.ExecutionTime,
 		OutputSize:      taskEntry.Task.OutputSize,      // ✅ Copy output_size from original task
 		Priority:        taskEntry.Task.Priority,
-		Deadline:        taskEntry.Task.Deadline,
+		Deadline:        0, // Later Feature: deadline-aware disabled
 		Dependencies:    taskEntry.Task.Dependencies,
 		LocalCacheExists: taskEntry.Task.LocalCacheExists, // ✅ Copy local_cache_exists from original task
 	}
