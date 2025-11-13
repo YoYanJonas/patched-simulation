@@ -27,6 +27,7 @@ services:
       - SERVER_PORT=50051
     command: ['./server']
     restart: 'no' # Don't restart automatically - controlled by scripts
+    stop_grace_period: 60s # Give enough time for graceful shutdown and model save
     healthcheck:
       test: ['CMD', 'grpc_health_probe', '-addr=:50051']
       interval: 5s
@@ -63,6 +64,7 @@ services:
       - SERVER_PORT=50052
     command: ['./server']
     restart: 'no'
+    stop_grace_period: 60s # Give enough time for graceful shutdown and model save
     depends_on:
       allocator:
         condition: service_healthy
@@ -96,6 +98,7 @@ services:
       - SERVER_PORT=50052
     command: ['./server']
     restart: 'no'
+    stop_grace_period: 60s # Give enough time for graceful shutdown and model save
     depends_on:
       scheduler-1:
         condition: service_healthy
@@ -129,6 +132,7 @@ services:
       - SERVER_PORT=50052
     command: ['./server']
     restart: 'no'
+    stop_grace_period: 60s # Give enough time for graceful shutdown and model save
     depends_on:
       scheduler-2:
         condition: service_healthy

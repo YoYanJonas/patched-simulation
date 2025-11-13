@@ -25,7 +25,7 @@ logging:
 model_persistence:
   enabled: true
   model_name: 'task_scheduler_v1'
-  save_interval: '10m'
+  save_interval: '2m'
   save_on_shutdown: true
   backup_count: 0  # Backups disabled
   models_path: './models'
@@ -120,6 +120,7 @@ rl:
     adaptation_window: 50 # Episodes to consider for adaptation
 
     # Objective Profiles - Predefined objective combinations
+    # Later Feature: deadline-aware scheduling disabled (all weights = 0.0)
     profiles:
       latency_focused:
         description: 'Minimize response time and latency'
@@ -128,7 +129,7 @@ rl:
           throughput: 0.1
           resource_efficiency: 0.1
           fairness: 0.1
-          deadline_miss: 0.1
+          deadline_miss: 0.0  # Later Feature: deadline-aware disabled
           energy_efficiency: 0.0
 
       throughput_focused:
@@ -138,7 +139,7 @@ rl:
           throughput: 0.6
           resource_efficiency: 0.2
           fairness: 0.05
-          deadline_miss: 0.05
+          deadline_miss: 0.0  # Later Feature: deadline-aware disabled
           energy_efficiency: 0.0
 
       energy_focused:
@@ -148,7 +149,7 @@ rl:
           throughput: 0.1
           resource_efficiency: 0.2
           fairness: 0.1
-          deadline_miss: 0.1
+          deadline_miss: 0.0  # Later Feature: deadline-aware disabled
           energy_efficiency: 0.4
 
       balanced:
@@ -158,17 +159,17 @@ rl:
           throughput: 0.25
           resource_efficiency: 0.2
           fairness: 0.15
-          deadline_miss: 0.1
+          deadline_miss: 0.0  # Later Feature: deadline-aware disabled
           energy_efficiency: 0.05
 
       deadline_critical:
-        description: 'Critical deadline adherence'
+        description: 'Critical deadline adherence (disabled - deadline_miss = 0.0)'
         weights:
           latency: 0.2
           throughput: 0.1
           resource_efficiency: 0.1
           fairness: 0.1
-          deadline_miss: 0.4
+          deadline_miss: 0.0  # Later Feature: deadline-aware disabled
           energy_efficiency: 0.1
 
   # Default reward weights (used when multi-objective is disabled)
@@ -252,35 +253,35 @@ algorithm_manager:
       throughput: 0.7
       resource_efficiency: 0.5
       fairness: 0.9
-      deadline_miss: 0.4
+      deadline_miss: 0.0  # Later Feature: deadline-aware disabled
       energy_efficiency: 0.6
     sjf:
       latency: 0.8
       throughput: 0.6
       resource_efficiency: 0.7
       fairness: 0.3
-      deadline_miss: 0.5
+      deadline_miss: 0.0  # Later Feature: deadline-aware disabled
       energy_efficiency: 0.7
     priority:
       latency: 0.6
       throughput: 0.5
       resource_efficiency: 0.6
       fairness: 0.4
-      deadline_miss: 0.8
+      deadline_miss: 0.0  # Later Feature: deadline-aware disabled
       energy_efficiency: 0.6
     edf:
       latency: 0.7
       throughput: 0.4
       resource_efficiency: 0.5
       fairness: 0.5
-      deadline_miss: 0.9
+      deadline_miss: 0.0  # Later Feature: deadline-aware disabled
       energy_efficiency: 0.5
     qlearning:
       latency: 0.9
       throughput: 0.8
       resource_efficiency: 0.9
       fairness: 0.7
-      deadline_miss: 0.8
+      deadline_miss: 0.0  # Later Feature: deadline-aware disabled
       energy_efficiency: 0.8
 
 # Task caching configuration
