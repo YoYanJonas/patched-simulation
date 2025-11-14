@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -40,7 +41,6 @@ func NewSchedulerService(metrics *metrics.InMemoryMetrics, cfg *config.Config) *
 	}
 
 	engine := models.NewSchedulerEngine(cfg.SingleNode.NodeID, algorithm, cfg)
-	engine.SetMaxConcurrentTasks(cfg.SingleNode.MaxConcurrentTasks)
 
 	// Initialize enhanced RL configuration components
 	if cfg.RL.Enabled {
@@ -231,13 +231,37 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	
 	// [DEBUG] Check for errors
 	if err != nil {
-		// [DEBUG] Error occurred
-		logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-ERROR] Failed to add task to queue: TaskID=%s, Error=%v", req.Task.TaskId, err)
+		// [DEBUG] Error occurred - categorize error for better client handling
+		errorMessage := err.Error()
+		isTransient := false // Default to non-transient
+		
+		// Categorize errors: transient errors can be retried, permanent errors should not
+		if strings.Contains(errorMessage, "queue capacity exceeded") || 
+		   strings.Contains(errorMessage, "already scheduled") ||
+		   strings.Contains(errorMessage, "validation failed") {
+			isTransient = false // Permanent errors
+		} else if strings.Contains(errorMessage, "timeout") ||
+		          strings.Contains(errorMessage, "connection") ||
+		          strings.Contains(errorMessage, "unavailable") {
+			isTransient = true // Transient errors that might succeed on retry
+		}
+		
+		logger.GetLogger().Errorf("[SCHEDULER-ERROR] Failed to add task to queue: TaskID=%s, Error=%v, IsTransient=%t", 
+			req.Task.TaskId, err, isTransient)
 		s.metrics.IncrementFailedRequests()
+		
+		// Include error category in response message for client retry logic
+		responseMessage := errorMessage
+		if isTransient {
+			responseMessage = fmt.Sprintf("TRANSIENT_ERROR: %s (may succeed on retry)", errorMessage)
+		} else {
+			responseMessage = fmt.Sprintf("PERMANENT_ERROR: %s (do not retry)", errorMessage)
+		}
+		
 		return &pb.AddTaskToQueueResponse{
 			TaskId:  req.Task.TaskId,
 			Success: false,
-			Message: err.Error(),
+			Message: responseMessage,
 		}, nil
 	}
 
