@@ -8,6 +8,7 @@ import (
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // StateFeatures represents the current state of the scheduling system
@@ -54,11 +55,22 @@ type StateFeatures struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// NodeStatusTracker interface for extracting node status metrics
+// This interface allows ExtractStateFeatures to use accumulated node status from completion reports
+type NodeStatusTracker interface {
+	GetAvgCPUUtilization() float64
+	GetAvgMemoryUtilization() float64
+	GetSystemLoad() float64
+	GetResourcePressure() float64
+	HasData() bool
+}
+
 // ExtractStateFeatures extracts state features from current tasks and node status
 // Note: Cache-related features are excluded from scheduling state (cache has its own agent)
-func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager) *StateFeatures {
+// nodeStatusTracker: Tracks accumulated node status from completion reports (provides real CPU/Memory metrics)
+func ExtractStateFeatures(tasks []TaskEntry, nodeStatusTracker NodeStatusTracker) *StateFeatures {
 	// [DEBUG] Entry point for ExtractStateFeatures
-	fmt.Printf("[DEBUG] [STATE-EXTRACT-ENTRY] ExtractStateFeatures called with %d tasks\n", len(tasks))
+	fmt.Printf("[DEBUG] [STATE-EXTRACT-ENTRY] ExtractStateFeatures called with %d tasks, HasTracker=%t\n", len(tasks), nodeStatusTracker != nil)
 	
 	state := &StateFeatures{
 		Timestamp: time.Now(),
@@ -96,24 +108,27 @@ func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager) *Sta
 		fmt.Printf("[DEBUG] [STATE-EXTRACT-NO-TASKS] No tasks, skipping statistics calculation\n")
 	}
 
-	// [DEBUG] Resource utilization
-	// NOTE: During scheduling, node status is not available (tasks haven't executed yet)
-	// CPU/Memory will be 0.0, but this is OK because:
-	// 1. Queue length and task priorities are the main features for scheduling decisions
-	// 2. Node status will be available in completion report for delayed reward calculation
-	if nodeManager != nil {
-		fmt.Printf("[DEBUG] [STATE-EXTRACT-NODE-BEFORE] About to get node manager metrics\n")
-		// Keep for backward compatibility, but values will be 0.0
-		// Real node status comes from completion report
-		state.CPUUtilization = nodeManager.GetCPUUtilization() // Will be 0.0
-		state.MemoryUtilization = nodeManager.GetMemoryUtilization() // Will be 0.0
-		state.SystemLoad = (state.CPUUtilization + state.MemoryUtilization) / 2.0
-		state.ResourcePressure = math.Max(state.CPUUtilization, state.MemoryUtilization)
-		// [DEBUG] Node metrics retrieved
-		fmt.Printf("[DEBUG] [STATE-EXTRACT-NODE-AFTER] Node metrics: CPU=%.2f, Memory=%.2f, Load=%.2f, Pressure=%.2f\n",
-			state.CPUUtilization, state.MemoryUtilization, state.SystemLoad, state.ResourcePressure)
-		fmt.Printf("[DEBUG] [STATE-EXTRACT-SCHEDULING] Node status not available during scheduling (CPU=%.2f%%, Mem=%.2f%%) - will use completion report for delayed reward\n",
-			state.CPUUtilization*100, state.MemoryUtilization*100)
+	// [DEBUG] Resource utilization from NodeStatusTracker
+	// Use accumulated node status from completion reports (real CPU/Memory metrics)
+	if nodeStatusTracker != nil {
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-TRACKER-BEFORE] About to get node status tracker metrics\n")
+		hasData := nodeStatusTracker.HasData()
+		state.CPUUtilization = nodeStatusTracker.GetAvgCPUUtilization()
+		state.MemoryUtilization = nodeStatusTracker.GetAvgMemoryUtilization()
+		state.SystemLoad = nodeStatusTracker.GetSystemLoad()
+		state.ResourcePressure = nodeStatusTracker.GetResourcePressure()
+		
+		// [DEBUG] Node metrics retrieved from tracker
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-TRACKER-AFTER] Node metrics from tracker: HasData=%t, CPU=%.2f%%, Memory=%.2f%%, Load=%.2f%%, Pressure=%.2f%%\n",
+			hasData, state.CPUUtilization*100, state.MemoryUtilization*100, state.SystemLoad*100, state.ResourcePressure*100)
+		
+		if !hasData {
+			logger.GetLogger().Warnf("[STATE-EXTRACT-TRACKER] NodeStatusTracker has no data yet (first few tasks) - using 0.0 for CPU/Memory")
+			fmt.Printf("[DEBUG] [STATE-EXTRACT-TRACKER-NO-DATA] Tracker has no data yet, metrics will be 0.0\n")
+		} else {
+			logger.GetLogger().Infof("[STATE-EXTRACT-TRACKER] Using accumulated node status: CPU=%.2f%%, Memory=%.2f%%, Load=%.2f%%",
+				state.CPUUtilization*100, state.MemoryUtilization*100, state.SystemLoad*100)
+		}
 
 		// Performance indicators (placeholder - would be calculated from historical data)
 		state.RecentThroughput = float64(state.QueueLength) / 10.0 // Simplified
@@ -122,8 +137,13 @@ func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager) *Sta
 		fmt.Printf("[DEBUG] [STATE-EXTRACT-PERF] Performance indicators: Throughput=%.2f, Latency=%.2f\n",
 			state.RecentThroughput, state.RecentLatency)
 	} else {
-		// [DEBUG] No node manager
-		fmt.Printf("[DEBUG] [STATE-EXTRACT-NO-NODE] Node manager is nil\n")
+		// [DEBUG] No node status tracker
+		fmt.Printf("[DEBUG] [STATE-EXTRACT-NO-TRACKER] Node status tracker is nil, using 0.0 for CPU/Memory\n")
+		logger.GetLogger().Warnf("[STATE-EXTRACT-TRACKER] NodeStatusTracker is nil - using 0.0 for CPU/Memory metrics")
+		state.CPUUtilization = 0.0
+		state.MemoryUtilization = 0.0
+		state.SystemLoad = 0.0
+		state.ResourcePressure = 0.0
 	}
 
 	// [DEBUG] Apply fuzzy categorization
@@ -594,56 +614,75 @@ func ValidateStateDiscretization() error {
 
 // ExtractStateFeaturesFromNodeStatus creates state features from node status at completion time
 // This is used for delayed reward calculation when we have node status from completion report
+// UNIFIED: Now uses the same full logic as ExtractStateFeatures for consistency
 func ExtractStateFeaturesFromNodeStatus(
 	tasks []TaskEntry,
 	nodeStatus *pb.FogNode,
 	queueLength int,
 ) *StateFeatures {
-	state := &StateFeatures{
-		QueueLength: queueLength,
-		Timestamp:   time.Now(),
-	}
-
-	// Extract CPU/Memory from node status
-	if nodeStatus != nil && nodeStatus.CurrentUsage != nil {
-		// CPU utilization (already percentage 0-100)
-		state.CPUUtilization = float64(nodeStatus.CurrentUsage.CpuUsage) / 100.0 // Convert to 0.0-1.0
-
-		// Memory utilization (calculate percentage)
-		// Safety check: ensure Capacity exists and is valid
-		if nodeStatus.Capacity != nil && nodeStatus.Capacity.MemoryMb > 0 {
-			// Calculate percentage: actual MB used / total MB capacity
-			state.MemoryUtilization = float64(nodeStatus.CurrentUsage.MemoryUsageMb) / float64(nodeStatus.Capacity.MemoryMb)
-			// Clamp to [0.0, 1.0] to handle edge cases
-			if state.MemoryUtilization < 0.0 {
-				state.MemoryUtilization = 0.0
-			}
-			if state.MemoryUtilization > 1.0 {
-				state.MemoryUtilization = 1.0
-			}
-		} else {
-			// Fallback: if capacity is missing or invalid, set to 0
-			state.MemoryUtilization = 0.0
-		}
-
-		// System load = average of CPU and Memory
-		state.SystemLoad = (state.CPUUtilization + state.MemoryUtilization) / 2.0
-		state.ResourcePressure = math.Max(state.CPUUtilization, state.MemoryUtilization)
-	} else {
-		// If node status is missing, set all resource metrics to 0
-		state.CPUUtilization = 0.0
-		state.MemoryUtilization = 0.0
-		state.SystemLoad = 0.0
-		state.ResourcePressure = 0.0
-	}
-
-	// Calculate task statistics (if tasks provided)
-	if len(tasks) > 0 {
-		state.calculateTaskStatistics(tasks)
-	}
-
-	// Apply fuzzy categorization
+	// Create a temporary NodeStatusTracker wrapper for the nodeStatus
+	// This allows us to reuse ExtractStateFeatures logic
+	tracker := newNodeStatusWrapper(nodeStatus)
+	
+	// Use the unified ExtractStateFeatures function, but override queue length
+	// since we have the actual queue length at completion time
+	state := ExtractStateFeatures(tasks, tracker)
+	state.QueueLength = queueLength // Override with actual queue length
+	
+	// Re-apply fuzzy categorization with updated queue length
 	state.applyFuzzyCategories()
-
+	
 	return state
+}
+
+// nodeStatusWrapper wraps a *pb.FogNode to implement NodeStatusTracker interface
+// This allows ExtractStateFeatures to extract metrics from a completion report node status
+type nodeStatusWrapper struct {
+	nodeStatus *pb.FogNode
+}
+
+func newNodeStatusWrapper(nodeStatus *pb.FogNode) NodeStatusTracker {
+	return &nodeStatusWrapper{nodeStatus: nodeStatus}
+}
+
+func (w *nodeStatusWrapper) GetAvgCPUUtilization() float64 {
+	if w.nodeStatus != nil && w.nodeStatus.CurrentUsage != nil {
+		// CPU utilization (already percentage 0-100, convert to 0.0-1.0)
+		return float64(w.nodeStatus.CurrentUsage.CpuUsage) / 100.0
+	}
+	return 0.0
+}
+
+func (w *nodeStatusWrapper) GetAvgMemoryUtilization() float64 {
+	if w.nodeStatus != nil && w.nodeStatus.CurrentUsage != nil && w.nodeStatus.Capacity != nil {
+		if w.nodeStatus.Capacity.MemoryMb > 0 {
+			// Calculate percentage: actual MB used / total MB capacity
+			util := float64(w.nodeStatus.CurrentUsage.MemoryUsageMb) / float64(w.nodeStatus.Capacity.MemoryMb)
+			// Clamp to [0.0, 1.0]
+			if util < 0.0 {
+				return 0.0
+			}
+			if util > 1.0 {
+				return 1.0
+			}
+			return util
+		}
+	}
+	return 0.0
+}
+
+func (w *nodeStatusWrapper) GetSystemLoad() float64 {
+	cpu := w.GetAvgCPUUtilization()
+	mem := w.GetAvgMemoryUtilization()
+	return (cpu + mem) / 2.0
+}
+
+func (w *nodeStatusWrapper) GetResourcePressure() float64 {
+	cpu := w.GetAvgCPUUtilization()
+	mem := w.GetAvgMemoryUtilization()
+	return math.Max(cpu, mem)
+}
+
+func (w *nodeStatusWrapper) HasData() bool {
+	return w.nodeStatus != nil && w.nodeStatus.CurrentUsage != nil
 }

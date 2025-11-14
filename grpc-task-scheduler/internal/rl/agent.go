@@ -47,6 +47,7 @@ type Agent struct {
 	mu               sync.RWMutex
 	ctx              context.Context
 	cancel           context.CancelFunc
+	nodeStatusTracker NodeStatusTracker // Optional: can be set to provide real CPU/Memory metrics
 }
 
 // AgentStats holds agent performance statistics
@@ -181,6 +182,12 @@ func (a *Agent) ScheduleTasks(tasks []TaskEntry, nodeManager SingleNodeManager) 
 
 	// [DEBUG] About to schedule tasks
 	// Schedule tasks
+	// Before scheduling, ensure NodeStatusTracker is set on Q-learning scheduler
+	if qlAlg, ok := algorithm.(*QLearningScheduler); ok && a.nodeStatusTracker != nil {
+		qlAlg.SetNodeStatusTracker(a.nodeStatusTracker)
+		logger.GetLogger().Debugf("[AGENT-SCHEDULE] NodeStatusTracker set on Q-learning scheduler before scheduling")
+	}
+	
 	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-BEFORE] About to call algorithm.Schedule with %d tasks", len(tasks))
 	scheduledTasks := algorithm.Schedule(tasks, nodeManager)
 	// [DEBUG] Algorithm.Schedule returned
@@ -242,6 +249,25 @@ func (a *Agent) UpdateRewardWeights(weights config.RewardWeights) error {
 
 	log.Printf("Agent reward weights updated successfully")
 	return nil
+}
+
+// SetNodeStatusTracker sets the node status tracker for Q-learning scheduler
+func (a *Agent) SetNodeStatusTracker(tracker NodeStatusTracker) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	
+	a.nodeStatusTracker = tracker
+	
+	// Also set it on the Q-learning scheduler if it exists
+	if a.algorithmManager != nil {
+		currentAlg := a.algorithmManager.GetCurrentAlgorithm()
+		if qlAlg, ok := currentAlg.(*QLearningScheduler); ok {
+			qlAlg.SetNodeStatusTracker(tracker)
+			logger.GetLogger().Infof("[AGENT] NodeStatusTracker set on Q-learning scheduler")
+		}
+	}
+	
+	logger.GetLogger().Infof("[AGENT] NodeStatusTracker set: HasTracker=%t", tracker != nil)
 }
 
 // GetCurrentAlgorithm returns information about the current algorithm

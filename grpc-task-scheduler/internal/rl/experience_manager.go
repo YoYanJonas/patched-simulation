@@ -73,21 +73,17 @@ func NewExperienceManager(scheduler *QLearningScheduler, multiObj *MultiObjectiv
 }
 
 func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *StateFeatures, action Action) {
-	// [DEBUG] Entry point for StoreIncompleteExperience
-	fmt.Printf("[DEBUG] [EXP-MGR-STORE-ENTRY] StoreIncompleteExperience called: TaskID=%s, Action=%v\n", taskID, action.Type)
+	logger.GetLogger().Infof("[EXP-MGR-STORE] Creating incomplete experience: TaskID=%s, Action=%s, StateKey=%s, QueueLength=%d",
+		taskID, action.Description, state.GetStateKey(), state.QueueLength)
 	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-ACQUIRED] Lock acquired\n")
-	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-RELEASE] Releasing Lock\n")
-		em.mu.Unlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [EXP-MGR-STORE-LOCK-RELEASED] Lock released\n")
-	}()
+	defer em.mu.Unlock()
+
+	// Check if experience already exists (shouldn't happen, but log if it does)
+	if existing, exists := em.incompleteExperiences[taskID]; exists {
+		logger.GetLogger().Warnf("[EXP-MGR-STORE] WARNING: Experience already exists for TaskID=%s (created at %s, timeout at %s). Overwriting.",
+			taskID, existing.Timestamp.Format(time.RFC3339), existing.Timeout.Format(time.RFC3339))
+	}
 
 	em.incompleteExperiences[taskID] = &IncompleteExperience{
 		TaskID:    taskID,
@@ -96,49 +92,81 @@ func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *Sta
 		Timestamp: time.Now(),
 		Timeout:   time.Now().Add(em.experienceTimeout),
 	}
-	// [DEBUG] Incomplete experience stored
-	fmt.Printf("[DEBUG] [EXP-MGR-STORE-AFTER] Incomplete experience stored: TaskID=%s, TotalIncomplete=%d\n",
-		taskID, len(em.incompleteExperiences))
+	
+	totalIncomplete := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[EXP-MGR-STORE] Experience stored successfully: TaskID=%s, TotalIncomplete=%d, Timeout=%s",
+		taskID, totalIncomplete, em.incompleteExperiences[taskID].Timeout.Format(time.RFC3339))
 
 	// Update memory usage estimation
 	em.updateMemoryUsage()
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [EXP-MGR-STORE-EXIT] StoreIncompleteExperience returning: TaskID=%s\n", taskID)
 }
 
 func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
-	// [DEBUG] Entry point for CompleteExperience
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-ENTRY] CompleteExperience called: TaskID=%s, QueueLength=%d\n", taskID, queueLength)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Completing experience: TaskID=%s, QueueLength=%d, HasNodeStatus=%t",
+		taskID, queueLength, nodeStatus != nil)
 	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-ACQUIRED] Lock acquired\n")
-	incompleteExp := em.incompleteExperiences[taskID]
-	delete(em.incompleteExperiences, taskID)
-	// [DEBUG] About to release lock
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-RELEASE] Releasing Lock\n")
-	em.mu.Unlock()
-	// [DEBUG] Lock released
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-LOCK-RELEASED] Lock released\n")
-
-	if incompleteExp == nil {
-		// [DEBUG] Task not found
-		fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-ERROR] Task %s not found in incomplete experiences\n", taskID)
-		return fmt.Errorf("task %s not found in incomplete experiences", taskID)
+	
+	// Log all available task IDs before lookup (for debugging)
+	availableTaskIDs := make([]string, 0, len(em.incompleteExperiences))
+	for id := range em.incompleteExperiences {
+		availableTaskIDs = append(availableTaskIDs, id)
+	}
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Looking up TaskID=%s, AvailableIncompleteExperiences=%d, IDs=%v",
+		taskID, len(availableTaskIDs), availableTaskIDs)
+	
+	// Lookup experience
+	incompleteExp, exists := em.incompleteExperiences[taskID]
+	if !exists {
+		em.mu.Unlock()
+		
+		// Log detailed diagnostic information
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] TaskID=%s NOT FOUND in incomplete experiences", taskID)
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] Total incomplete experiences: %d", len(availableTaskIDs))
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] Available task IDs: %v", availableTaskIDs)
+		
+		// Check if task ID might have been cleaned up due to timeout
+		now := time.Now()
+		for _, exp := range em.incompleteExperiences {
+			if exp.Timeout.Before(now) {
+				logger.GetLogger().Warnf("[EXP-MGR-COMPLETE-ERROR] Found expired experience: TaskID=%s, Timeout=%s, Age=%s",
+					exp.TaskID, exp.Timeout.Format(time.RFC3339), now.Sub(exp.Timeout).String())
+			}
+		}
+		
+		// Try to find similar task IDs (for debugging ID mismatch issues)
+		for _, availableID := range availableTaskIDs {
+			if len(availableID) > 0 && len(taskID) > 0 {
+				// Check if IDs are similar (same prefix or suffix)
+				if len(availableID) >= 5 && len(taskID) >= 5 {
+					if availableID[:5] == taskID[:5] || availableID[len(availableID)-5:] == taskID[len(taskID)-5:] {
+						logger.GetLogger().Warnf("[EXP-MGR-COMPLETE-ERROR] Found similar task ID: Available=%s, Requested=%s",
+							availableID, taskID)
+					}
+				}
+			}
+		}
+		
+		return fmt.Errorf("task %s not found in incomplete experiences (total available: %d)", taskID, len(availableTaskIDs))
 	}
 	
-	// [DEBUG] Incomplete experience found
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-FOUND] Incomplete experience found: TaskID=%s, OldQueueLength=%d, NewQueueLength=%d\n", 
-		taskID, incompleteExp.State.QueueLength, queueLength)
+	// Remove from incomplete experiences
+	delete(em.incompleteExperiences, taskID)
+	remainingIncomplete := len(em.incompleteExperiences)
+	em.mu.Unlock()
+	
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Experience found: TaskID=%s, CreatedAt=%s, Age=%s, RemainingIncomplete=%d",
+		taskID, incompleteExp.Timestamp.Format(time.RFC3339), time.Since(incompleteExp.Timestamp).String(), remainingIncomplete)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] State comparison: OldQueueLength=%d, NewQueueLength=%d, OldStateKey=%s",
+		incompleteExp.State.QueueLength, queueLength, incompleteExp.State.GetStateKey())
 
 	// Calculate delayed reward with node status
 	reward, err := em.calculateDelayedReward(incompleteExp, report, nodeStatus)
 	if err != nil {
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] Failed to calculate reward: TaskID=%s, Error=%v", taskID, err)
 		return fmt.Errorf("failed to calculate reward: %w", err)
 	}
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Reward calculated: TaskID=%s, Reward=%.3f", taskID, reward)
 
 	// Create next state from node status (for Q-learning update)
 	// Use actual current queue length (passed from scheduler engine)
@@ -148,6 +176,8 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 		nodeStatus,
 		queueLength, // Use actual queue length at completion time
 	)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Next state created: TaskID=%s, NextStateKey=%s, QueueLength=%d",
+		taskID, nextState.GetStateKey(), queueLength)
 
 	experience := &Experience{
 		State:     incompleteExp.State, // State at scheduling time
@@ -159,32 +189,20 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	}
 
 	// Update Q-learning policy
-	// [DEBUG] About to update Q-learning policy
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-BEFORE] About to update Q-learning policy: TaskID=%s\n", taskID)
 	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Updating Q-learning policy: TaskID=%s, State=%s, Action=%s, Reward=%.3f",
 		taskID, experience.State.GetStateKey(), experience.Action.Description, experience.Reward)
 	if err := em.qLearningScheduler.UpdatePolicy(experience); err != nil {
-		// [DEBUG] Error updating policy
-		fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-ERROR] Failed to update Q-learning policy: %v\n", err)
-		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] ERROR: Failed to update Q-learning policy: %v", err)
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] ERROR: Failed to update Q-learning policy: TaskID=%s, Error=%v", taskID, err)
 		return err
 	}
-	// [DEBUG] Policy updated successfully
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-UPDATE-SUCCESS] Q-learning policy updated successfully: TaskID=%s\n", taskID)
 	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Q-learning policy updated successfully: TaskID=%s", taskID)
 
 	// Store complete experience and track stability
-	// [DEBUG] About to store complete experience
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-STORE-BEFORE] About to store complete experience: TaskID=%s\n", taskID)
 	em.storeCompleteExperience(experience, taskID)
-	// [DEBUG] About to track Q-value stability
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-STABILITY-BEFORE] About to track Q-value stability: TaskID=%s\n", taskID)
 	em.trackQValueStability(incompleteExp.State, incompleteExp.Action)
-	// [DEBUG] Stability tracked
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-STABILITY-AFTER] Q-value stability tracked: TaskID=%s\n", taskID)
-
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [EXP-MGR-COMPLETE-EXIT] CompleteExperience returning successfully: TaskID=%s\n", taskID)
+	
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Experience completed successfully: TaskID=%s, Reward=%.3f, StateKey=%s->%s",
+		taskID, reward, experience.State.GetStateKey(), experience.NextState.GetStateKey())
 	return nil
 }
 
@@ -552,21 +570,44 @@ func (em *ExperienceManager) Cleanup() {
 	now := time.Now()
 
 	// Clean up timed-out incomplete experiences
-	// [DEBUG] About to clean up timed-out incomplete experiences
-	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-TIMEOUT-BEFORE] About to clean up timed-out incomplete experiences: Count=%d\n",
-		len(em.incompleteExperiences))
-	cleanedTimeout := 0
+	// Log all incomplete experiences before cleanup for diagnostics
+	beforeCleanupCount := len(em.incompleteExperiences)
+	expiredTaskIDs := make([]string, 0)
+	activeTaskIDs := make([]string, 0)
+	
 	for taskID, exp := range em.incompleteExperiences {
+		age := now.Sub(exp.Timestamp)
+		timeUntilTimeout := exp.Timeout.Sub(now)
 		if now.After(exp.Timeout) {
-			delete(em.incompleteExperiences, taskID)
-			cleanedTimeout++
+			expiredTaskIDs = append(expiredTaskIDs, taskID)
+			logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Removing expired experience: TaskID=%s, Age=%s, Timeout=%s, Overdue=%s",
+				taskID, age.String(), exp.Timeout.Format(time.RFC3339), timeUntilTimeout.String())
+		} else {
+			activeTaskIDs = append(activeTaskIDs, taskID)
+			logger.GetLogger().Debugf("[EXP-MGR-CLEANUP-TIMEOUT] Active experience: TaskID=%s, Age=%s, TimeUntilTimeout=%s",
+				taskID, age.String(), timeUntilTimeout.String())
 		}
 	}
-	// [DEBUG] Timed-out experiences cleaned
+	
+	logger.GetLogger().Infof("[EXP-MGR-CLEANUP-TIMEOUT] Before cleanup: Total=%d, Expired=%d, Active=%d",
+		beforeCleanupCount, len(expiredTaskIDs), len(activeTaskIDs))
+	
+	cleanedTimeout := 0
+	for _, taskID := range expiredTaskIDs {
+		if exp, exists := em.incompleteExperiences[taskID]; exists {
+			delete(em.incompleteExperiences, taskID)
+			cleanedTimeout++
+			logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Removed expired experience: TaskID=%s, CreatedAt=%s, Timeout=%s",
+				taskID, exp.Timestamp.Format(time.RFC3339), exp.Timeout.Format(time.RFC3339))
+		}
+	}
+	
+	afterCleanupCount := len(em.incompleteExperiences)
 	if cleanedTimeout > 0 {
-		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-TIMEOUT-AFTER] Cleaned up %d timed-out incomplete experiences\n", cleanedTimeout)
+		logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Cleaned up %d timed-out incomplete experiences: Before=%d, After=%d, RemovedTaskIDs=%v",
+			cleanedTimeout, beforeCleanupCount, afterCleanupCount, expiredTaskIDs)
 	} else {
-		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-TIMEOUT-NONE] No timed-out incomplete experiences to clean\n")
+		logger.GetLogger().Debugf("[EXP-MGR-CLEANUP-TIMEOUT] No timed-out incomplete experiences to clean: Total=%d", beforeCleanupCount)
 	}
 
 	// Scheduled cleanup based on episode intervals

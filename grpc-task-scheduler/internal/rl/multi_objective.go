@@ -92,15 +92,16 @@ func NewMultiObjectiveRewardCalculator(
 }
 
 // CalculateMultiObjectiveReward calculates reward considering multiple objectives
+// nodeStatusTracker: Tracks accumulated node status from completion reports (provides real CPU/Memory metrics)
 func (morc *MultiObjectiveRewardCalculator) CalculateMultiObjectiveReward(
 	beforeState *StateFeatures,
 	afterState *StateFeatures,
 	action Action,
 	tasks []TaskEntry,
-	nodeManager SingleNodeManager,
+	nodeStatusTracker NodeStatusTracker,
 	episode int) (float64, ObjectiveVector) {
 
-	currentMetrics := morc.calculateMetrics(afterState, tasks, nodeManager)
+	currentMetrics := morc.calculateMetrics(afterState, tasks, nodeStatusTracker)
 
 	// Convert to objectives
 	objectives := ObjectiveVector{

@@ -36,6 +36,9 @@ type QLearningScheduler struct {
 
 	// Model persistence callback (lightweight - just marks dirty flag)
 	onDirty func() // Callback to mark model as dirty when Q-table updates
+
+	// Node status tracker for real CPU/Memory metrics (from completion reports)
+	nodeStatusTracker NodeStatusTracker // Optional: can be nil if not set
 }
 
 // Experience represents a learning experience
@@ -94,8 +97,13 @@ func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeM
 		return tasks
 	}
 
-	// Extract state features
-	state := ExtractStateFeatures(tasks, nodeManager)
+	// Extract state features using NodeStatusTracker (if available)
+	// Use tracker for real CPU/Memory metrics, fallback to nil if not set
+	var tracker NodeStatusTracker = q.nodeStatusTracker
+	if tracker == nil {
+		logger.GetLogger().Debugf("[Q-LEARNING-SCHEDULE] NodeStatusTracker not set, using nil (CPU/Memory will be 0.0)")
+	}
+	state := ExtractStateFeatures(tasks, tracker)
 	stateKey := state.GetStateKey()
 	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-STATE] State extracted: QueueLength=%d, CPUUtil=%.2f, MemUtil=%.2f, Load=%.2f, StateKey=%s",
 		state.QueueLength, state.CPUUtilization, state.MemoryUtilization, state.SystemLoad, stateKey)
@@ -694,6 +702,12 @@ func (q *QLearningScheduler) SetLearningMode(enabled bool) {
 func (q *QLearningScheduler) SetDirtyCallback(callback func()) {
 	q.onDirty = callback
 	logger.GetLogger().Debugf("[Q-LEARNING] Dirty callback set for model persistence")
+}
+
+// SetNodeStatusTracker sets the node status tracker for real CPU/Memory metrics
+func (q *QLearningScheduler) SetNodeStatusTracker(tracker NodeStatusTracker) {
+	q.nodeStatusTracker = tracker
+	logger.GetLogger().Infof("[Q-LEARNING] NodeStatusTracker set: HasTracker=%t", tracker != nil)
 }
 
 // UpdateRewardWeights updates the reward calculator weights

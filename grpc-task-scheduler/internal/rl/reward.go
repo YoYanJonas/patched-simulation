@@ -46,15 +46,16 @@ func NewRewardCalculator(weights config.RewardWeights) *RewardCalculator {
 }
 
 // CalculateReward calculates reward based on current metrics and previous state
+// nodeStatusTracker: Optional tracker for real CPU/Memory metrics (can be nil)
 func (rc *RewardCalculator) CalculateReward(
 	beforeState *StateFeatures,
 	afterState *StateFeatures,
 	action Action,
 	tasks []TaskEntry,
-	nodeManager SingleNodeManager) float64 {
+	nodeStatusTracker NodeStatusTracker) float64 {
 
 	// Calculate current metrics
-	currentMetrics := rc.calculateMetrics(afterState, tasks, nodeManager)
+	currentMetrics := rc.calculateMetrics(afterState, tasks, nodeStatusTracker)
 
 	// Store metrics in history
 	rc.addToHistory(currentMetrics)
@@ -88,10 +89,11 @@ func (rc *RewardCalculator) CalculateReward(
 }
 
 // calculateMetrics calculates current system metrics
+// nodeStatusTracker: Optional tracker for real CPU/Memory metrics (can be nil)
 func (rc *RewardCalculator) calculateMetrics(
 	state *StateFeatures,
 	tasks []TaskEntry,
-	nodeManager SingleNodeManager) RewardMetrics {
+	nodeStatusTracker NodeStatusTracker) RewardMetrics {
 
 	metrics := RewardMetrics{
 		Timestamp: time.Now(),
@@ -99,8 +101,21 @@ func (rc *RewardCalculator) calculateMetrics(
 
 	if state != nil {
 		metrics.Latency = state.AvgWaitingTime + state.AvgExecutionTime
+		// Use CPU/Memory from state (which should come from NodeStatusTracker if ExtractStateFeatures was used correctly)
 		metrics.ResourceEff = (state.CPUUtilization + state.MemoryUtilization) / 2.0
 		metrics.ResponseTime = state.RecentLatency
+		
+		// If state has 0.0 for CPU/Memory but tracker has data, use tracker
+		if nodeStatusTracker != nil && nodeStatusTracker.HasData() {
+			if state.CPUUtilization == 0.0 && state.MemoryUtilization == 0.0 {
+				// State doesn't have real metrics, use tracker
+				cpuUtil := nodeStatusTracker.GetAvgCPUUtilization()
+				memUtil := nodeStatusTracker.GetAvgMemoryUtilization()
+				metrics.ResourceEff = (cpuUtil + memUtil) / 2.0
+				logger.GetLogger().Debugf("[REWARD-CALC-METRICS] Using NodeStatusTracker for ResourceEff: CPU=%.3f, Mem=%.3f, ResourceEff=%.3f",
+					cpuUtil, memUtil, metrics.ResourceEff)
+			}
+		}
 	}
 
 	if len(tasks) > 0 {
@@ -110,8 +125,17 @@ func (rc *RewardCalculator) calculateMetrics(
 		metrics.QueueStability = rc.calculateQueueStability(state)
 	}
 
-	if nodeManager != nil {
-		metrics.EnergyEfficiency = rc.calculateEnergyEfficiency(nodeManager)
+	// Energy efficiency calculation - use tracker if available, otherwise use state
+	if nodeStatusTracker != nil && nodeStatusTracker.HasData() {
+		// Use system load from tracker as proxy for energy efficiency
+		systemLoad := nodeStatusTracker.GetSystemLoad()
+		// Energy efficiency is inversely related to system load (lower load = higher efficiency)
+		metrics.EnergyEfficiency = 1.0 - systemLoad
+		logger.GetLogger().Debugf("[REWARD-CALC-METRICS] Using NodeStatusTracker for EnergyEfficiency: SystemLoad=%.3f, EnergyEff=%.3f",
+			systemLoad, metrics.EnergyEfficiency)
+	} else if state != nil {
+		// Fallback: use state metrics if tracker not available
+		metrics.EnergyEfficiency = 1.0 - state.SystemLoad
 	}
 
 	return metrics
