@@ -641,9 +641,11 @@ public class RLCloudDevice extends FogDevice {
 
                 return allocatedNodeId;
             } else {
+                String errorMsg = response.getMessage() != null && !response.getMessage().isEmpty() 
+                        ? response.getMessage() : "Allocation failed (no error message)";
                 logger.warning(String.format(
                         "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Allocation failed for task %d: %s",
-                        currentTime, getId(), tuple.getCloudletId(), response.getMessage()));
+                        currentTime, getId(), tuple.getCloudletId(), errorMsg));
                 return 0;
             }
 

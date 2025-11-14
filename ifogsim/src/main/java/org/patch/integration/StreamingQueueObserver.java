@@ -49,6 +49,14 @@ public class StreamingQueueObserver {
     private final double streamingIntervalSeconds; // Converted to simulation time (seconds)
     private final int maxRetries = 3;
     private final long retryDelayMs = 5000; // 5 seconds
+    
+    // Polling optimization: Track poll count and implement limits
+    private int pollCount = 0;
+    private int maxPolls = 1000; // Maximum polls per simulation (proportional to simulation time)
+    private int consecutiveEmptyPolls = 0; // Track consecutive empty queue polls
+    private static final int MAX_CONSECUTIVE_EMPTY_POLLS = 5; // Skip polling after 5 consecutive empty polls
+    private static final double ADAPTIVE_POLL_INTERVAL_MULTIPLIER = 2.0; // Double interval when queue is empty
+    private double currentPollInterval; // Current adaptive poll interval
 
     // Callback for queue updates
     private Consumer<ScheduledQueue> queueUpdateCallback;
@@ -103,9 +111,19 @@ public class StreamingQueueObserver {
         this.streamingIntervalMs = intervalValue;
         // Convert milliseconds to simulation time (seconds)
         this.streamingIntervalSeconds = intervalValue / 1000.0;
+        this.currentPollInterval = this.streamingIntervalSeconds; // Start with base interval
+        
+        // Calculate max polls based on simulation time (proportional to MAX_SIMULATION_TIME)
+        double maxSimulationTime = Config.MAX_SIMULATION_TIME;
+        // Target: 1000 polls max, but scale with simulation time
+        // If simulation is 100 seconds, that's 100 polls at 1s interval = reasonable
+        // If simulation is 1000 seconds, that's 1000 polls at 1s interval = reasonable
+        // Formula: maxPolls = min(1000, MAX_SIMULATION_TIME / streamingIntervalSeconds)
+        this.maxPolls = (int) Math.min(1000, Math.max(100, maxSimulationTime / this.streamingIntervalSeconds));
+        
         logger.info("StreamingQueueObserver initialized for device: " + deviceId +
                 " with update interval: " + streamingIntervalMs + "ms (" + streamingIntervalSeconds
-                + "s simulation time)");
+                + "s simulation time), maxPolls=" + maxPolls + " (simulation time: " + maxSimulationTime + "s)");
     }
 
     /**
@@ -184,7 +202,7 @@ public class StreamingQueueObserver {
     }
 
     /**
-     * Schedule next queue update event using CloudSim
+     * Schedule next queue update event using CloudSim with adaptive polling
      */
     private void scheduleNextQueueUpdate(double currentTime) {
         if (deviceEntity == null) {
@@ -192,7 +210,19 @@ public class StreamingQueueObserver {
             return;
         }
 
-        double nextUpdateTime = currentTime + streamingIntervalSeconds;
+        // Check poll limit
+        if (pollCount >= maxPolls) {
+            logger.warning(String.format(
+                    "[POLL-LIMIT] Device %d - Poll limit reached (%d/%d), stopping polling",
+                    deviceId, pollCount, maxPolls));
+            shouldStop.set(true);
+            isStreaming.set(false);
+            return;
+        }
+
+        // Use adaptive poll interval (longer when queue is empty)
+        double intervalToUse = currentPollInterval;
+        double nextUpdateTime = currentTime + intervalToUse;
         double maxSimulationTime = Config.MAX_SIMULATION_TIME;
 
         // Don't schedule beyond MAX_SIMULATION_TIME
@@ -205,12 +235,12 @@ public class StreamingQueueObserver {
             org.cloudbus.cloudsim.core.CloudSim.send(
                     deviceEntity.getId(),
                     deviceEntity.getId(),
-                    streamingIntervalSeconds,
+                    intervalToUse,
                     org.patch.utils.ExtendedFogEvents.STREAMING_QUEUE_UPDATE,
                     null);
             System.out.println(String.format(
-                    "[FLOW-STREAMING-SCHEDULE] Device %d - Scheduled next queue update at time %.2f (current=%.2f, interval=%.2fs)",
-                    deviceId, nextUpdateTime, currentTime, streamingIntervalSeconds));
+                    "[FLOW-STREAMING-SCHEDULE] Device %d - Scheduled next queue update at time %.2f (current=%.2f, interval=%.2fs, poll=%d/%d, consecutiveEmpty=%d)",
+                    deviceId, nextUpdateTime, currentTime, intervalToUse, pollCount, maxPolls, consecutiveEmptyPolls));
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to schedule queue update event", e);
         }
@@ -237,22 +267,70 @@ public class StreamingQueueObserver {
             return;
         }
 
+        // Check poll limit before polling
+        if (pollCount >= maxPolls) {
+            logger.warning(String.format(
+                    "[POLL-LIMIT] Device %d - Poll limit reached (%d/%d), stopping polling",
+                    deviceId, pollCount, maxPolls));
+            shouldStop.set(true);
+            isStreaming.set(false);
+            return;
+        }
+
+        // Adaptive polling: Skip if too many consecutive empty polls
+        if (consecutiveEmptyPolls >= MAX_CONSECUTIVE_EMPTY_POLLS) {
+            // Use longer interval when queue is consistently empty
+            currentPollInterval = streamingIntervalSeconds * ADAPTIVE_POLL_INTERVAL_MULTIPLIER;
+            logger.fine(String.format(
+                    "[POLL-ADAPTIVE] Device %d - Skipping poll (consecutive empty=%d), using longer interval=%.2fs",
+                    deviceId, consecutiveEmptyPolls, currentPollInterval));
+            if (isStreaming.get() && !shouldStop.get()) {
+                scheduleNextQueueUpdate(currentTime);
+            }
+            return;
+        }
+
+        // Increment poll count
+        pollCount++;
+        
         System.out.println(String.format(
-                "[FLOW-STREAMING-POLL] Device %d - Polling queue from scheduler (time=%.2f)",
-                deviceId, currentTime));
+                "[FLOW-STREAMING-POLL] Device %d - Polling queue from scheduler (time=%.2f, poll=%d/%d, consecutiveEmpty=%d)",
+                deviceId, currentTime, pollCount, maxPolls, consecutiveEmptyPolls));
 
         // Get current queue state from scheduler
         GetSortedQueueResponse response = getSortedQueueFromScheduler();
 
         if (response != null) {
+            int taskCount = response.getQueueTasksCount();
             System.out.println(String.format(
                     "[FLOW-FOG-STREAMING-RECEIVE] Time: %.2f - FogNode (ID:%d) - Received queue update from scheduler (tasks in response: %d)",
-                    CloudSim.clock(), deviceId, response.getQueueTasksCount()));
+                    CloudSim.clock(), deviceId, taskCount));
+            
+            // Update adaptive polling based on queue state
+            if (taskCount == 0) {
+                consecutiveEmptyPolls++;
+                // Increase poll interval when queue is empty
+                currentPollInterval = streamingIntervalSeconds * ADAPTIVE_POLL_INTERVAL_MULTIPLIER;
+                logger.fine(String.format(
+                        "[POLL-ADAPTIVE] Device %d - Queue empty, consecutiveEmpty=%d, interval=%.2fs",
+                        deviceId, consecutiveEmptyPolls, currentPollInterval));
+            } else {
+                // Reset to base interval when queue has tasks
+                consecutiveEmptyPolls = 0;
+                currentPollInterval = streamingIntervalSeconds;
+                logger.fine(String.format(
+                        "[POLL-ADAPTIVE] Device %d - Queue has %d tasks, resetting to base interval=%.2fs",
+                        deviceId, taskCount, currentPollInterval));
+            }
+            
             processQueueUpdate(response);
         } else {
             System.err.println(String.format(
                     "[FLOW-FOG-STREAMING-RECEIVE] Time: %.2f - FogNode (ID:%d) - ERROR: getSortedQueueFromScheduler returned NULL!",
                     CloudSim.clock(), deviceId));
+            // Treat null response as empty (conservative)
+            consecutiveEmptyPolls++;
+            currentPollInterval = streamingIntervalSeconds * ADAPTIVE_POLL_INTERVAL_MULTIPLIER;
         }
 
         if (isStreaming.get() && !shouldStop.get()) {
