@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "scheduler-grpc-server/api/proto"
+	"scheduler-grpc-server/internal/metrics"
 	"scheduler-grpc-server/internal/rl"
 	"scheduler-grpc-server/pkg/config"
 	"scheduler-grpc-server/pkg/logger"
@@ -16,8 +17,8 @@ type SchedulerEngine struct {
 	mu                 sync.RWMutex
 	queue              TaskQueue
 	nodeManager        *SingleNodeManager
+	nodeStatusTracker  *metrics.NodeStatusTracker // NEW: Tracks node status from completion reports
 	scheduledTasks     map[string]*TaskEntry  // Track scheduled tasks for delayed rewards
-	maxConcurrentTasks int
 	algorithm          pb.SchedulingAlgorithm
 	objective          pb.ObjectiveFunction
 
@@ -44,8 +45,6 @@ type SchedulerEngine struct {
 	resortChan   chan struct{}
 }
 
-// REMOVED: TaskResult struct - No task execution in scheduler
-
 func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *config.Config) *SchedulerEngine {
 	var queue TaskQueue
 
@@ -63,8 +62,8 @@ func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *co
 	engine := &SchedulerEngine{
 		queue:              queue,
 		nodeManager:        NewSingleNodeManager(nodeID, nodeID+"_node"),
+		nodeStatusTracker: metrics.NewNodeStatusTracker(0.3), // Alpha=0.3: 30% weight to new value, 70% to history
 		scheduledTasks:     make(map[string]*TaskEntry),  // Initialize scheduled tasks tracking
-		maxConcurrentTasks: 10,
 		algorithm:          algorithm,
 		objective:          pb.ObjectiveFunction_OBJECTIVE_FUNCTION_BALANCE_LOAD,
 		config:             cfg,
@@ -74,6 +73,8 @@ func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *co
 	
 	// Set queue reference in node manager for real queue length access
 	engine.nodeManager.SetQueue(queue)
+	
+	logger.GetLogger().Infof("[SCHEDULER-ENGINE] NodeStatusTracker initialized: NodeID=%s, Alpha=0.3", nodeID)
 
 	// Initialize Cache Manager
 	engine.cacheManager = NewTaskCacheManager(cfg.Caching)
@@ -84,6 +85,11 @@ func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *co
 			AlgorithmManagerConfig: cfg.AlgorithmManager,
 		}
 		engine.agent = rl.NewAgent(agentConfig)
+		
+		// Wire up NodeStatusTracker to agent (which will pass it to Q-learning scheduler)
+		// Create a wrapper that implements NodeStatusTracker interface
+		engine.agent.SetNodeStatusTracker(engine.nodeStatusTracker)
+		logger.GetLogger().Infof("[SCHEDULER-ENGINE] NodeStatusTracker wired to RL agent")
 	}
 
 	// Initialize Cache Agent if enabled (uses two-action design: ActionCache, ActionDelete)
@@ -95,12 +101,13 @@ func NewSchedulerEngine(nodeID string, algorithm pb.SchedulingAlgorithm, cfg *co
 	return engine
 }
 
+
 // setCacheManagerInRLAlgorithms removed - cache features no longer used in scheduling RL
 
 func (se *SchedulerEngine) Start(ctx context.Context) {
 	logger.GetLogger().Info("[SCHEDULER-ENGINE-START] Starting scheduler engine...")
-	logger.GetLogger().Infof("[SCHEDULER-ENGINE-INIT] Algorithm=%s, Objective=%s, MaxConcurrentTasks=%d",
-		se.algorithm.String(), se.objective.String(), se.maxConcurrentTasks)
+	logger.GetLogger().Infof("[SCHEDULER-ENGINE-INIT] Algorithm=%s, Objective=%s",
+		se.algorithm.String(), se.objective.String())
 	
 	// NOTE: Periodic queue resorting removed - resorting now happens on-demand
 	// when GetSortedQueue() or GetQueueUpdateResponse() is called.
@@ -166,10 +173,6 @@ func (se *SchedulerEngine) Stop() {
 	
 	logger.GetLogger().Info("[SCHEDULER-ENGINE-STOPPED] Scheduler engine stopped successfully")
 }
-
-// REMOVED: startPeriodicQueueResorting()
-// Resorting now happens on-demand in GetSortedQueue() and GetQueueUpdateResponse()
-// This eliminates race conditions and ensures queue is always fresh when requested.
 
 // resortQueue resorts the queue based on algorithm type
 func (se *SchedulerEngine) resortQueue() {
@@ -349,13 +352,19 @@ func (se *SchedulerEngine) updateQueueWithSortedTasks(sortedTasks []rl.TaskEntry
 	}
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-BEFORE-CLEAR] Task IDs before clearing: %v (count: %d)", taskIdsBeforeClear, len(taskIdsBeforeClear))
 	
-	// [DEBUG] About to clear queue
+	// [DIAGNOSTIC] About to clear queue
 	// Clear current queue
 	oldSize := se.queue.Size()
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-CLEAR-BEFORE] About to clear queue (old size: %d)", oldSize)
+	logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-CLEAR-BEFORE] About to clear queue (old size: %d, sortedTasks to add: %d)", oldSize, len(sortedTasks))
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-CLEAR-WARNING] CLEARING QUEUE: oldSize=%d, sortedTasks=%d, taskIdsBeforeClear=%v", 
+		oldSize, len(sortedTasks), taskIdsBeforeClear)
 	se.queue.Clear()
-	// [DEBUG] Queue cleared
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-CLEAR-AFTER] Queue cleared (old size: %d, new size: %d)", oldSize, se.queue.Size())
+	// [DIAGNOSTIC] Queue cleared
+	newSizeAfterClear := se.queue.Size()
+	logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-CLEAR-AFTER] Queue cleared (old size: %d, new size: %d)", oldSize, newSizeAfterClear)
+	if oldSize > 0 && newSizeAfterClear > 0 {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-CLEAR-ERROR] Queue clear FAILED! Old size: %d, New size: %d (should be 0)", oldSize, newSizeAfterClear)
+	}
 	
 	// [DEBUG] Preparing sorted tasks for re-adding
 	// [DEBUG] Log task IDs in sortedTasks
@@ -366,36 +375,57 @@ func (se *SchedulerEngine) updateQueueWithSortedTasks(sortedTasks []rl.TaskEntry
 	}
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-SORTED] Task IDs in sortedTasks: %v (count: %d)", taskIdsInSorted, len(sortedTasks))
 	
-	// [DEBUG] About to re-add tasks
+	// [DIAGNOSTIC] About to re-add tasks
 	// Add sorted tasks back to queue
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ADD-BEFORE] About to re-add %d tasks to queue (queue was cleared, oldSize=%d, newSizeAfterClear=%d)", 
+		len(sortedTasks), oldSize, newSizeAfterClear)
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-ADD-BEFORE] About to re-add %d tasks to queue", len(sortedTasks))
 	addedCount := 0
 	skippedCount := 0
 	skippedTaskIds := make([]string, 0)
+	queueSizeBeforeReAdd := se.queue.Size()
+	logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-READD-START] Queue size before re-adding: %d, tasks to add: %d", queueSizeBeforeReAdd, len(sortedTasks))
+	
 	for i, task := range sortedTasks {
+		// [DIAGNOSTIC] Processing each task
+		logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ADD-TASK] Processing task %d/%d: TaskID=%s", i+1, len(sortedTasks), task.GetTaskID())
 		// [DEBUG] Processing each task
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-ADD-TASK] Processing task %d/%d: TaskID=%s", i+1, len(sortedTasks), task.GetTaskID())
 		// Convert back to TaskEntry and enqueue
 		if taskEntry, ok := task.(*TaskEntry); ok {
+			// [DIAGNOSTIC] Type assertion successful
+			queueSizeBeforeThisEnqueue := se.queue.Size()
+			logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ADD-TASK-ASSERT] Type assertion successful for task %s (queue size before enqueue: %d)", 
+				taskEntry.GetTaskID(), queueSizeBeforeThisEnqueue)
 			// [DEBUG] Type assertion successful
 			logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-ADD-TASK-ASSERT] Type assertion successful for task %s", taskEntry.GetTaskID())
 			logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-ADD-TASK-ENQUEUE] About to enqueue task %s", taskEntry.GetTaskID())
 			if err := se.queue.Enqueue(taskEntry); err != nil {
+				// [DIAGNOSTIC] Enqueue failed
+				logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ENQUEUE-FAILED] Failed to enqueue task %d (ID: %s): %v (queue size: %d)", 
+					i, taskEntry.GetTaskID(), err, se.queue.Size())
 				// [DEBUG] Enqueue failed
 				logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-UPDATE-QUEUE] Failed to enqueue task %d (ID: %s): %v", i, taskEntry.GetTaskID(), err)
 				skippedCount++
 				skippedTaskIds = append(skippedTaskIds, taskEntry.GetTaskID())
 			} else {
-				// [DEBUG] Enqueue successful
+				// [DIAGNOSTIC] Enqueue successful
+				queueSizeAfterThisEnqueue := se.queue.Size()
 				addedCount++
+				logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ADD-SUCCESS] Re-added task %s to queue: position %d/%d, queue size: %d -> %d", 
+					taskEntry.GetTaskID(), addedCount, len(sortedTasks), queueSizeBeforeThisEnqueue, queueSizeAfterThisEnqueue)
+				// [DEBUG] Enqueue successful
 				logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-ADD] Re-added task %s to queue (position %d/%d)", taskEntry.GetTaskID(), addedCount, len(sortedTasks))
 			}
 		} else {
-			// [DEBUG] Type assertion failed
+			// [DIAGNOSTIC] Type assertion failed
 			taskId := "unknown"
 			if task != nil {
 				taskId = task.GetTaskID()
 			}
+			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ASSERT-FAILED] Type assertion failed for task %d (ID: %s): expected *TaskEntry, got %T", 
+				i, taskId, task)
+			// [DEBUG] Type assertion failed
 			logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-UPDATE-QUEUE] Type assertion failed for task %d (ID: %s): expected *TaskEntry, got %T", i, taskId, task)
 			skippedCount++
 			skippedTaskIds = append(skippedTaskIds, taskId)
@@ -403,8 +433,16 @@ func (se *SchedulerEngine) updateQueueWithSortedTasks(sortedTasks []rl.TaskEntry
 	}
 	
 	finalSize := se.queue.Size()
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-COMPLETE] Queue update complete: oldSize=%d, sortedTasks=%d, added=%d, skipped=%d, finalSize=%d", 
+		oldSize, len(sortedTasks), addedCount, skippedCount, finalSize)
 	logger.GetLogger().Infof("[SCHEDULER-UPDATE-QUEUE] Queue update complete: added=%d, skipped=%d, final queue size=%d", 
 		addedCount, skippedCount, finalSize)
+	
+	// [DIAGNOSTIC] Verify final state
+	if finalSize != len(sortedTasks) {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-SIZE-MISMATCH] Queue size mismatch! Expected: %d, Actual: %d, Added: %d, Skipped: %d", 
+			len(sortedTasks), finalSize, addedCount, skippedCount)
+	}
 	
 	if len(skippedTaskIds) > 0 {
 		logger.GetLogger().Warnf("[SCHEDULER-UPDATE-QUEUE-SKIPPED] Skipped task IDs: %v", skippedTaskIds)
@@ -786,16 +824,59 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-ENQUEUE-BEFORE] About to enqueue TaskID=%s", task.TaskId)
 	queueSizeBeforeEnqueue := se.queue.Size()
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-ENQUEUE-BEFORE-SIZE] Queue size before enqueue: %d", queueSizeBeforeEnqueue)
-	if err := se.queue.Enqueue(taskEntry); err != nil {
-		// [DEBUG] Enqueue failed
-		logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-FLOW-ERROR] Task %s: Failed to enqueue: %v", task.TaskId, err)
-		logger.GetLogger().Errorf("[DEBUG] [SCHEDULER-CACHE-DEBUG] Failed to enqueue task %s: %v", task.TaskId, err)
+	
+	// Check queue capacity if configured
+	maxQueueSize := se.config.Queue.MaxQueueSize
+	if maxQueueSize > 0 && queueSizeBeforeEnqueue >= maxQueueSize {
+		err := fmt.Errorf("queue capacity exceeded: current size=%d, max size=%d", queueSizeBeforeEnqueue, maxQueueSize)
+		logger.GetLogger().Errorf("[SCHEDULER-ADD-TASK-ERROR] Task %s: %v", task.TaskId, err)
 		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, err
 	}
-	// [DEBUG] Enqueue successful
+	
+	if err := se.queue.Enqueue(taskEntry); err != nil {
+		// [DEBUG] Enqueue failed
+		logger.GetLogger().Errorf("[SCHEDULER-ADD-TASK-ERROR] Task %s: Failed to enqueue: %v (queue size: %d, max: %d)", 
+			task.TaskId, err, queueSizeBeforeEnqueue, maxQueueSize)
+		logger.GetLogger().Errorf("[SCHEDULER-CACHE-DEBUG] Failed to enqueue task %s: %v", task.TaskId, err)
+		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, fmt.Errorf("failed to enqueue task %s: %w", task.TaskId, err)
+	}
+	// [DIAGNOSTIC] Enqueue successful
 	queueSizeAfterEnqueue := se.queue.Size()
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-ADD-TASK-ENQUEUE-AFTER] TaskID=%s enqueued successfully: queue size %d -> %d (expected: %d)", 
+		task.TaskId, queueSizeBeforeEnqueue, queueSizeAfterEnqueue, queueSizeBeforeEnqueue+1)
+	// [DEBUG] Enqueue successful
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-ENQUEUE-AFTER] TaskID=%s enqueued successfully (queue size: %d -> %d)", 
 		task.TaskId, queueSizeBeforeEnqueue, queueSizeAfterEnqueue)
+	
+	// [DIAGNOSTIC] Verify enqueue was successful
+	if queueSizeAfterEnqueue != queueSizeBeforeEnqueue+1 {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-ADD-TASK-ENQUEUE-VERIFY-FAILED] Enqueue verification FAILED! Expected size: %d, Actual size: %d", 
+			queueSizeBeforeEnqueue+1, queueSizeAfterEnqueue)
+	}
+	
+	// [DIAGNOSTIC] Verify task is actually in queue after enqueue
+	if queueSizeAfterEnqueue > 0 {
+		allTasksAfterAdd := se.queue.GetAll()
+		taskFoundInQueue := false
+		for _, qTask := range allTasksAfterAdd {
+			if qTask.GetTaskID() == task.TaskId || qTask.GetCloudletId() == cloudletId {
+				taskFoundInQueue = true
+				logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-ADD-TASK-VERIFY] Task %s (cloudletId=%s) verified in queue after enqueue (queue size: %d)", 
+					task.TaskId, cloudletId, queueSizeAfterEnqueue)
+				break
+			}
+		}
+		if !taskFoundInQueue {
+			taskIdsInQueueAfterAdd := make([]string, 0, len(allTasksAfterAdd))
+			cloudletIdsInQueueAfterAdd := make([]string, 0, len(allTasksAfterAdd))
+			for _, t := range allTasksAfterAdd {
+				taskIdsInQueueAfterAdd = append(taskIdsInQueueAfterAdd, t.GetTaskID())
+				cloudletIdsInQueueAfterAdd = append(cloudletIdsInQueueAfterAdd, t.GetCloudletId())
+			}
+			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-ADD-TASK-VERIFY-FAILED] Task %s (cloudletId=%s) NOT FOUND in queue after enqueue! Queue size: %d, taskIds in queue: %v, cloudletIds in queue: %v", 
+				task.TaskId, cloudletId, queueSizeAfterEnqueue, taskIdsInQueueAfterAdd, cloudletIdsInQueueAfterAdd)
+		}
+	}
 
 	// [DEBUG] About to add to scheduledTasks map and update statistics
 	// Track scheduled task for delayed rewards and update statistics in a single lock acquisition
@@ -855,28 +936,14 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	return queuePosition, estimatedWait, isCached, cacheKey, cacheAction, nil
 }
 
-
-
-// REMOVED: schedulerLoop() - No periodic task execution in scheduler
-
-// REMOVED: processTaskQueue() - No task execution in scheduler
-
-// REMOVED: executeTaskToCompletion() - No task execution in scheduler
-
-// REMOVED: resultProcessor() - No task execution in scheduler
-
-// REMOVED: handleTaskCompletion() - No task execution in scheduler
-
 func (se *SchedulerEngine) GetQueueStatus() map[string]interface{} {
 	se.mu.RLock()
 	defer se.mu.RUnlock()
 
 	avgWaitTime := float64(0)
-	avgExecutionTime := float64(0)
 
 	if se.totalTasksProcessed > 0 {
 		avgWaitTime = float64(se.totalWaitTime.Milliseconds()) / float64(se.totalTasksProcessed)
-		avgExecutionTime = float64(se.totalExecutionTime.Milliseconds()) / float64(se.totalTasksProcessed)
 	}
 
 	// Get cache statistics
@@ -892,8 +959,6 @@ func (se *SchedulerEngine) GetQueueStatus() map[string]interface{} {
 		"total_tasks_failed":    se.totalTasksFailed,
 		"success_rate":          se.getSuccessRate(),
 		"avg_wait_time_ms":      avgWaitTime,
-		"avg_execution_time_ms": avgExecutionTime,
-		"max_concurrent_tasks":  se.maxConcurrentTasks,
 		"node_utilization":      se.nodeManager.GetCurrentLoad(),
 		"cache_hits":            cacheStats["cache_hits"],
 		"cache_misses":          cacheStats["cache_misses"],
@@ -922,26 +987,6 @@ func (se *SchedulerEngine) getSuccessRate() float64 {
 
 func (se *SchedulerEngine) GetNodeInfo() *pb.FogNode {
 	return se.nodeManager.GetNodeInfo()
-}
-
-func (se *SchedulerEngine) SetMaxConcurrentTasks(max int) {
-	se.mu.Lock()
-	defer se.mu.Unlock()
-	se.maxConcurrentTasks = max
-}
-
-func (se *SchedulerEngine) GetTaskStatus(taskID string) *TaskEntry {
-	se.mu.RLock()
-	defer se.mu.RUnlock()
-
-	// Only check queue - no running or completed tasks tracking
-	for _, task := range se.queue.GetAll() {
-		if task.GetTaskID() == taskID {
-			return task
-		}
-	}
-
-	return nil
 }
 
 func (se *SchedulerEngine) getSchedulingReasoning(task *pb.Task, queuePosition int64) string {
@@ -1038,16 +1083,14 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	success := se.deriveTaskSuccess(req)
 	errorMessage := se.deriveErrorMessage(req)
 
-	// Update task status based on completion report
+	// Update statistics based on completion report (server doesn't execute tasks, so we don't mark task status)
 	if success {
-		task.MarkCompleted()
 		se.totalTasksCompleted++
-		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-SUCCESS] Task %s marked as completed (TotalCompleted=%d)", 
+		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-SUCCESS] Task %s completion report processed (TotalCompleted=%d)", 
 			req.TaskId, se.totalTasksCompleted)
 	} else {
-		task.MarkFailed(errorMessage)
 		se.totalTasksFailed++
-		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-FAILED] Task %s marked as failed: %s (TotalFailed=%d)", 
+		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-FAILED] Task %s completion report indicates failure: %s (TotalFailed=%d)", 
 			req.TaskId, errorMessage, se.totalTasksFailed)
 	}
 
@@ -1066,6 +1109,10 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 			req.TaskId, nodeStatus.NodeId,
 			float64(nodeStatus.CurrentUsage.CpuUsage),
 			nodeStatus.CurrentUsage.MemoryUsageMb)
+		
+		// Update NodeStatusTracker with node status from completion report
+		se.nodeStatusTracker.UpdateFromCompletionReport(nodeStatus)
+		logger.GetLogger().Debugf("[SCHEDULER-COMPLETION-TRACKER] Updated NodeStatusTracker with completion report: Task=%s", req.TaskId)
 	} else {
 		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-NO-NODE-STATUS] Task=%s has no node status in completion report", req.TaskId)
 	}
@@ -1119,22 +1166,101 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	}
 
 	// **CRITICAL: Remove from scheduled tasks to prevent duplicate scheduling** (after processing rewards)
-	// [DEBUG-LOG] Log removal key
-	logger.GetLogger().Errorf("[DEBUG-KEY-REMOVAL] ProcessTaskCompletion: Removing from scheduledTasks with key='%s'", req.TaskId)
-	delete(se.scheduledTasks, req.TaskId)
+	// [DIAGNOSTIC] Extract cloudletId from task for consistent key usage
+	// Note: req.TaskId contains cloudletId (from Java), but we use task.GetCloudletId() to ensure exact key match
+	cloudletIdForScheduledTasksRemoval := task.GetCloudletId()
+	if cloudletIdForScheduledTasksRemoval == "" {
+		// Fallback: use req.TaskId if cloudletId not available (should not happen)
+		cloudletIdForScheduledTasksRemoval = req.TaskId
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-SCHEDULED-KEY] task.GetCloudletId() is empty, using req.TaskId='%s' as fallback", req.TaskId)
+	}
+	
+	// [DIAGNOSTIC] Log removal key and verify it matches
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-SCHEDULED-KEY] ProcessTaskCompletion: req.TaskId='%s', task.GetCloudletId()='%s', using key='%s' for scheduledTasks removal", 
+		req.TaskId, task.GetCloudletId(), cloudletIdForScheduledTasksRemoval)
+	logger.GetLogger().Errorf("[DEBUG-KEY-REMOVAL] ProcessTaskCompletion: Removing from scheduledTasks with key='%s' (req.TaskId='%s')", 
+		cloudletIdForScheduledTasksRemoval, req.TaskId)
+	
+	// [DIAGNOSTIC] Check if key exists before deletion
+	if _, exists := se.scheduledTasks[cloudletIdForScheduledTasksRemoval]; !exists {
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-SCHEDULED-NOT-FOUND] Key '%s' not found in scheduledTasks before deletion (req.TaskId='%s')", 
+			cloudletIdForScheduledTasksRemoval, req.TaskId)
+		// Try with req.TaskId as fallback
+		if _, existsFallback := se.scheduledTasks[req.TaskId]; existsFallback {
+			logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-SCHEDULED-FALLBACK] Found key '%s' in scheduledTasks, using it for deletion", req.TaskId)
+			delete(se.scheduledTasks, req.TaskId)
+		} else {
+			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-SCHEDULED-ERROR] Neither key '%s' nor '%s' found in scheduledTasks!", 
+				cloudletIdForScheduledTasksRemoval, req.TaskId)
+		}
+	} else {
+		delete(se.scheduledTasks, cloudletIdForScheduledTasksRemoval)
+		logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-COMPLETION-SCHEDULED-REMOVED] Removed from scheduledTasks using key='%s'", cloudletIdForScheduledTasksRemoval)
+	}
 	
 	// **CRITICAL: Remove from queue to prevent re-sending completed tasks**
 	// This ensures GetSortedQueue() only returns uncompleted tasks
-	// [DEBUG-LOG] Log queue removal key
-	logger.GetLogger().Errorf("[DEBUG-KEY-REMOVAL] ProcessTaskCompletion: Removing from queue with key='%s'", req.TaskId)
-	removedTask := se.queue.Remove(req.TaskId)
+	// [DIAGNOSTIC] Extract cloudletId from task (queue uses cloudletId, not TaskId)
+	cloudletIdForRemoval := task.GetCloudletId()
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-REMOVAL-KEY] ProcessTaskCompletion: req.TaskId='%s', task.GetCloudletId()='%s', keysMatch=%t", 
+		req.TaskId, cloudletIdForRemoval, req.TaskId == cloudletIdForRemoval)
+	
+	// [DIAGNOSTIC] Log queue removal key and queue state before removal
+	queueSizeBeforeRemoval := se.queue.Size()
+	logger.GetLogger().Errorf("[DIAGNOSTIC] [DEBUG-KEY-REMOVAL] ProcessTaskCompletion: Removing from queue with cloudletId='%s' (req.TaskId='%s', queue size before: %d)", 
+		cloudletIdForRemoval, req.TaskId, queueSizeBeforeRemoval)
+	
+	// [DIAGNOSTIC] Log all task IDs in queue before removal
+	if queueSizeBeforeRemoval > 0 {
+		allTasksBefore := se.queue.GetAll()
+		taskIdsInQueue := make([]string, 0, len(allTasksBefore))
+		cloudletIdsInQueue := make([]string, 0, len(allTasksBefore))
+		for _, task := range allTasksBefore {
+			taskIdsInQueue = append(taskIdsInQueue, task.GetTaskID())
+			cloudletIdsInQueue = append(cloudletIdsInQueue, task.GetCloudletId())
+		}
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-QUEUE-BEFORE] Queue before removal: size=%d, taskIds=%v, cloudletIds=%v, removing cloudletId=%s (req.TaskId=%s)", 
+			queueSizeBeforeRemoval, taskIdsInQueue, cloudletIdsInQueue, cloudletIdForRemoval, req.TaskId)
+		
+		// [DIAGNOSTIC] Check if cloudletId exists in queue
+		cloudletIdFound := false
+		for _, cid := range cloudletIdsInQueue {
+			if cid == cloudletIdForRemoval {
+				cloudletIdFound = true
+				break
+			}
+		}
+		if !cloudletIdFound {
+			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-QUEUE-KEY-MISMATCH] WARNING: cloudletId='%s' NOT FOUND in queue cloudletIds! Queue has: %v", 
+				cloudletIdForRemoval, cloudletIdsInQueue)
+		}
+	}
+	
+	// CRITICAL FIX: Use cloudletId (not req.TaskId) to remove from queue
+	// Queue.Remove() expects cloudletId, not TaskId
+	removedTask := se.queue.Remove(cloudletIdForRemoval)
+	queueSizeAfterRemoval := se.queue.Size()
+	
 	if removedTask != nil {
-		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-QUEUE-REMOVED] Task %s removed from queue (queue size: %d -> %d)",
-			req.TaskId, se.queue.Size()+1, se.queue.Size())
+		logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-COMPLETION-QUEUE-REMOVED] Task removed from queue: req.TaskId=%s, cloudletId=%s, queue size: %d -> %d",
+			req.TaskId, cloudletIdForRemoval, queueSizeBeforeRemoval, queueSizeAfterRemoval)
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-QUEUE-REMOVED-DETAIL] Task removed successfully: TaskID=%s, cloudletId=%s, queue size: %d -> %d",
+			removedTask.GetTaskID(), removedTask.GetCloudletId(), queueSizeBeforeRemoval, queueSizeAfterRemoval)
 	} else {
 		// Task might have been removed already or was never in queue (e.g., cached task)
-		logger.GetLogger().Debugf("[SCHEDULER-COMPLETION-QUEUE-NOT-FOUND] Task %s not found in queue (may have been removed already or was cached)",
-			req.TaskId)
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-QUEUE-NOT-FOUND] Task not found in queue: req.TaskId=%s, cloudletId=%s, queue size: %d (may have been removed already or was cached)",
+			req.TaskId, cloudletIdForRemoval, queueSizeBeforeRemoval)
+		if queueSizeBeforeRemoval > 0 {
+			allTasksAfter := se.queue.GetAll()
+			taskIdsAfter := make([]string, 0, len(allTasksAfter))
+			cloudletIdsAfter := make([]string, 0, len(allTasksAfter))
+			for _, task := range allTasksAfter {
+				taskIdsAfter = append(taskIdsAfter, task.GetTaskID())
+				cloudletIdsAfter = append(cloudletIdsAfter, task.GetCloudletId())
+			}
+			logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-COMPLETION-QUEUE-NOT-FOUND-DETAIL] Queue still has %d tasks: taskIds=%v, cloudletIds=%v (removing cloudletId=%s, req.TaskId=%s)", 
+				len(allTasksAfter), taskIdsAfter, cloudletIdsAfter, cloudletIdForRemoval, req.TaskId)
+		}
 	}
 	
 	logger.GetLogger().Infof("[SCHEDULER-COMPLETION-DONE] Task %s completion processed successfully (RemainingScheduled=%d, QueueSize=%d)",
@@ -1338,17 +1464,51 @@ func (se *SchedulerEngine) GetCacheAgent() *rl.CacheAgent {
 // FIX: Simplified lock acquisition to prevent deadlocks - use single write lock for all operations
 func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQueueResponse {
 	// [DEBUG] Entry point for GetSortedQueue
+	queueSizeBefore := se.queue.Size()
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-START] GetSortedQueue called (on-demand resorting, queue size before resort=%d)", 
-		se.queue.Size())
+		queueSizeBefore)
+	
+	// Optimization: Skip resorting if queue is empty (no work to do)
+	if queueSizeBefore == 0 {
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-EMPTY] Queue is EMPTY when GetSortedQueue called! (scheduledTasks map size: %d)", len(se.scheduledTasks))
+		
+		// [DIAGNOSTIC] Log scheduledTasks map contents if it has tasks
+		if len(se.scheduledTasks) > 0 {
+			scheduledTaskIds := make([]string, 0, len(se.scheduledTasks))
+			for taskId := range se.scheduledTasks {
+				scheduledTaskIds = append(scheduledTaskIds, taskId)
+			}
+			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-EMPTY-WARNING] Queue is empty but scheduledTasks map has %d tasks: %v", 
+				len(se.scheduledTasks), scheduledTaskIds)
+		}
+		
+		logger.GetLogger().Debugf("[SCHEDULER-GET-QUEUE-EMPTY] Queue is empty, skipping resorting")
+		se.mu.Lock()
+		defer se.mu.Unlock()
+		
+		// Return empty response immediately
+		algorithmName := se.algorithm.String()
+		if se.agent != nil && se.agent.IsEnabled() {
+			algorithmName = "qlearning"
+		}
+		return &pb.GetSortedQueueResponse{
+			SortedTasks:   []*pb.Task{},
+			AlgorithmUsed: algorithmName,
+			QueueSize:     0,
+			Timestamp:     time.Now().Unix(),
+			NodeId:        se.nodeManager.GetNodeID(),
+		}
+	}
 	
 	// [DEBUG] About to call resortQueue
 	// CRITICAL: Resort queue FIRST to ensure latest sorted order before sending
 	// This eliminates race conditions from periodic resorting and guarantees fresh queue
 	// Note: resortQueue() acquires its own lock, so we call it before acquiring our lock
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-BEFORE] About to call resortQueue()")
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-BEFORE] About to call resortQueue() (queue size=%d)", queueSizeBefore)
 	se.resortQueue() // This will lock internally and apply algorithm/RL policy
 	// [DEBUG] ResortQueue completed
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-AFTER] resortQueue() completed, queue size after resort: %d", se.queue.Size())
+	queueSizeAfter := se.queue.Size()
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-AFTER] resortQueue() completed, queue size after resort: %d", queueSizeAfter)
 	
 	// FIX: Acquire write lock ONCE for all operations (prevents deadlock from multiple lock acquisitions)
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-BEFORE] About to acquire write lock (Lock)")
@@ -1373,22 +1533,57 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 	// [DEBUG] Log retrieved tasks
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RETRIEVE] Retrieved %d tasks from queue for response", len(allTasks))
 	
-	// [DEBUG] Log queue state
+	// [DIAGNOSTIC] Log queue state with detailed information
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-STATE] GetSortedQueue state: queue size=%d, scheduledTasks map size=%d (queueSizeBefore=%d, queueSizeAfter=%d)",
+		len(allTasks), len(se.scheduledTasks), queueSizeBefore, queueSizeAfter)
 	logger.GetLogger().Debugf("[SCHEDULER-QUEUE-DEBUG] GetSortedQueue called: queue size=%d, scheduledTasks map size=%d",
 		len(allTasks), len(se.scheduledTasks))
 	
-	// Log which tasks are in queue vs in scheduledTasks map
+	// [DIAGNOSTIC] Track queue size changes during resort
+	if queueSizeBefore != queueSizeAfter {
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-SIZE-CHANGE] Queue size changed during resort: %d -> %d", 
+			queueSizeBefore, queueSizeAfter)
+	}
+	
+	// [DIAGNOSTIC] Log which tasks are in queue vs in scheduledTasks map (with cloudletIds)
 	taskIdsInQueue := make([]string, 0, len(allTasks))
+	cloudletIdsInQueue := make([]string, 0, len(allTasks))
 	for _, taskEntry := range allTasks {
 		taskIdsInQueue = append(taskIdsInQueue, taskEntry.GetTaskID())
+		cloudletIdsInQueue = append(cloudletIdsInQueue, taskEntry.GetCloudletId())
 	}
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-TASKS] Tasks in queue: taskIds=%v, cloudletIds=%v", taskIdsInQueue, cloudletIdsInQueue)
 	logger.GetLogger().Debugf("[SCHEDULER-QUEUE-DEBUG] Tasks in queue: %v", taskIdsInQueue)
 	
 	scheduledTaskIds := make([]string, 0, len(se.scheduledTasks))
-	for taskId := range se.scheduledTasks {
-		scheduledTaskIds = append(scheduledTaskIds, taskId)
+	scheduledCloudletIds := make([]string, 0, len(se.scheduledTasks))
+	for key := range se.scheduledTasks {
+		scheduledTaskIds = append(scheduledTaskIds, key) // Key is cloudletId
+		scheduledCloudletIds = append(scheduledCloudletIds, key)
 	}
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-SCHEDULED] Tasks in scheduledTasks map (keys are cloudletIds): %v", scheduledCloudletIds)
 	logger.GetLogger().Debugf("[SCHEDULER-QUEUE-DEBUG] Tasks in scheduledTasks map: %v", scheduledTaskIds)
+	
+	// [DIAGNOSTIC] Check for tasks in scheduledTasks but not in queue
+	if len(scheduledCloudletIds) > len(cloudletIdsInQueue) {
+		missingInQueue := make([]string, 0)
+		for _, scheduledCid := range scheduledCloudletIds {
+			found := false
+			for _, queueCid := range cloudletIdsInQueue {
+				if scheduledCid == queueCid {
+					found = true
+					break
+				}
+			}
+			if !found {
+				missingInQueue = append(missingInQueue, scheduledCid)
+			}
+		}
+		if len(missingInQueue) > 0 {
+			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-MISSING] WARNING: %d tasks in scheduledTasks but NOT in queue: cloudletIds=%v", 
+				len(missingInQueue), missingInQueue)
+		}
+	}
 	
 	// [DEBUG] Check if tasks are in scheduledTasks but not in queue (cached tasks)
 	for taskId := range se.scheduledTasks {

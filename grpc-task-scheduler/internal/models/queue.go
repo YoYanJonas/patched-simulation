@@ -114,8 +114,36 @@ func (q *FIFOQueue) IsEmpty() bool {
 }
 
 func (q *FIFOQueue) Remove(cloudletId string) *TaskEntry {
+	// [DIAGNOSTIC] Entry point for Remove
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-ENTRY] FIFOQueue.Remove() called for cloudletId=%s\n", cloudletId)
+	
+	// [DIAGNOSTIC] About to acquire write lock
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-BEFORE] About to acquire write lock for cloudletId=%s\n", cloudletId)
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	// [DIAGNOSTIC] Write lock acquired
+	oldSize := len(q.tasks)
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-ACQUIRED] Write lock acquired, queue size: %d\n", oldSize)
+	
+	// [DIAGNOSTIC] Log task IDs in queue before removal
+	if oldSize > 0 {
+		taskIds := make([]string, 0, oldSize)
+		cloudletIds := make([]string, 0, oldSize)
+		for _, task := range q.tasks {
+			taskIds = append(taskIds, task.GetTaskID())
+			cloudletIds = append(cloudletIds, task.GetCloudletId())
+		}
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-BEFORE] Queue before removal: size=%d, taskIds=%v, cloudletIds=%v, searching for cloudletId=%s\n", 
+			oldSize, taskIds, cloudletIds, cloudletId)
+	}
+	
+	defer func() {
+		// [DIAGNOSTIC] About to release write lock
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-RELEASE] Releasing write lock for cloudletId=%s\n", cloudletId)
+		q.mu.Unlock()
+		// [DIAGNOSTIC] Write lock released
+		newSize := len(q.tasks)
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-RELEASED] Write lock released, queue size: %d\n", newSize)
+	}()
 
 	for i, task := range q.tasks {
 		// CRITICAL FIX: Use cloudletId (unique instance identifier) instead of TaskId (pattern-based)
@@ -123,9 +151,18 @@ func (q *FIFOQueue) Remove(cloudletId string) *TaskEntry {
 		if task.GetCloudletId() == cloudletId {
 			removed := q.tasks[i]
 			q.tasks = append(q.tasks[:i], q.tasks[i+1:]...)
+			newSize := len(q.tasks)
+			fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-FOUND] Task found and removed: TaskID=%s, cloudletId=%s, queue size: %d -> %d\n", 
+				removed.GetTaskID(), cloudletId, oldSize, newSize)
+			fmt.Printf("[QUEUE-REMOVE] Task %s (cloudletId=%s) removed from queue (size: %d -> %d)\n", 
+				removed.GetTaskID(), cloudletId, oldSize, newSize)
 			return removed
 		}
 	}
+	
+	// [DIAGNOSTIC] Task not found
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-NOT-FOUND] Task with cloudletId=%s NOT FOUND in queue (size: %d)\n", cloudletId, oldSize)
+	fmt.Printf("[QUEUE-REMOVE] Task with cloudletId=%s not found in queue (size: %d)\n", cloudletId, oldSize)
 	return nil
 }
 
@@ -157,20 +194,45 @@ func (q *FIFOQueue) GetAll() []*TaskEntry {
 }
 
 func (q *FIFOQueue) Clear() {
+	// [DIAGNOSTIC] Entry point for Clear
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-ENTRY] FIFOQueue.Clear() called\n")
+	
+	// [DIAGNOSTIC] About to acquire write lock
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-BEFORE] About to acquire write lock\n")
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	// [DIAGNOSTIC] Write lock acquired
 	oldSize := len(q.tasks)
-	// [DEBUG] Log task IDs before clearing
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-ACQUIRED] Write lock acquired, queue size: %d\n", oldSize)
+	
+	// [DIAGNOSTIC] Log task IDs and cloudletIds before clearing
 	if oldSize > 0 {
 		taskIds := make([]string, 0, oldSize)
+		cloudletIds := make([]string, 0, oldSize)
 		for _, task := range q.tasks {
 			taskIds = append(taskIds, task.GetTaskID())
+			cloudletIds = append(cloudletIds, task.GetCloudletId())
 		}
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-BEFORE] About to clear queue with %d tasks: taskIds=%v, cloudletIds=%v\n", 
+			oldSize, taskIds, cloudletIds)
 		fmt.Printf("[QUEUE-CLEAR-BEFORE] About to clear queue with %d tasks: %v\n", oldSize, taskIds)
+	} else {
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-BEFORE] Queue is already empty (size: 0)\n")
 	}
+	
+	defer func() {
+		// [DIAGNOSTIC] About to release write lock
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-RELEASE] Releasing write lock\n")
+		q.mu.Unlock()
+		// [DIAGNOSTIC] Write lock released
+		newSize := len(q.tasks)
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-RELEASED] Write lock released, queue size: %d\n", newSize)
+	}()
+	
 	q.tasks = q.tasks[:0]
-	// [DEBUG] Log clear operation
-	fmt.Printf("[QUEUE-CLEAR] Queue cleared (size: %d -> %d)\n", oldSize, len(q.tasks))
+	newSize := len(q.tasks)
+	// [DIAGNOSTIC] Log clear operation
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-AFTER] Queue cleared: size %d -> %d\n", oldSize, newSize)
+	fmt.Printf("[QUEUE-CLEAR] Queue cleared (size: %d -> %d)\n", oldSize, newSize)
 }
 
 // =============================================================================
@@ -259,8 +321,30 @@ func (q *PriorityQueue) IsEmpty() bool {
 }
 
 func (q *PriorityQueue) Remove(cloudletId string) *TaskEntry {
+	// [DIAGNOSTIC] Entry point for Remove
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-ENTRY] PriorityQueue.Remove() called for cloudletId=%s\n", cloudletId)
+	
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	oldSize := q.tasks.Len()
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-ACQUIRED] PriorityQueue write lock acquired, queue size: %d\n", oldSize)
+	
+	// [DIAGNOSTIC] Log task IDs in queue before removal
+	if oldSize > 0 {
+		taskIds := make([]string, 0, oldSize)
+		cloudletIds := make([]string, 0, oldSize)
+		for _, task := range q.tasks {
+			taskIds = append(taskIds, task.GetTaskID())
+			cloudletIds = append(cloudletIds, task.GetCloudletId())
+		}
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-BEFORE] PriorityQueue before removal: size=%d, taskIds=%v, cloudletIds=%v, searching for cloudletId=%s\n", 
+			oldSize, taskIds, cloudletIds, cloudletId)
+	}
+	
+	defer func() {
+		newSize := q.tasks.Len()
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-RELEASED] PriorityQueue write lock released, queue size: %d\n", newSize)
+		q.mu.Unlock()
+	}()
 
 	for i, task := range q.tasks {
 		// CRITICAL FIX: Use cloudletId (unique instance identifier) instead of TaskId (pattern-based)
@@ -274,9 +358,18 @@ func (q *PriorityQueue) Remove(cloudletId string) *TaskEntry {
 			if i < len(q.tasks) {
 				heap.Fix(&q.tasks, i)
 			}
+			newSize := q.tasks.Len()
+			fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-FOUND] PriorityQueue task found and removed: TaskID=%s, cloudletId=%s, queue size: %d -> %d\n", 
+				removed.GetTaskID(), cloudletId, oldSize, newSize)
+			fmt.Printf("[QUEUE-REMOVE] PriorityQueue: Task %s (cloudletId=%s) removed (size: %d -> %d)\n", 
+				removed.GetTaskID(), cloudletId, oldSize, newSize)
 			return removed
 		}
 	}
+	
+	// [DIAGNOSTIC] Task not found
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-NOT-FOUND] PriorityQueue: Task with cloudletId=%s NOT FOUND (size: %d)\n", cloudletId, oldSize)
+	fmt.Printf("[QUEUE-REMOVE] PriorityQueue: Task with cloudletId=%s not found (size: %d)\n", cloudletId, oldSize)
 	return nil
 }
 
@@ -290,10 +383,37 @@ func (q *PriorityQueue) GetAll() []*TaskEntry {
 }
 
 func (q *PriorityQueue) Clear() {
+	// [DIAGNOSTIC] Entry point for Clear
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-ENTRY] PriorityQueue.Clear() called\n")
+	
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	oldSize := q.tasks.Len()
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-ACQUIRED] PriorityQueue write lock acquired, queue size: %d\n", oldSize)
+	
+	// [DIAGNOSTIC] Log task IDs before clearing
+	if oldSize > 0 {
+		taskIds := make([]string, 0, oldSize)
+		cloudletIds := make([]string, 0, oldSize)
+		for _, task := range q.tasks {
+			taskIds = append(taskIds, task.GetTaskID())
+			cloudletIds = append(cloudletIds, task.GetCloudletId())
+		}
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-BEFORE] PriorityQueue: About to clear %d tasks: taskIds=%v, cloudletIds=%v\n", 
+			oldSize, taskIds, cloudletIds)
+		fmt.Printf("[QUEUE-CLEAR-BEFORE] PriorityQueue: About to clear %d tasks: %v\n", oldSize, taskIds)
+	}
+	
+	defer func() {
+		newSize := q.tasks.Len()
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-RELEASED] PriorityQueue write lock released, queue size: %d\n", newSize)
+		q.mu.Unlock()
+	}()
+	
 	q.tasks = q.tasks[:0]
 	heap.Init(&q.tasks)
+	newSize := q.tasks.Len()
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-AFTER] PriorityQueue cleared: size %d -> %d\n", oldSize, newSize)
+	fmt.Printf("[QUEUE-CLEAR] PriorityQueue cleared (size: %d -> %d)\n", oldSize, newSize)
 }
 
 // =============================================================================
@@ -377,8 +497,30 @@ func (q *SJFQueue) IsEmpty() bool {
 }
 
 func (q *SJFQueue) Remove(cloudletId string) *TaskEntry {
+	// [DIAGNOSTIC] Entry point for Remove
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-ENTRY] SJFQueue.Remove() called for cloudletId=%s\n", cloudletId)
+	
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	oldSize := len(q.tasks)
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-ACQUIRED] SJFQueue write lock acquired, queue size: %d\n", oldSize)
+	
+	// [DIAGNOSTIC] Log task IDs in queue before removal
+	if oldSize > 0 {
+		taskIds := make([]string, 0, oldSize)
+		cloudletIds := make([]string, 0, oldSize)
+		for _, task := range q.tasks {
+			taskIds = append(taskIds, task.GetTaskID())
+			cloudletIds = append(cloudletIds, task.GetCloudletId())
+		}
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-BEFORE] SJFQueue before removal: size=%d, taskIds=%v, cloudletIds=%v, searching for cloudletId=%s\n", 
+			oldSize, taskIds, cloudletIds, cloudletId)
+	}
+	
+	defer func() {
+		newSize := len(q.tasks)
+		fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-LOCK-RELEASED] SJFQueue write lock released, queue size: %d\n", newSize)
+		q.mu.Unlock()
+	}()
 
 	for i, task := range q.tasks {
 		// CRITICAL FIX: Use cloudletId (unique instance identifier) instead of TaskId (pattern-based)
@@ -386,9 +528,18 @@ func (q *SJFQueue) Remove(cloudletId string) *TaskEntry {
 		if task.GetCloudletId() == cloudletId {
 			removed := q.tasks[i]
 			q.tasks = append(q.tasks[:i], q.tasks[i+1:]...)
+			newSize := len(q.tasks)
+			fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-FOUND] SJFQueue task found and removed: TaskID=%s, cloudletId=%s, queue size: %d -> %d\n", 
+				removed.GetTaskID(), cloudletId, oldSize, newSize)
+			fmt.Printf("[QUEUE-REMOVE] SJFQueue: Task %s (cloudletId=%s) removed (size: %d -> %d)\n", 
+				removed.GetTaskID(), cloudletId, oldSize, newSize)
 			return removed
 		}
 	}
+	
+	// [DIAGNOSTIC] Task not found
+	fmt.Printf("[DIAGNOSTIC-QUEUE-REMOVE-NOT-FOUND] SJFQueue: Task with cloudletId=%s NOT FOUND (size: %d)\n", cloudletId, oldSize)
+	fmt.Printf("[QUEUE-REMOVE] SJFQueue: Task with cloudletId=%s not found (size: %d)\n", cloudletId, oldSize)
 	return nil
 }
 
@@ -402,7 +553,34 @@ func (q *SJFQueue) GetAll() []*TaskEntry {
 }
 
 func (q *SJFQueue) Clear() {
+	// [DIAGNOSTIC] Entry point for Clear
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-ENTRY] SJFQueue.Clear() called\n")
+	
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	oldSize := len(q.tasks)
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-ACQUIRED] SJFQueue write lock acquired, queue size: %d\n", oldSize)
+	
+	// [DIAGNOSTIC] Log task IDs before clearing
+	if oldSize > 0 {
+		taskIds := make([]string, 0, oldSize)
+		cloudletIds := make([]string, 0, oldSize)
+		for _, task := range q.tasks {
+			taskIds = append(taskIds, task.GetTaskID())
+			cloudletIds = append(cloudletIds, task.GetCloudletId())
+		}
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-BEFORE] SJFQueue: About to clear %d tasks: taskIds=%v, cloudletIds=%v\n", 
+			oldSize, taskIds, cloudletIds)
+		fmt.Printf("[QUEUE-CLEAR-BEFORE] SJFQueue: About to clear %d tasks: %v\n", oldSize, taskIds)
+	}
+	
+	defer func() {
+		newSize := len(q.tasks)
+		fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-LOCK-RELEASED] SJFQueue write lock released, queue size: %d\n", newSize)
+		q.mu.Unlock()
+	}()
+	
 	q.tasks = q.tasks[:0]
+	newSize := len(q.tasks)
+	fmt.Printf("[DIAGNOSTIC-QUEUE-CLEAR-AFTER] SJFQueue cleared: size %d -> %d\n", oldSize, newSize)
+	fmt.Printf("[QUEUE-CLEAR] SJFQueue cleared (size: %d -> %d)\n", oldSize, newSize)
 }

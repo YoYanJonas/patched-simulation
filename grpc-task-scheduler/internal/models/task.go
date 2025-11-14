@@ -9,16 +9,12 @@ import (
 	"scheduler-grpc-server/pkg/logger"
 )
 
-// TaskStatus represents the current status of a task
+// TaskStatus represents the current status of a task in the queue
 type TaskStatus int32
 
 const (
 	TaskStatusPending TaskStatus = iota
 	TaskStatusQueued
-	TaskStatusRunning
-	TaskStatusCompleted
-	TaskStatusFailed
-	TaskStatusTimeout
 )
 
 // TaskEntry represents a task in the scheduler's queue
@@ -27,12 +23,8 @@ type TaskEntry struct {
 	Status       TaskStatus `json:"status"`
 	QueuedAt     time.Time  `json:"queued_at"`
 	ArrivalTime  time.Time  `json:"arrival_time"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 	Priority     int32      `json:"priority"`
 	EstimatedEnd time.Time  `json:"estimated_end"`
-	ActualEnd    *time.Time `json:"actual_end,omitempty"`
-	ErrorMessage string     `json:"error_message,omitempty"`
 	
 	// Cache information (stored separately, will be added to Task metadata when returning)
 	IsCached   bool              `json:"is_cached"`
@@ -87,44 +79,9 @@ func (te *TaskEntry) GetEstimatedDuration() time.Duration {
 	return time.Duration(te.Task.ExecutionTime) * time.Millisecond
 }
 
-// GetWaitTime returns how long the task has been waiting
+// GetWaitTime returns how long the task has been waiting in the queue
 func (te *TaskEntry) GetWaitTime() time.Duration {
-	if te.StartedAt != nil {
-		return te.StartedAt.Sub(te.QueuedAt)
-	}
 	return time.Since(te.QueuedAt)
-}
-
-// GetExecutionTime returns actual execution time if completed
-func (te *TaskEntry) GetExecutionTime() time.Duration {
-	if te.StartedAt == nil || te.CompletedAt == nil {
-		return 0
-	}
-	return te.CompletedAt.Sub(*te.StartedAt)
-}
-
-// MarkStarted marks the task as started
-func (te *TaskEntry) MarkStarted() {
-	now := time.Now()
-	te.StartedAt = &now
-	te.Status = TaskStatusRunning
-}
-
-// MarkCompleted marks the task as completed
-func (te *TaskEntry) MarkCompleted() {
-	now := time.Now()
-	te.CompletedAt = &now
-	te.ActualEnd = &now
-	te.Status = TaskStatusCompleted
-}
-
-// MarkFailed marks the task as failed
-func (te *TaskEntry) MarkFailed(reason string) {
-	now := time.Now()
-	te.CompletedAt = &now
-	te.ActualEnd = &now
-	te.Status = TaskStatusFailed
-	te.ErrorMessage = reason
 }
 
 // IsExpired checks if task has exceeded its estimated completion time
