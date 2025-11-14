@@ -1,5 +1,6 @@
 package org.patch.utils;
 
+import org.cloudbus.cloudsim.core.CloudSim;
 import org.patch.config.EnhancedConfigurationLoader;
 import java.util.logging.Logger;
 
@@ -150,6 +151,49 @@ public class NetworkLatencyConverter {
             cachedScaleFactor = -1.0;
             cachedModel = null;
         }
+    }
+    
+    /**
+     * Ensures a delay is valid for CloudSim event scheduling.
+     * 
+     * <p>
+     * This method guarantees that:
+     * </p>
+     * <ul>
+     * <li>Delay is non-negative</li>
+     * <li>Delay is at least CloudSim.getMinTimeBetweenEvents()</li>
+     * <li>Event will be scheduled in the future</li>
+     * </ul>
+     * 
+     * <p>
+     * This is critical for async gRPC callbacks where real-world latency (2-5ms)
+     * converts to tiny simulation delays (0.002-0.005 sec). Without this validation,
+     * the simulation clock may advance past the event time, causing "Past event detected" errors.
+     * </p>
+     * 
+     * @param calculatedDelay The delay calculated from real-world latency
+     * @return Valid delay for CloudSim.send() (guaranteed >= minTimeBetweenEvents)
+     */
+    public static double ensureValidEventDelay(double calculatedDelay) {
+        double minDelay = CloudSim.getMinTimeBetweenEvents();
+        
+        // Ensure delay is at least minimum time between events
+        if (calculatedDelay < minDelay) {
+            logger.fine(String.format(
+                "Delay %.6f sec is less than minimum (%.6f sec), using minimum",
+                calculatedDelay, minDelay));
+            return minDelay;
+        }
+        
+        // Ensure delay is non-negative and finite
+        if (calculatedDelay < 0 || Double.isNaN(calculatedDelay) || Double.isInfinite(calculatedDelay)) {
+            logger.warning(String.format(
+                "Invalid delay detected: %.6f, using minimum: %.6f",
+                calculatedDelay, minDelay));
+            return minDelay;
+        }
+        
+        return calculatedDelay;
     }
 }
 
