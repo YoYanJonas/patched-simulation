@@ -492,8 +492,9 @@ public class AllocationClient implements AutoCloseable {
                 "[DEBUG-ASYNC-ALLOCATOR] Time: %.2f - Scheduling allocation response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
                 CloudSim.clock(), taskId, realLatency, simulationLatency, actualEnergy, actualCost));
             
-            // Schedule CloudSim event for response
-            CloudSim.send(deviceId, deviceId, simulationLatency, 
+            // Schedule CloudSim event for response (ensure valid delay to prevent "Past event detected" errors)
+            double validDelay = NetworkLatencyConverter.ensureValidEventDelay(simulationLatency);
+            CloudSim.send(deviceId, deviceId, validDelay, 
                 org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_RESPONSE, pending);
         });
         
@@ -576,8 +577,9 @@ public class AllocationClient implements AutoCloseable {
             double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
                 simulationLatency, messageSizeBytes);
             
-            // Schedule CloudSim event for response
-            CloudSim.send(deviceId, deviceId, simulationLatency, 
+            // Schedule CloudSim event for response (ensure valid delay to prevent "Past event detected" errors)
+            double validDelay = NetworkLatencyConverter.ensureValidEventDelay(simulationLatency);
+            CloudSim.send(deviceId, deviceId, validDelay, 
                 org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_RESPONSE, pending);
         });
         

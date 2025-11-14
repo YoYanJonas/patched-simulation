@@ -90,7 +90,7 @@ public class SchedulerClient implements AutoCloseable {
     // Enhanced logging
     private final StructuredLogger structuredLogger;
     private final LoggingConfig loggingConfig;
-    
+
     // Async client for event-based operations
     private AsyncSchedulerClient asyncClient;
 
@@ -105,7 +105,7 @@ public class SchedulerClient implements AutoCloseable {
         // Initialize enhanced logging
         this.loggingConfig = LoggingConfig.getInstance();
         this.structuredLogger = loggingConfig.createLoggerWithCorrelation(SchedulerClient.class);
-        
+
         // Initialize async client for event-based operations ()
         this.asyncClient = new AsyncSchedulerClient(this);
     }
@@ -214,12 +214,83 @@ public class SchedulerClient implements AutoCloseable {
                     "[FLOW-GRPC-CLIENT-CALL-NOW] Time: %.2f - SchedulerClient - EXECUTING gRPC call: addTaskToQueue for TaskID=%s (BLOCKING)",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
 
-            AddTaskToQueueResponse response = schedulerStub.addTaskToQueue(request);
+            // Retry mechanism with exponential backoff for transient failures
+            AddTaskToQueueResponse response = null;
+            int maxRetries = EnhancedConfigurationLoader.getGrpcConfigInt("grpc.retry.max.attempts", 3);
+            long baseRetryDelay = EnhancedConfigurationLoader.getGrpcConfigLong("grpc.retry.delay", 1000);
+            int retryAttempt = 0;
+            boolean shouldRetry = false;
+
+            do {
+                shouldRetry = false;
+                try {
+                    response = schedulerStub.addTaskToQueue(request);
+
+                    // Check if response indicates failure but might be retryable
+                    if (!response.getSuccess() && retryAttempt < maxRetries) {
+                        String errorMsg = response.getErrorMessage() != null && !response.getErrorMessage().isEmpty()
+                                ? response.getErrorMessage()
+                                : "";
+                        // Retry only for transient errors
+                        if (errorMsg.contains("TRANSIENT_ERROR") ||
+                                errorMsg.contains("timeout") ||
+                                errorMsg.contains("connection") ||
+                                errorMsg.contains("unavailable")) {
+                            shouldRetry = true;
+                            retryAttempt++;
+                            long retryDelay = baseRetryDelay * (long) Math.pow(2, retryAttempt - 1);
+                            logger.warning(String.format(
+                                    "[IFOGSIM-SCHED-RETRY] TaskID=%s: Retry attempt %d/%d after %dms (transient error: %s)",
+                                    task.getTaskId(), retryAttempt, maxRetries, retryDelay, errorMsg));
+                            try {
+                                Thread.sleep(Math.min(retryDelay, 30000)); // Max 30 seconds
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                logger.warning("Retry delay interrupted for task: " + task.getTaskId());
+                                break; // Exit retry loop if interrupted
+                            }
+                            continue;
+                        }
+                    }
+                } catch (StatusRuntimeException e) {
+                    // Handle gRPC exceptions that might be retryable
+                    io.grpc.Status.Code statusCode = e.getStatus().getCode();
+                    if (retryAttempt < maxRetries &&
+                            (statusCode == io.grpc.Status.Code.DEADLINE_EXCEEDED ||
+                                    statusCode == io.grpc.Status.Code.UNAVAILABLE ||
+                                    statusCode == io.grpc.Status.Code.RESOURCE_EXHAUSTED)) {
+                        shouldRetry = true;
+                        retryAttempt++;
+                        long retryDelay = baseRetryDelay * (long) Math.pow(2, retryAttempt - 1);
+                        logger.warning(String.format(
+                                "[IFOGSIM-SCHED-RETRY] TaskID=%s: Retry attempt %d/%d after %dms (gRPC error: %s)",
+                                task.getTaskId(), retryAttempt, maxRetries, retryDelay, statusCode));
+                        try {
+                            Thread.sleep(Math.min(retryDelay, 30000)); // Max 30 seconds
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            logger.warning("Retry delay interrupted");
+                            break;
+                        }
+                        continue;
+                    }
+                    // Not retryable or max retries reached, throw to outer catch
+                    throw e;
+                }
+            } while (shouldRetry && retryAttempt < maxRetries);
+
+            // If we exhausted retries and still no response, create error response
+            if (response == null) {
+                logger.severe(String.format(
+                        "[IFOGSIM-SCHED-RETRY-EXHAUSTED] TaskID=%s: Max retries (%d) exhausted, using fallback",
+                        task.getTaskId(), maxRetries));
+                return createFallbackAddTaskToQueueResponse(task, availableNodes);
+            }
 
             // [DEBUG] Log immediately after gRPC response
             System.out.println(String.format(
-                    "[FLOW-GRPC-CLIENT-RESPONSE-RECEIVED] Time: %.2f - SchedulerClient - gRPC call COMPLETED for TaskID=%s",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
+                    "[FLOW-GRPC-CLIENT-RESPONSE-RECEIVED] Time: %.2f - SchedulerClient - gRPC call COMPLETED for TaskID=%s (retries=%d)",
+                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), retryAttempt));
             long duration = System.currentTimeMillis() - startTime;
 
             // Record latency in statistics manager
@@ -575,17 +646,18 @@ public class SchedulerClient implements AutoCloseable {
     }
 
     // ===== EVENT-BASED ASYNC METHODS =====
-    
+
     /**
      * Event-based async version of addTaskToQueue.
-     * Makes async gRPC call, converts latency to simulation time, calculates energy/cost,
+     * Makes async gRPC call, converts latency to simulation time, calculates
+     * energy/cost,
      * and schedules a CloudSim event for the response.
      * 
-     * @param task Task to schedule
+     * @param task           Task to schedule
      * @param availableNodes Available fog nodes
-     * @param policy Scheduling policy
-     * @param queueContext Optional queue context
-     * @param deviceId Device ID for event scheduling
+     * @param policy         Scheduling policy
+     * @param queueContext   Optional queue context
+     * @param deviceId       Device ID for event scheduling
      * @return PendingSchedulingRequest for tracking the async operation
      */
     public PendingSchedulingRequest addTaskToQueueAsync(
@@ -597,11 +669,11 @@ public class SchedulerClient implements AutoCloseable {
         // Record start time
         long realStartTime = System.currentTimeMillis();
         double simulationStartTime = CloudSim.clock();
-        
+
         logger.info(String.format(
-            "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Starting async scheduling for task: %s (Device: %d)",
-            simulationStartTime, task.getTaskId(), deviceId));
-        
+                "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Starting async scheduling for task: %s (Device: %d)",
+                simulationStartTime, task.getTaskId(), deviceId));
+
         // Make async gRPC call
         java.util.concurrent.CompletableFuture<AddTaskToQueueResponse> future;
         if (queueContext != null) {
@@ -609,69 +681,70 @@ public class SchedulerClient implements AutoCloseable {
         } else {
             future = asyncClient.addTaskToQueueAsync(task, availableNodes, policy);
         }
-        
+
         // Estimate message size (rough approximation)
         long messageSizeBytes = estimateMessageSize(task, availableNodes, queueContext);
-        
+
         // Estimate latency (we'll use actual latency when response arrives)
         // For now, use a conservative estimate for energy/cost calculation
         double estimatedSimulationLatency = NetworkLatencyConverter.convertToSimulationTime(50); // 50ms estimate
-        
+
         // Calculate estimated energy and cost
         double estimatedEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
-            estimatedSimulationLatency, messageSizeBytes);
+                estimatedSimulationLatency, messageSizeBytes);
         double estimatedCost = NetworkEnergyCostCalculator.calculateNetworkCost(
-            estimatedSimulationLatency, messageSizeBytes);
-        
+                estimatedSimulationLatency, messageSizeBytes);
+
         // Create pending request
         PendingSchedulingRequest pending = new PendingSchedulingRequest(
-            task.getTaskId(), task, future, realStartTime, 
-            simulationStartTime, estimatedEnergy, estimatedCost);
-        
+                task.getTaskId(), task, future, realStartTime,
+                simulationStartTime, estimatedEnergy, estimatedCost);
+
         // Schedule timeout event
         long timeoutMs = EnhancedConfigurationLoader.getSimulationConfigLong(
-            "simulation.network.latency.timeout-ms", 5000);
-        
+                "simulation.network.latency.timeout-ms", 5000);
+
         logger.info(String.format(
-            "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Created pending request for task: %s (Est. Energy: %.6f J, Est. Cost: %.8f $, Timeout: %d ms)",
-            simulationStartTime, task.getTaskId(), estimatedEnergy, estimatedCost, timeoutMs));
+                "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Created pending request for task: %s (Est. Energy: %.6f J, Est. Cost: %.8f $, Timeout: %d ms)",
+                simulationStartTime, task.getTaskId(), estimatedEnergy, estimatedCost, timeoutMs));
         double timeoutSimulationSec = NetworkLatencyConverter.convertToSimulationTime(timeoutMs);
-        CloudSim.send(deviceId, deviceId, timeoutSimulationSec, 
-            org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_TIMEOUT, pending);
-        
+        CloudSim.send(deviceId, deviceId, timeoutSimulationSec,
+                org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_TIMEOUT, pending);
+
         // When future completes, calculate actual latency and schedule event
         future.whenComplete((response, throwable) -> {
             long realLatency = System.currentTimeMillis() - realStartTime;
             double simulationLatency = NetworkLatencyConverter.convertToSimulationTime(realLatency);
-            
+
             // Error Handling - Check for exceptions
             if (throwable != null) {
                 // Error occurred - schedule error event
                 logger.severe(String.format(
-                    "[GRPC-SCHEDULER-ASYNC] Error in async call for task: %s - %s",
-                    task.getTaskId(), throwable.getMessage()));
+                        "[GRPC-SCHEDULER-ASYNC] Error in async call for task: %s - %s",
+                        task.getTaskId(), throwable.getMessage()));
                 // Error will be handled in timeout handler or response handler
                 return;
             }
-            
+
             // Calculate actual energy and cost
             double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
-                simulationLatency, messageSizeBytes);
+                    simulationLatency, messageSizeBytes);
             double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
-                simulationLatency, messageSizeBytes);
-            
+                    simulationLatency, messageSizeBytes);
+
             logger.info(String.format(
-                "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Scheduling response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
-                CloudSim.clock(), task.getTaskId(), realLatency, simulationLatency, actualEnergy, actualCost));
-            
-            // Schedule CloudSim event for response
-            CloudSim.send(deviceId, deviceId, simulationLatency, 
-                org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_RESPONSE, pending);
+                    "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Scheduling response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
+                    CloudSim.clock(), task.getTaskId(), realLatency, simulationLatency, actualEnergy, actualCost));
+
+            // Schedule CloudSim event for response (ensure valid delay to prevent "Past event detected" errors)
+            double validDelay = NetworkLatencyConverter.ensureValidEventDelay(simulationLatency);
+            CloudSim.send(deviceId, deviceId, validDelay,
+                    org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_RESPONSE, pending);
         });
-        
+
         return pending;
     }
-    
+
     /**
      * Estimate message size for energy/cost calculation
      */
@@ -685,7 +758,7 @@ public class SchedulerClient implements AutoCloseable {
         }
         return size;
     }
-    
+
     @Override
     public void close() {
         if (asyncClient != null) {
