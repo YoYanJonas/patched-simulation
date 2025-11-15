@@ -87,30 +87,10 @@ func (nm *SingleNodeManager) UpdateTaskStats(completed bool) {
 
 // GetCurrentLoad returns current resource utilization percentage
 func (nm *SingleNodeManager) GetCurrentLoad() float64 {
-	// [DEBUG] Entry point for GetCurrentLoad
-	fmt.Printf("[DEBUG] [NODE-GET-LOAD-ENTRY] GetCurrentLoad called\n")
-	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [NODE-GET-LOAD-LOCK-BEFORE] About to acquire RLock\n")
 	nm.mu.RLock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [NODE-GET-LOAD-LOCK-ACQUIRED] RLock acquired\n")
-	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [NODE-GET-LOAD-LOCK-RELEASE] Releasing RLock\n")
-		nm.mu.RUnlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [NODE-GET-LOAD-LOCK-RELEASED] RLock released\n")
-	}()
+	defer nm.mu.RUnlock()
 	
-	// [DEBUG] Getting load
-	load := nm.getCurrentLoadUnsafe()
-	// [DEBUG] Load retrieved
-	fmt.Printf("[DEBUG] [NODE-GET-LOAD-AFTER] Load retrieved: %.3f\n", load)
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [NODE-GET-LOAD-EXIT] GetCurrentLoad returning: %.3f\n", load)
-	return load
+	return nm.getCurrentLoadUnsafe()
 }
 
 // GetStats returns node statistics
@@ -158,64 +138,21 @@ var (
 
 // GetCPUUtilization returns current CPU utilization as percentage
 func (nm *SingleNodeManager) GetCPUUtilization() float64 {
-	// [DEBUG] Entry point for GetCPUUtilization
-	fmt.Printf("[DEBUG] [NODE-GET-CPU-ENTRY] GetCPUUtilization called\n")
-	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [NODE-GET-CPU-LOCK-BEFORE] About to acquire RLock\n")
 	nm.mu.RLock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [NODE-GET-CPU-LOCK-ACQUIRED] RLock acquired\n")
-	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [NODE-GET-CPU-LOCK-RELEASE] Releasing RLock\n")
-		nm.mu.RUnlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [NODE-GET-CPU-LOCK-RELEASED] RLock released\n")
-	}()
+	defer nm.mu.RUnlock()
 	
-	// [DEBUG] Getting CPU utilization
-	cpuUtil := float64(nm.CurrentUsage.CpuUsage)
-	// [DEBUG] CPU utilization retrieved
-	fmt.Printf("[DEBUG] [NODE-GET-CPU-AFTER] CPU utilization retrieved: %.3f\n", cpuUtil)
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [NODE-GET-CPU-EXIT] GetCPUUtilization returning: %.3f\n", cpuUtil)
-	return cpuUtil
+	return float64(nm.CurrentUsage.CpuUsage)
 }
 
 // GetMemoryUtilization returns current memory utilization as percentage
 func (nm *SingleNodeManager) GetMemoryUtilization() float64 {
-	// [DEBUG] Entry point for GetMemoryUtilization
-	fmt.Printf("[DEBUG] [NODE-GET-MEM-ENTRY] GetMemoryUtilization called\n")
-	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [NODE-GET-MEM-LOCK-BEFORE] About to acquire RLock\n")
 	nm.mu.RLock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [NODE-GET-MEM-LOCK-ACQUIRED] RLock acquired\n")
-	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [NODE-GET-MEM-LOCK-RELEASE] Releasing RLock\n")
-		nm.mu.RUnlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [NODE-GET-MEM-LOCK-RELEASED] RLock released\n")
-	}()
+	defer nm.mu.RUnlock()
 	
-	// [DEBUG] Getting memory utilization
 	if nm.Capacity.MemoryMb == 0 {
-		// [DEBUG] Zero capacity
-		fmt.Printf("[DEBUG] [NODE-GET-MEM-ZERO] Memory capacity is 0, returning 0\n")
 		return 0
 	}
-	memUtil := (float64(nm.CurrentUsage.MemoryUsageMb) / float64(nm.Capacity.MemoryMb)) * 100
-	// [DEBUG] Memory utilization retrieved
-	fmt.Printf("[DEBUG] [NODE-GET-MEM-AFTER] Memory utilization retrieved: %.3f (Used=%d, Capacity=%d)\n",
-		memUtil, nm.CurrentUsage.MemoryUsageMb, nm.Capacity.MemoryMb)
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [NODE-GET-MEM-EXIT] GetMemoryUtilization returning: %.3f\n", memUtil)
-	return memUtil
+	return (float64(nm.CurrentUsage.MemoryUsageMb) / float64(nm.Capacity.MemoryMb)) * 100
 }
 
 // SetQueue sets the queue reference for real queue length access
@@ -227,37 +164,13 @@ func (nm *SingleNodeManager) SetQueue(queue TaskQueue) {
 
 // GetQueueLength returns the current queue length
 func (nm *SingleNodeManager) GetQueueLength() int {
-	// [DEBUG] Entry point for GetQueueLength
-	fmt.Printf("[DEBUG] [NODE-GET-QUEUE-ENTRY] GetQueueLength called\n")
-	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [NODE-GET-QUEUE-LOCK-BEFORE] About to acquire RLock\n")
 	nm.mu.RLock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [NODE-GET-QUEUE-LOCK-ACQUIRED] RLock acquired\n")
-	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [NODE-GET-QUEUE-LOCK-RELEASE] Releasing RLock\n")
-		nm.mu.RUnlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [NODE-GET-QUEUE-LOCK-RELEASED] RLock released\n")
-	}()
+	defer nm.mu.RUnlock()
 	
-	// [DEBUG] Check queue reference
 	if nm.queue == nil {
-		// [DEBUG] Queue is nil
-		fmt.Printf("[DEBUG] [NODE-GET-QUEUE-NIL] Queue reference is nil, returning 0\n")
-		return 0 // No queue reference available
+		return 0
 	}
-	// [DEBUG] Queue reference exists
-	fmt.Printf("[DEBUG] [NODE-GET-QUEUE-SIZE-BEFORE] About to get queue size\n")
-	queueSize := nm.queue.Size()
-	// [DEBUG] Queue size retrieved
-	fmt.Printf("[DEBUG] [NODE-GET-QUEUE-SIZE-AFTER] Queue size retrieved: %d\n", queueSize)
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [NODE-GET-QUEUE-EXIT] GetQueueLength returning: %d\n", queueSize)
-	return queueSize
+	return nm.queue.Size()
 }
 
 // GetNodeID returns the node ID (already exists but confirming interface compliance)

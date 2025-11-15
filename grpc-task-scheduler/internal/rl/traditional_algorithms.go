@@ -1,7 +1,6 @@
 package rl
 
 import (
-	"fmt"
 	"scheduler-grpc-server/pkg/config"
 	"sort"
 )
@@ -40,11 +39,7 @@ func (f *FCFSAlgorithm) Name() string {
 
 // Fixed: Match the SchedulingAlgorithm interface signature
 func (f *FCFSAlgorithm) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
-	// [DEBUG] Entry point for FCFS Schedule
-	fmt.Printf("[DEBUG] [TRAD-FCFS-SCHEDULE-ENTRY] FCFS Schedule called: TaskCount=%d\n", len(tasks))
 	f.updateStats(len(tasks))
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [TRAD-FCFS-SCHEDULE-EXIT] FCFS Schedule returning: TaskCount=%d\n", len(tasks))
 	return tasks
 }
 
@@ -78,28 +73,18 @@ func (s *SJFAlgorithm) Name() string {
 
 // Fixed: Match the SchedulingAlgorithm interface signature
 func (s *SJFAlgorithm) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
-	// [DEBUG] Entry point for SJF Schedule
-	fmt.Printf("[DEBUG] [TRAD-SJF-SCHEDULE-ENTRY] SJF Schedule called: TaskCount=%d\n", len(tasks))
 	if len(tasks) <= 1 {
-		// [DEBUG] Single or no tasks, returning as-is
-		fmt.Printf("[DEBUG] [TRAD-SJF-SCHEDULE-SKIP] Single or no tasks, returning as-is: TaskCount=%d\n", len(tasks))
 		return tasks
 	}
 
-	// [DEBUG] About to sort tasks
-	fmt.Printf("[DEBUG] [TRAD-SJF-SCHEDULE-SORT-BEFORE] About to sort tasks by execution time\n")
 	scheduled := make([]TaskEntry, len(tasks))
 	copy(scheduled, tasks)
 
 	sort.Slice(scheduled, func(i, j int) bool {
 		return scheduled[i].GetExecutionTimeMs() < scheduled[j].GetExecutionTimeMs()
 	})
-	// [DEBUG] Tasks sorted
-	fmt.Printf("[DEBUG] [TRAD-SJF-SCHEDULE-SORT-AFTER] Tasks sorted by execution time\n")
 
 	s.updateStats(len(tasks))
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [TRAD-SJF-SCHEDULE-EXIT] SJF Schedule returning: TaskCount=%d\n", len(scheduled))
 	return scheduled
 }
 

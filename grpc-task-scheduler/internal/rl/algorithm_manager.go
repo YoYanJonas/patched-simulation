@@ -140,6 +140,23 @@ func (am *AlgorithmManager) UpdateRewardWeights(weights config.RewardWeights) er
 	return nil
 }
 
+// UpdateActiveProfile updates the active profile in multi-objective calculators
+func (am *AlgorithmManager) UpdateActiveProfile(profileName string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	// Update active profile in all multi-objective calculators
+	for algType, calc := range am.multiObjectiveCalculators {
+		if calc != nil {
+			if err := calc.SetActiveProfile(profileName); err != nil {
+				return fmt.Errorf("failed to update active profile for %s algorithm: %w", algType, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // Rest of the methods remain the same...
 func (am *AlgorithmManager) GetAlgorithm(algType AlgorithmType) SchedulingAlgorithm {
 	am.mu.RLock()
@@ -163,47 +180,23 @@ func (am *AlgorithmManager) GetCurrentAlgorithm() SchedulingAlgorithm {
 }
 
 func (am *AlgorithmManager) SelectAlgorithm(tasks []TaskEntry, nodeManager SingleNodeManager) SchedulingAlgorithm {
-	// [DEBUG] Entry point for SelectAlgorithm
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-ENTRY] SelectAlgorithm called with %d tasks\n", len(tasks))
 	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-BEFORE] About to acquire RLock\n")
 	am.mu.RLock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-ACQUIRED] RLock acquired\n")
 	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-RELEASE] Releasing RLock\n")
 		am.mu.RUnlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-LOCK-RELEASED] RLock released\n")
 	}()
 
-	// [DEBUG] About to get default algorithm
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-DEFAULT] Getting default algorithm: %s\n", am.config.DefaultAlgorithm)
 	selectedAlg := am.GetAlgorithm(AlgorithmType(am.config.DefaultAlgorithm))
 	if selectedAlg != nil {
-		// [DEBUG] Default algorithm found
-		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-DEFAULT-FOUND] Default algorithm found: %s\n", selectedAlg.Name())
 		return selectedAlg
 	}
-	// [DEBUG] Default algorithm not found
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-DEFAULT-NOT-FOUND] Default algorithm not found, trying fallback\n")
 
-	// [DEBUG] About to get fallback algorithm
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-FALLBACK] Getting fallback algorithm: %s\n", am.config.FallbackAlgorithm)
 	fallbackAlgorithm := am.GetAlgorithm(AlgorithmType(am.config.FallbackAlgorithm))
 	if fallbackAlgorithm != nil {
-		// [DEBUG] Fallback algorithm found
-		fmt.Printf("[DEBUG] [ALG-MGR-SELECT-FALLBACK-FOUND] Fallback algorithm found: %s\n", fallbackAlgorithm.Name())
 		return fallbackAlgorithm
 	}
-	// [DEBUG] Fallback not found, using FCFS
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-FCFS] Fallback not found, using FCFS\n")
 
 	result := am.traditionAlgorithms[AlgorithmFCFS]
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [ALG-MGR-SELECT-EXIT] SelectAlgorithm returning: %s\n", result.Name())
 	return result
 }
 
@@ -324,8 +317,6 @@ func (am *AlgorithmManager) String() string {
 
 // ProcessTaskCompletion processes task completion through RL algorithms
 func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
-	fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion called: TaskID=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t\n", 
-		report.TaskId, am.config.RLEnabled, queueLength, nodeStatus != nil)
 	logger.GetLogger().Infof("[ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion: TaskID=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t", 
 		report.TaskId, am.config.RLEnabled, queueLength, nodeStatus != nil)
 	
@@ -334,47 +325,37 @@ func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.Tas
 
 	// Only process if we have RL algorithms enabled
 	if !am.config.RLEnabled {
-		fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-SKIP] RL not enabled: TaskID=%s\n", report.TaskId)
 		logger.GetLogger().Warnf("[ALG-MGR-COMPLETE-SKIP] RL not enabled: TaskID=%s", report.TaskId)
 		return nil // No RL processing needed
 	}
 
 	// Validate inputs
 	if task == nil {
-		fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-ERROR] Task is nil: TaskID=%s\n", report.TaskId)
 		return fmt.Errorf("task is nil")
 	}
 
 	if report == nil {
-		fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-ERROR] Report is nil: TaskID=%s\n", task.GetTaskID())
 		return fmt.Errorf("completion report is nil for task %s", task.GetTaskID())
 	}
 
 	// Find Q-Learning algorithm to handle experience completion
-	fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-CHECK] Checking for QLearning algorithm: TaskID=%s, HasQLearning=%t\n", 
-		report.TaskId, am.rlAlgorithms[AlgorithmQLearning] != nil)
 	if qlearningAlg, exists := am.rlAlgorithms[AlgorithmQLearning]; exists {
 		// Cast to QLearningScheduler to access experience management
 		if qlScheduler, ok := qlearningAlg.(*QLearningScheduler); ok {
-			fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-CALL] Calling qlScheduler.ProcessTaskCompletion: TaskID=%s\n", report.TaskId)
 			// Process with comprehensive error handling (pass node status and actual queue length)
 			err := qlScheduler.ProcessTaskCompletion(task, report, nodeStatus, queueLength)
 			if err != nil {
 				// Log error but don't fail completely - allows system to continue
-				fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: TaskID=%s, Error=%v\n", 
-					task.GetTaskID(), err)
 				logger.GetLogger().Errorf("[ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: TaskID=%s, Error=%v", 
 					task.GetTaskID(), err)
 				return fmt.Errorf("task completion processing failed: %w", err)
 			}
-			fmt.Printf("[DEBUG] [ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: TaskID=%s\n", report.TaskId)
 			logger.GetLogger().Infof("[ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: TaskID=%s", report.TaskId)
 
 			// Note: RecordPerformance is skipped here because nodeManager is not available
 			// Performance tracking can be done separately if needed, but it's not critical for reward calculation
 
 			// Experience completed and Q-table updated
-			fmt.Printf("Task completion processed successfully for %s (RL experience updated)\n", task.GetTaskID())
 			return nil
 		}
 	}
@@ -461,7 +442,6 @@ func (am *AlgorithmManager) ValidateIntegration() []string {
 	}
 
 	if len(issues) == 0 {
-		fmt.Println("All integrations validated successfully")
 	}
 
 	return issues

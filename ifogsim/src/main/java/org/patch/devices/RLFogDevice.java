@@ -500,7 +500,6 @@ public class RLFogDevice extends FogDevice {
         if (isExternalTask) {
             externalTaskCount++;
 
-            // [DEBUG] Log external task arrival at fog node
             System.out.println(String.format(
                     "[FLOW-FOG-ARRIVAL-EXTERNAL] Time: %.2f - FogNode %s (ID:%d) received EXTERNAL task %d from cloud (TupleType:%s, DestModule:%s, Total external: %d) - Task allocated by cloud allocator",
                     CloudSim.clock(), getName(), getId(), tuple.getCloudletId(),
@@ -552,7 +551,6 @@ public class RLFogDevice extends FogDevice {
             double queueAddTime = CloudSim.clock();
             unscheduledQueue.addTask(tuple, vmId, queueAddTime);
 
-            // [DEBUG] Log unscheduled queue addition (internal task)
             System.out.println(String.format(
                     "[FLOW-FOG-UNSCHEDULED] Time: %.2f - FogNode %s (ID:%d) - Added INTERNAL task %d to unscheduled queue (VM:%d). Queue size: %d, Total internal: %d",
                     queueAddTime, getName(), getId(), tuple.getCloudletId(), vmId, unscheduledQueue.size(),
@@ -565,7 +563,6 @@ public class RLFogDevice extends FogDevice {
                         getName(), getId(), tuple.getCloudletId(), unscheduledQueue.size(), internalTaskCount));
             }
 
-            // [DEBUG] Log sending to scheduler (NOTE: task stays in unscheduled queue!)
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode %s (ID:%d) - Sending INTERNAL task %d to scheduler (task REMAINS in unscheduled queue, size: %d)",
                     CloudSim.clock(), getName(), getId(), tuple.getCloudletId(), unscheduledQueue.size()));
@@ -614,7 +611,6 @@ public class RLFogDevice extends FogDevice {
         double currentTime = CloudSim.clock();
         int queueSize = updatedQueue != null ? updatedQueue.size() : -1;
 
-        // [DEBUG] Log callback invocation
         System.out.println(String.format(
                 "[FLOW-FOG-QUEUE-CALLBACK] Time: %.2f - FogNode %s (ID:%d) - onQueueUpdated CALLED (queue size: %d)",
                 currentTime, getName(), getId(), queueSize));
@@ -640,7 +636,6 @@ public class RLFogDevice extends FogDevice {
     private void processNextTaskRL() {
         double currentTime = CloudSim.clock();
 
-        // [DEBUG] Log scheduled queue status before execution attempt
         if (scheduledQueue != null) {
             int scheduledQueueSize = scheduledQueue.size();
             System.out.println(String.format(
@@ -660,7 +655,6 @@ public class RLFogDevice extends FogDevice {
         // Use the task execution engine to process the next task
         boolean taskProcessed = taskExecutionEngine.processNextTask();
 
-        // [DEBUG] Log execution result
         System.out.println(String.format(
                 "[FLOW-FOG-EXECUTE-RESULT] Time: %.2f - FogNode %s (ID:%d) - processNextTask returned: %s (scheduled queue size now: %d)",
                 CloudSim.clock(), getName(), getId(), taskProcessed ? "SUCCESS" : "FAILED/EMPTY",
@@ -683,7 +677,6 @@ public class RLFogDevice extends FogDevice {
                         CloudSim.clock(), getName(), getId()));
             }
         } else {
-            // [DEBUG] Log why task wasn't processed
             if (scheduledQueue == null) {
                 System.err.println(String.format(
                         "[FLOW-FOG-EXECUTE-FAIL] Time: %.2f - FogNode %s (ID:%d) - Task NOT processed - scheduled queue is NULL",
@@ -835,7 +828,6 @@ public class RLFogDevice extends FogDevice {
                     tuple.getCloudletId(), cpuUtilization * 100, ramUtilization * 100,
                     (long) (ramUtilization * memoryMb), memoryMb, cpuCores));
 
-            // [DEBUG] Log cache-related data for delayed reward calculation
             System.out.println(String.format(
                     "[CACHE-COMPLETION-DEBUG] Task=%s, isCached=%s, originalExecutionTime=%d ms, reportedExecutionTime=%.2f ms, success=%s, cpuUtil=%.2f%%, ramUtil=%.2f%%",
                     tuple.getCloudletId(), isCached, executionTime, reportedExecutionTime, success,
@@ -894,7 +886,6 @@ public class RLFogDevice extends FogDevice {
                     "[DEBUG-KEY-COMPLETION] reportTaskCompletion: Final report.getTaskId()='%s'",
                     report.getTaskId()));
 
-            // [DEBUG] Log what we're sending in completion report
             System.out.println(String.format(
                     "[CACHE-COMPLETION-REPORT] Sending completion report: TaskId=%s, ActualExecutionTimeMs=%.2f, DeadlineMet=%s, NodeStatus.CPU=%.2f%%, NodeStatus.Memory=%d MB",
                     report.getTaskId(), report.getTasks(0).getActualExecutionTimeMs(),
@@ -1573,7 +1564,6 @@ public class RLFogDevice extends FogDevice {
             return;
         }
 
-        // [DEBUG] Log TUPLE_COMPLETE event received
         System.out.println(String.format(
                 "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - TUPLE_COMPLETE event received for cloudletId: %d",
                 CloudSim.clock(), getId(), completedTuple.getCloudletId()));
@@ -1615,7 +1605,6 @@ public class RLFogDevice extends FogDevice {
             try {
                 long cloudletId = completedTuple.getCloudletId();
 
-                // [DEBUG] Log lookup attempt
                 System.out.println(String.format(
                         "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - Looking up task state for cloudletId: %d",
                         CloudSim.clock(), getId(), cloudletId));
@@ -1625,7 +1614,6 @@ public class RLFogDevice extends FogDevice {
                         .getTaskByCloudletId(cloudletId);
 
                 if (state != null) {
-                    // [DEBUG] Log task found
                     System.out.println(String.format(
                             "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - Task state found for cloudletId: %d (taskId: %s)",
                             CloudSim.clock(), getId(), cloudletId, state.getTaskInfo().getTaskId()));
@@ -1650,7 +1638,6 @@ public class RLFogDevice extends FogDevice {
                     if (finishTime > 0 && execStartTime > 0) {
                         executionTime = (long) (finishTime - execStartTime);
                         success = executionTime > 0;
-                        // [DEBUG] Log execution time calculation
                         System.out.println(String.format(
                                 "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - Calculated execution time: %d ms (execStart: %.2f, finish: %.2f)",
                                 CloudSim.clock(), getId(), executionTime, execStartTime, finishTime));
@@ -1673,7 +1660,6 @@ public class RLFogDevice extends FogDevice {
                         cpuUtilization = state.getCapturedCpuUtilization();
                         ramUtilization = state.getCapturedRamUtilization();
 
-                        // [DEBUG] Log using captured utilization
                         System.out.println(String.format(
                                 "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - Using CAPTURED utilization: CPU=%.2f%%, Memory=%.2f%%",
                                 CloudSim.clock(), getId(), cpuUtilization * 100, ramUtilization * 100));
@@ -1684,7 +1670,6 @@ public class RLFogDevice extends FogDevice {
                         cpuUtilization = utilization[0];
                         ramUtilization = utilization[1];
 
-                        // [DEBUG] Log fallback to calculated utilization
                         System.out.println(String.format(
                                 "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - WARNING: Using CALCULATED utilization (capture failed): CPU=%.2f%%, Memory=%.2f%%",
                                 CloudSim.clock(), getId(), cpuUtilization * 100, ramUtilization * 100));
@@ -1700,7 +1685,6 @@ public class RLFogDevice extends FogDevice {
                     // Get cache action to check if we should store result
                     org.patch.proto.IfogsimCommon.CacheAction cacheAction = taskInfo.getCacheAction();
 
-                    // [DEBUG] Log before reporting
                     System.out.println(String.format(
                             "[TUPLE-COMPLETE] Time: %.2f - FogNode (ID:%d) - Reporting completion: cloudletId=%d, execTime=%d ms, isCached=%s, cacheAction=%s, CPU=%.2f%%, Memory=%.2f%%",
                             CloudSim.clock(), getId(), cloudletId, executionTime, isCached, cacheAction,
@@ -1752,7 +1736,6 @@ public class RLFogDevice extends FogDevice {
                         state.setReportedCompletion(true);
                         taskExecutionEngine.removeTaskAfterCompletion(cloudletId);
 
-                        // [DEBUG] Log successful completion with ACK confirmation
                         System.out.println(String.format(
                                 "[TUPLE-COMPLETE-ACK] Time: %.2f - FogNode (ID:%d) - Task %d completion confirmed by server (ACK success), removed from activeTasks",
                                 CloudSim.clock(), getId(), cloudletId));
@@ -1960,7 +1943,6 @@ public class RLFogDevice extends FogDevice {
 
         logger.info("Received external task " + externalTask.getCloudletId() + " from cloud");
 
-        // [DEBUG] Log external task processing start
         System.out.println(String.format(
                 "[FLOW-FOG-EXTERNAL] Time: %.2f - FogNode %s (ID:%d) - Processing external task %d from cloud",
                 currentTime, getName(), getId(), externalTask.getCloudletId()));
@@ -1977,7 +1959,6 @@ public class RLFogDevice extends FogDevice {
         externalTask.setVmId(vmId);
         updateTimingsOnReceipt(externalTask);
 
-        // [DEBUG] Log before adding to unscheduled queue
         System.out.println(String.format(
                 "[FLOW-FOG-UNSCHEDULED] Time: %.2f - FogNode %s (ID:%d) - Adding EXTERNAL task %d to unscheduled queue (VM:%d). Current queue size: %d",
                 CloudSim.clock(), getName(), getId(), externalTask.getCloudletId(), vmId, unscheduledQueue.size()));
@@ -1985,12 +1966,10 @@ public class RLFogDevice extends FogDevice {
         // Add to unscheduled queue
         unscheduledQueue.addTask(externalTask, vmId, CloudSim.clock());
 
-        // [DEBUG] Log after adding to unscheduled queue
         System.out.println(String.format(
                 "[FLOW-FOG-UNSCHEDULED] Time: %.2f - FogNode %s (ID:%d) - EXTERNAL task %d added to unscheduled queue. New queue size: %d",
                 CloudSim.clock(), getName(), getId(), externalTask.getCloudletId(), unscheduledQueue.size()));
 
-        // [DEBUG] Log sending to scheduler (NOTE: task stays in unscheduled queue!)
         System.out.println(String.format(
                 "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode %s (ID:%d) - Sending EXTERNAL task %d to scheduler (task REMAINS in unscheduled queue, size: %d)",
                 CloudSim.clock(), getName(), getId(), externalTask.getCloudletId(), unscheduledQueue.size()));
@@ -2004,7 +1983,6 @@ public class RLFogDevice extends FogDevice {
 
         logger.info("External task " + externalTask.getCloudletId() + " added to unscheduled queue");
 
-        // [DEBUG] Confirm external task processing
         System.out.println(String.format(
                 "[FLOW-FOG-EXTERNAL] Time: %.2f - FogNode %s (ID:%d) - EXTERNAL task %d processing complete, waiting for scheduler response",
                 CloudSim.clock(), getName(), getId(), externalTask.getCloudletId()));

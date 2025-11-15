@@ -114,8 +114,6 @@ func (morc *MultiObjectiveRewardCalculator) CalculateMultiObjectiveReward(
 		Episode:            episode,
 		Timestamp:          time.Now(),
 	}
-	// [DEBUG] Verify deadline objective is set to 1.0 (best value) since deadline is disabled
-	logger.GetLogger().Debugf("[DEADLINE-DISABLED] DeadlineMiss objective set to 1.0 (best value), weight will be 0.0, contribution=0.0")
 
 	// Get current weights (may be adapted)
 	currentWeights := morc.GetRewardWeights()
@@ -248,8 +246,6 @@ func (morc *MultiObjectiveRewardCalculator) adaptWeights(episode int) {
 		episode, len(morc.performanceHistory), morc.adaptationWindow)
 
 	if len(morc.performanceHistory) < morc.adaptationWindow {
-		logger.GetLogger().Debugf("[MULTI-OBJ-ADAPT-SKIP] Insufficient history: HistorySize=%d < Window=%d",
-			len(morc.performanceHistory), morc.adaptationWindow)
 		return
 	}
 
@@ -325,10 +321,8 @@ func (morc *MultiObjectiveRewardCalculator) adaptWeights(episode int) {
 		// Limit adaptation history
 		if len(morc.adaptationHistory) > 20 {
 			morc.adaptationHistory = morc.adaptationHistory[1:]
-			logger.GetLogger().Debugf("[MULTI-OBJ-ADAPT-HISTORY] Adaptation history trimmed to 20 entries")
 		}
 	} else {
-		logger.GetLogger().Debugf("[MULTI-OBJ-ADAPT-SKIP] Adaptation skipped: Change too small (%.3f < 0.05)", maxChange)
 	}
 
 	logger.GetLogger().Infof("[MULTI-OBJ-ADAPT-EXIT] adaptWeights completed: Episode=%d", episode)
@@ -514,8 +508,6 @@ func (morc *MultiObjectiveRewardCalculator) recordPerformance(performance Object
 }
 
 func (morc *MultiObjectiveRewardCalculator) updateParetoFront(objectives ObjectiveVector) {
-	oldSize := len(morc.paretoFront)
-
 	// Simple Pareto front maintenance
 	// Add new point and remove dominated ones
 
@@ -527,9 +519,6 @@ func (morc *MultiObjectiveRewardCalculator) updateParetoFront(objectives Objecti
 			break
 		}
 	}
-
-	logger.GetLogger().Debugf("[MULTI-OBJ-PARETO-UPDATE] Updating Pareto front: Episode=%d, OldSize=%d, Dominated=%t",
-		objectives.Episode, oldSize, dominated)
 
 	if !dominated {
 		// Add new point
@@ -553,14 +542,8 @@ func (morc *MultiObjectiveRewardCalculator) updateParetoFront(objectives Objecti
 		// Limit Pareto front size
 		if len(morc.paretoFront) > 50 {
 			// Keep most recent points
-			trimmed := len(morc.paretoFront) - 50
 			morc.paretoFront = morc.paretoFront[len(morc.paretoFront)-50:]
-			logger.GetLogger().Debugf("[MULTI-OBJ-PARETO-TRIM] Pareto front trimmed: Removed=%d, NewSize=%d",
-				trimmed, len(morc.paretoFront))
 		}
-	} else {
-		logger.GetLogger().Debugf("[MULTI-OBJ-PARETO-DOMINATED] New point dominated, not added: Episode=%d, FrontSize=%d",
-			objectives.Episode, oldSize)
 	}
 }
 
@@ -734,9 +717,6 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 		logger.GetLogger().Infof("[MULTI-OBJ-REWARD-ADAPT] Triggering weight adaptation: HistorySize=%d >= Window=%d",
 			len(morc.performanceHistory), morc.adaptationWindow)
 		morc.adaptWeights(currentEpisode)
-	} else {
-		logger.GetLogger().Debugf("[MULTI-OBJ-REWARD-ADAPT] Weight adaptation skipped: Enabled=%t, HistorySize=%d < Window=%d",
-			morc.adaptationEnabled, len(morc.performanceHistory), morc.adaptationWindow)
 	}
 
 	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-EXIT] CalculateDelayedReward returning: TaskID=%s, Reward=%.3f, Episode=%d",

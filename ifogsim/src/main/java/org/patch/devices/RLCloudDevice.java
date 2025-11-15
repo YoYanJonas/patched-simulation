@@ -444,7 +444,6 @@ public class RLCloudDevice extends FogDevice {
         double currentTime = CloudSim.clock();
         String sourceName = CloudSim.getEntityName(ev.getSource());
 
-        // [DEBUG] Log external task arrival at cloud
         boolean isExternalTask = (tuple.getTupleType() != null && tuple.getTupleType().equals("EXTERNAL")) ||
                 (tuple.getDestModuleName() != null && tuple.getDestModuleName().equals("external_task"));
 
@@ -492,7 +491,6 @@ public class RLCloudDevice extends FogDevice {
             executeTuple(ev, tuple.getDestModuleName());
 
         } else if (tuple.getDestModuleName() != null) {
-            // [DEBUG] Log that we need to use RL allocation
             if (isExternalTask) {
                 System.out.println(String.format(
                         "[FLOW-CLOUD-ALLOC-START] Time: %.2f - Cloud (ID:%d) - External task %d needs allocation decision (DestModule:%s, CPU:%.0f, Mem:%.0f) - Calling allocator",
@@ -504,7 +502,6 @@ public class RLCloudDevice extends FogDevice {
             int targetNodeId = getRLAllocationDecision(tuple);
 
             if (targetNodeId > 0) {
-                // [DEBUG] Log allocation decision
                 if (isExternalTask) {
                     System.out.println(String.format(
                             "[FLOW-CLOUD-ALLOC-SUCCESS] Time: %.2f - Cloud (ID:%d) - Allocator selected fog node %d for external task %d - Forwarding to fog node",
@@ -514,7 +511,6 @@ public class RLCloudDevice extends FogDevice {
                 // Forward to selected fog node using enhanced forwarding
                 forwardTaskToFogNode(tuple, String.valueOf(targetNodeId));
             } else {
-                // [DEBUG] Log allocation failure
                 if (isExternalTask) {
                     System.out.println(String.format(
                             "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Allocation FAILED for external task %d, using fallback routing",
@@ -540,7 +536,6 @@ public class RLCloudDevice extends FogDevice {
     private int getRLAllocationDecision(Tuple tuple) {
         double currentTime = CloudSim.clock();
 
-        // [DEBUG] Check allocator state before allocation
         if (!rlConfigured || allocationClient == null) {
             logger.info(String.format(
                     "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Allocator NOT available (rlConfigured:%s, client:%s)",
@@ -575,7 +570,6 @@ public class RLCloudDevice extends FogDevice {
         totalAllocationDecisions++;
 
         try {
-            // [DEBUG] Log allocation request - detailed info
             System.out.println(String.format(
                     "[FLOW-CLOUD-ALLOC-REQUEST] Time: %.2f - Cloud (ID:%d) - Requesting allocation for task %d (CPU=%.0f, Mem=%.0f, BW=%.0f, Priority=1) - Calling allocator service",
                     currentTime, getId(), tuple.getCloudletId(), tuple.getCloudletLength(),
@@ -606,7 +600,6 @@ public class RLCloudDevice extends FogDevice {
             long latency = System.currentTimeMillis() - startTime;
             totalAllocationLatency += latency;
 
-            // [DEBUG] Log allocation response from allocator
             System.out.println(String.format(
                     "[FLOW-CLOUD-ALLOC-RESPONSE] Time: %.2f - Cloud (ID:%d) - Allocator response: task %d -> node %s, success=%s, latency=%dms",
                     currentTime, getId(), tuple.getCloudletId(), response.getAllocatedNodeId(), response.getSuccess(),
@@ -674,7 +667,6 @@ public class RLCloudDevice extends FogDevice {
             // Find fog node by ID
             int fogNodeId = findFogNodeById(allocatedNodeId);
             if (fogNodeId > 0) {
-                // [DEBUG] Log forwarding
                 System.out.println(String.format(
                         "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) forwarding external task %d to fog node %d (allocated: %s, Total forwarded: %d)",
                         currentTime, getId(), task.getCloudletId(), fogNodeId, allocatedNodeId, forwardTaskCount));
@@ -693,7 +685,6 @@ public class RLCloudDevice extends FogDevice {
                 logger.info("Task " + task.getCloudletId() + " forwarded to fog node " + fogNodeId + " (allocated: "
                         + allocatedNodeId + ")");
 
-                // [DEBUG] Confirm forwarding
                 System.out.println(String.format(
                         "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) - External task %d successfully sent to fog node %d",
                         CloudSim.clock(), getId(), task.getCloudletId(), fogNodeId));
@@ -701,7 +692,6 @@ public class RLCloudDevice extends FogDevice {
                 // Emit forwarding event for monitoring
                 schedule(getId(), 0, ExtendedFogEvents.TASK_FORWARDED, task);
             } else {
-                // [DEBUG] Log fog node not found
                 System.out.println(String.format(
                         "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) - Fog node %s NOT FOUND, using fallback routing for task %d",
                         currentTime, getId(), allocatedNodeId, task.getCloudletId()));
@@ -711,7 +701,6 @@ public class RLCloudDevice extends FogDevice {
                 sendDown(task, Integer.parseInt(allocatedNodeId));
             }
         } catch (Exception e) {
-            // [DEBUG] Log forwarding error
             System.out.println(String.format(
                     "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) - ERROR forwarding task %d to fog node %s: %s",
                     CloudSim.clock(), getId(), task.getCloudletId(), allocatedNodeId, e.getMessage()));
@@ -903,7 +892,6 @@ public class RLCloudDevice extends FogDevice {
             // In iFogSim, cloud devices can be aware of connected fog devices
             List<FogNode> fogNodes = collectConnectedFogNodes();
 
-            // [DEBUG] Log fog node collection
             double currentTime = CloudSim.clock();
             logger.info(String.format(
                     "[FLOW-FOG-REGISTRY] Time: %.2f - Cloud (ID:%d) - Collected %d fog nodes for registration",
@@ -914,7 +902,6 @@ public class RLCloudDevice extends FogDevice {
                 return;
             }
 
-            // [DEBUG] Check server state before sending
             if (!allocationClient.isServiceHealthy()) {
                 logger.warning(String.format(
                         "[FLOW-FOG-REGISTRY] Time: %.2f - Cloud (ID:%d) - Allocator server NOT healthy, cannot send fog nodes",
@@ -962,7 +949,6 @@ public class RLCloudDevice extends FogDevice {
                             .setTaskCount(taskCount) // Get actual task count from device
                             .build();
 
-                    // [DEBUG] Log before sending
                     logger.info(String.format(
                             "[FLOW-FOG-REGISTRY] Time: %.2f - Cloud (ID:%d) - Sending fog node state: nodeId=%s, CPU=%.2f, Mem=%.2f, Tasks=%d",
                             currentTime, getId(), fogNode.getNodeId(), cpuUtil, memUtil, taskCount));
@@ -970,7 +956,6 @@ public class RLCloudDevice extends FogDevice {
                     // Actually send state to allocation service
                     allocationClient.reportNodeState(nodeStateRequest);
 
-                    // [DEBUG] Log after successful send
                     logger.info(String.format(
                             "[FLOW-FOG-REGISTRY] Time: %.2f - Cloud (ID:%d) - Successfully sent fog node state: nodeId=%s",
                             currentTime, getId(), fogNode.getNodeId()));
@@ -1355,7 +1340,6 @@ public class RLCloudDevice extends FogDevice {
      * Request task allocation from RL agent
      */
     private void requestTaskAllocation(Tuple task) {
-        // [DEBUG] Check allocator state before external task routing
         double currentTime = CloudSim.clock();
         if (allocationClient == null || !allocationClient.isConnected()) {
             logger.warning(String.format(
@@ -1386,7 +1370,6 @@ public class RLCloudDevice extends FogDevice {
             String taskId = String.valueOf(task.getCloudletId());
             pendingAllocations.put(taskId, task);
 
-            // [DEBUG] Log before allocation request
             logger.info(String.format(
                     "[FLOW-EXT-TASK] Time: %.2f - Cloud (ID:%d) - Requesting allocation for task: taskId=%s, CPU=%.2f, Mem=%.2f",
                     CloudSim.clock(), getId(), taskId, task.getCloudletLength(), task.getCloudletFileSize()));
@@ -1402,7 +1385,6 @@ public class RLCloudDevice extends FogDevice {
                     0L, // Later Feature: deadline-aware disabled
                     createTaskMetadata(task));
 
-            // [DEBUG] Log allocation response
             logger.info(String.format(
                     "[FLOW-EXT-TASK] Time: %.2f - Cloud (ID:%d) - Allocation response: taskId=%s, allocatedNode=%s, success=%s",
                     CloudSim.clock(), getId(), taskId, response.getAllocatedNodeId(), response.getSuccess()));

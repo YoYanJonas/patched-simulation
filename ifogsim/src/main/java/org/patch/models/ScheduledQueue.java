@@ -33,7 +33,6 @@ public class ScheduledQueue {
         boolean isCached = taskInfo.isCachedTask();
         String cacheKey = taskInfo.getCacheKey();
         
-        // [DEBUG] Enhanced logging before adding
         double currentTime = org.cloudbus.cloudsim.core.CloudSim.clock();
         System.out.println(String.format(
                 "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-ADD-START] Time: %.2f - Adding task to scheduled queue: TaskID=%s, IsCached=%s, CacheKey=%s (queue size before: %d)",
@@ -47,7 +46,6 @@ public class ScheduledQueue {
         
         logger.fine("Task " + taskId + " added to scheduled queue (total: " + queueSizeAfter + ")");
         
-        // [DEBUG] Enhanced logging after adding
         System.out.println(String.format(
                 "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-ADD-SUCCESS] Time: %.2f - Task %s successfully added to scheduled queue (queue size: %d -> %d, total added: %d, isCached=%s)",
                 currentTime, taskId, queueSizeBefore, queueSizeAfter, totalTasksAdded, isCached ? "true" : "false"));

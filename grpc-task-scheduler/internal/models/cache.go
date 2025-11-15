@@ -48,7 +48,6 @@ func NewTaskCacheManager(cfg config.CachingConfig) *TaskCacheManager {
 // Returns TaskId which is guaranteed unique per task instance in both iFogSim and server
 func (tcm *TaskCacheManager) GenerateCacheKey(task *pb.Task) string {
 	if task == nil {
-		logger.GetLogger().Errorf("[DEBUG] [CACHE-KEY-NIL] Task is nil")
 		return ""
 	}
 	// TaskId is unique per task instance (based on CloudSim's cloudletId counter)
@@ -59,21 +58,14 @@ func (tcm *TaskCacheManager) GenerateCacheKey(task *pb.Task) string {
 // NOTE: This is used for RL state features only, NOT for cache lookup
 // Excludes TaskId to allow pattern matching (similar tasks share same fingerprint)
 func (tcm *TaskCacheManager) GenerateTaskFingerprint(task *pb.Task) string {
-	// [DEBUG] Entry point for GenerateTaskFingerprint
-	logger.GetLogger().Infof("[DEBUG] [CACHE-FINGERPRINT-ENTRY] GenerateTaskFingerprint called: TaskID=%s", task.TaskId)
 	
 	if task == nil {
-		// [DEBUG] Task is nil
-		logger.GetLogger().Errorf("[DEBUG] [CACHE-FINGERPRINT-NIL] Task is nil")
 		return ""
 	}
 
-	// [DEBUG] Creating fingerprint data
 	// Create fingerprint: task_name + task_type + cpu + memory + priority
 	// DO NOT include task_id - we want to identify similar tasks, not unique instances
 	// DO NOT include execution_time - always 0 for new tasks, doesn't help
-	logger.GetLogger().Infof("[DEBUG] [CACHE-FINGERPRINT-DATA] Creating fingerprint data: TaskName=%s, Type=%d, CPU=%d, Mem=%d, Priority=%d",
-		task.TaskName, task.TaskType, task.CpuRequirement, task.MemoryRequirement, task.Priority)
 	data := fmt.Sprintf("%s_%d_%d_%d_%d",
 		task.TaskName,           // Tuple type (e.g., "sensor_data")
 		task.TaskType,           // TaskType enum (COMPUTE, IO, etc.)
@@ -81,104 +73,62 @@ func (tcm *TaskCacheManager) GenerateTaskFingerprint(task *pb.Task) string {
 		task.MemoryRequirement,  // Memory in MB
 		task.Priority)           // Task priority (1-10)
 
-	// [DEBUG] Computing hash
-	logger.GetLogger().Infof("[DEBUG] [CACHE-FINGERPRINT-HASH-BEFORE] About to compute SHA256 hash")
 	hash := sha256.Sum256([]byte(data))
-	// [DEBUG] Hash computed
 	fingerprint := fmt.Sprintf("%x", hash)[:16] // Use first 16 chars
-	logger.GetLogger().Infof("[DEBUG] [CACHE-FINGERPRINT-HASH-AFTER] Hash computed: fingerprint=%s", fingerprint)
 	
-	// [DEBUG] About to return
-	logger.GetLogger().Infof("[DEBUG] [CACHE-FINGERPRINT-EXIT] GenerateTaskFingerprint returning: %s", fingerprint)
 	return fingerprint
 }
 
 // ProcessTask processes a task and returns cache decision
 func (tcm *TaskCacheManager) ProcessTask(task *pb.Task) (bool, string, pb.CacheAction) {
-	// [DEBUG] Entry point for ProcessTask
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-ENTRY] ProcessTask called: TaskID=%s", task.TaskId)
 	
 	if !tcm.config.Enabled {
-		// [DEBUG] Cache disabled
-		logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-DISABLED] Cache disabled for TaskID=%s", task.TaskId)
 		return false, "", pb.CacheAction_CACHE_ACTION_NONE
 	}
-	// [DEBUG] Cache enabled
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-ENABLED] Cache enabled for TaskID=%s", task.TaskId)
 
-	// [DEBUG] About to acquire lock
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-LOCK-BEFORE] About to acquire lock for TaskID=%s", task.TaskId)
 	tcm.mu.Lock()
-	// [DEBUG] Lock acquired
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-LOCK-ACQUIRED] Lock acquired")
 	defer func() {
-		// [DEBUG] About to release lock
-		logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-LOCK-RELEASE] Releasing lock")
 		tcm.mu.Unlock()
-		// [DEBUG] Lock released
-		logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-LOCK-RELEASED] Lock released")
 	}()
 
 	// Generate cache key (unique per task instance)
 	cacheKey := tcm.GenerateCacheKey(task)
 	if cacheKey == "" {
-		logger.GetLogger().Errorf("[DEBUG] [CACHE-PROCESS-KEY-FAILED] Failed to generate cache key for TaskID=%s", task.TaskId)
 		return false, "", pb.CacheAction_CACHE_ACTION_NONE
 	}
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-KEY] Generated cache key: %s (TaskID=%s)", cacheKey, task.TaskId)
 
-	// [DEBUG] Update total tasks
 	tcm.totalTasks++
 	now := time.Now()
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-TOTAL] Total tasks incremented: %d", tcm.totalTasks)
 
-	// [DEBUG] Check for existing entry using cache key (TaskId)
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-ENTRY-CHECK] Checking for existing entry: cacheKey=%s", cacheKey)
 	entry, exists := tcm.entries[cacheKey]
 	if !exists {
-		// [DEBUG] First time seeing this task instance
-		logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-NEW] First time seeing task: cacheKey=%s (TaskID=%s)", cacheKey, task.TaskId)
 		// First time seeing this task instance
 		tcm.entries[cacheKey] = &TaskCacheEntry{
 			FirstSeen: now.Unix(),
 			SeenCount: 1,
 		}
 		tcm.cacheMisses++
-		// [DEBUG] Cache miss
-		logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-MISS] Cache miss: TotalMisses=%d, Action=STORE", tcm.cacheMisses)
 		return false, cacheKey, pb.CacheAction_CACHE_ACTION_STORE
 	}
-	// [DEBUG] Entry exists
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-EXISTS] Entry exists: cacheKey=%s, SeenCount=%d", cacheKey, entry.SeenCount)
 
-	// [DEBUG] Task instance seen before - update SeenCount
 	// Task instance seen before - update SeenCount (for this specific task)
 	entry.SeenCount++
 	tcm.repeatedTasks++
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-UPDATE] Updated entry: SeenCount=%d, RepeatedTasks=%d", entry.SeenCount, tcm.repeatedTasks)
 
-	// [DEBUG] Check cache expiration
 	// Check if cache is still valid (check time since FIRST SEEN)
 	firstSeenTime := time.Unix(entry.FirstSeen, 0)
 	timeSinceFirstSeen := now.Sub(firstSeenTime)
 	cacheTTL := time.Duration(tcm.config.CacheTTLHours) * time.Hour
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-EXPIRY-CHECK] Checking expiration: Age=%v, TTL=%v", timeSinceFirstSeen, cacheTTL)
 	
 	if timeSinceFirstSeen > cacheTTL {
-		// [DEBUG] Cache expired
 		// Cache expired - invalidate
-		logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-EXPIRE] Cache expired: cacheKey=%s, Age=%v, TTL=%v", cacheKey, timeSinceFirstSeen, cacheTTL)
 		logger.GetLogger().Infof("[CACHE-EXPIRE] Cache expired for cacheKey %s after %v (TTL=%v)",
 			cacheKey, timeSinceFirstSeen, cacheTTL)
 		return false, cacheKey, pb.CacheAction_CACHE_ACTION_INVALIDATE
 	}
-	// [DEBUG] Cache still valid
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-VALID] Cache still valid: cacheKey=%s", cacheKey)
 
-	// [DEBUG] Cache hit
 	// Cache hit - use cached result
 	tcm.cacheHits++
-	logger.GetLogger().Infof("[DEBUG] [CACHE-PROCESS-HIT] Cache hit: TotalHits=%d, Action=USE", tcm.cacheHits)
 	return true, cacheKey, pb.CacheAction_CACHE_ACTION_USE
 }
 
@@ -269,8 +219,6 @@ func (tcm *TaskCacheManager) RemoveEntry(cacheKey string) {
 	}
 	
 	delete(tcm.entries, cacheKey)
-	logger.GetLogger().Debugf("[CACHE-REMOVE] Deleted entry %s (seen %d times, totalTasks: %d, repeatedTasks: %d)",
-		cacheKey, entry.SeenCount, tcm.totalTasks, tcm.repeatedTasks)
 }
 
 // GetHitRate returns cache hit rate (0.0-1.0)

@@ -299,7 +299,6 @@ func (ms *ModelStorage) Initialize() error {
 
 	modelPath := ms.getCurrentModelPath()
 	
-	// [DEBUG] Log model path configuration
 	logger.GetLogger().Infof("[MODEL-INIT] Model persistence enabled: %t", ms.config.Enabled)
 	logger.GetLogger().Infof("[MODEL-INIT] Models base path: %s", ms.config.ModelsPath)
 	logger.GetLogger().Infof("[MODEL-INIT] Model name: %s", ms.config.ModelName)

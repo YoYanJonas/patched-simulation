@@ -3,7 +3,6 @@ package rl
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -85,7 +84,6 @@ func NewAgent(cfg AgentConfig) *Agent {
 		agent.algorithmManager = NewAlgorithmManager(
 			cfg.AlgorithmManagerConfig,
 		)
-		log.Printf("RL Agent initialized with algorithm manager")
 	}
 
 	return agent
@@ -108,7 +106,6 @@ func (a *Agent) Enable() error {
 	}
 
 	a.isEnabled = true
-	log.Printf("RL Agent enabled")
 	return nil
 }
 
@@ -118,105 +115,58 @@ func (a *Agent) Disable() {
 	defer a.mu.Unlock()
 
 	a.isEnabled = false
-	log.Printf("RL Agent disabled")
 }
 
 // Schedule is the main entry point that matches what scheduler.go expects
 func (a *Agent) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
-	// [DEBUG] Entry point for Schedule (wrapper)
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-WRAPPER] Agent.Schedule called with %d tasks", len(tasks))
 	result := a.ScheduleTasks(tasks, nodeManager)
-	// [DEBUG] ScheduleTasks returned
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-WRAPPER-RETURN] Agent.Schedule returning %d tasks", len(result))
 	return result
 }
 
 // ScheduleTasks schedules tasks using the selected algorithm
 func (a *Agent) ScheduleTasks(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
-	// [DEBUG] Entry point for ScheduleTasks
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-ENTRY] Agent.ScheduleTasks called with %d tasks", len(tasks))
 	
-	// [DEBUG] About to acquire lock
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-BEFORE] About to acquire lock")
 	a.mu.Lock()
-	// [DEBUG] Lock acquired
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-ACQUIRED] Lock acquired")
 	defer func() {
-		// [DEBUG] About to release lock
-		log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-RELEASE] Releasing lock")
 		a.mu.Unlock()
-		// [DEBUG] Lock released
-		log.Printf("[DEBUG] [AGENT-SCHEDULE-LOCK-RELEASED] Lock released")
 	}()
 
-	// [DEBUG] Check agent state
 	if !a.isEnabled || a.algorithmManager == nil {
-		// [DEBUG] Agent disabled or not initialized
-		log.Printf("[DEBUG] [AGENT-SCHEDULE-DISABLED] Agent disabled (enabled=%t, manager=%v)", a.isEnabled, a.algorithmManager != nil)
 		// Agent is disabled or not properly initialized
 		return tasks
 	}
-	// [DEBUG] Agent is enabled
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-ENABLED] Agent is enabled and initialized")
 
-	// [DEBUG] Record decision
 	// Record decision
 	a.stats.TotalDecisions++
 	a.stats.LastDecisionTime = time.Now()
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-DECISION] Decision recorded: TotalDecisions=%d", a.stats.TotalDecisions)
 
-	// [DEBUG] About to select algorithm
 	// Select algorithm
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-SELECT-ALG-BEFORE] About to select algorithm")
 	algorithm := a.algorithmManager.SelectAlgorithm(tasks, nodeManager)
-	// [DEBUG] Algorithm selected
 	if algorithm == nil {
-		// [DEBUG] No algorithm available
-		log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-NIL] No algorithm available for scheduling")
 		a.stats.FailedRuns++
-		log.Printf("No algorithm available for scheduling")
 		return tasks
 	}
-	// [DEBUG] Algorithm selected successfully
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-SELECTED] Algorithm selected: %s", algorithm.Name())
 
-	// [DEBUG] About to schedule tasks
-	// Schedule tasks
 	// Before scheduling, ensure NodeStatusTracker is set on Q-learning scheduler
 	if qlAlg, ok := algorithm.(*QLearningScheduler); ok && a.nodeStatusTracker != nil {
 		qlAlg.SetNodeStatusTracker(a.nodeStatusTracker)
-		logger.GetLogger().Debugf("[AGENT-SCHEDULE] NodeStatusTracker set on Q-learning scheduler before scheduling")
 	}
 	
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-BEFORE] About to call algorithm.Schedule with %d tasks", len(tasks))
 	scheduledTasks := algorithm.Schedule(tasks, nodeManager)
-	// [DEBUG] Algorithm.Schedule returned
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-AFTER] algorithm.Schedule returned %d tasks", len(scheduledTasks))
 	
 	// CRITICAL VALIDATION: Ensure no tasks are lost during algorithm scheduling
 	if len(scheduledTasks) != len(tasks) {
-		log.Printf("[DIAGNOSTIC] [AGENT-SCHEDULE-TASK-LOSS] CRITICAL: Task count mismatch after algorithm.Schedule! Input: %d, Output: %d, Lost: %d tasks", 
+		logger.GetLogger().Errorf("[AGENT-SCHEDULE-ERROR] Task count mismatch: input=%d, output=%d, lost=%d", 
 			len(tasks), len(scheduledTasks), len(tasks)-len(scheduledTasks))
-		// Recover by returning original tasks
-		log.Printf("[DIAGNOSTIC] [AGENT-SCHEDULE-RECOVER] Recovering by returning original tasks to prevent task loss")
 		return tasks
 	}
 
-	// [DEBUG] About to record performance
 	// Record performance
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-PERF-BEFORE] About to record performance")
 	algType := a.getAlgorithmType(algorithm)
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-PERF-TYPE] Algorithm type: %s", algType)
 	a.algorithmManager.RecordPerformance(algType, nodeManager, scheduledTasks)
-	// [DEBUG] Performance recorded
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-PERF-AFTER] Performance recorded")
 
 	a.stats.SuccessfulRuns++
-	// [DEBUG] Success recorded
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-SUCCESS] Scheduling successful: SuccessfulRuns=%d", a.stats.SuccessfulRuns)
 
-	// [DEBUG] About to return
-	log.Printf("[DEBUG] [AGENT-SCHEDULE-EXIT] Agent.ScheduleTasks returning %d tasks", len(scheduledTasks))
 	return scheduledTasks
 }
 
@@ -256,7 +206,27 @@ func (a *Agent) UpdateRewardWeights(weights config.RewardWeights) error {
 		return fmt.Errorf("failed to update reward weights: %w", err)
 	}
 
-	log.Printf("Agent reward weights updated successfully")
+	return nil
+}
+
+// UpdateActiveProfile updates the active profile in the multi-objective calculator
+func (a *Agent) UpdateActiveProfile(profileName string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.isEnabled {
+		return fmt.Errorf("agent is disabled")
+	}
+
+	if a.algorithmManager == nil {
+		return fmt.Errorf("algorithm manager not initialized")
+	}
+
+	// Update active profile in algorithm manager
+	if err := a.algorithmManager.UpdateActiveProfile(profileName); err != nil {
+		return fmt.Errorf("failed to update active profile: %w", err)
+	}
+
 	return nil
 }
 
@@ -355,7 +325,6 @@ func (a *Agent) SetLearningMode(enabled bool) error {
 	a.algorithmManager.SetLearningMode(enabled)
 	a.stats.IsLearning = enabled
 
-	log.Printf("Agent learning mode set to: %v", enabled)
 	return nil
 }
 
@@ -380,7 +349,6 @@ func (a *Agent) Start() error {
 		return fmt.Errorf("agent is disabled")
 	}
 
-	log.Printf("RL Agent started")
 	return nil
 }
 
@@ -399,7 +367,6 @@ func (a *Agent) Stop() {
 	}
 
 	a.isEnabled = false
-	log.Printf("RL Agent stopped gracefully")
 }
 
 // ProcessTaskCompletion processes task completion for RL experience collection
@@ -411,33 +378,20 @@ func (a *Agent) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionR
 
 // ProcessTaskCompletionWithNodeStatus processes task completion with node status from completion report
 func (a *Agent) ProcessTaskCompletionWithNodeStatus(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
-	fmt.Printf("[DEBUG] [AGENT-COMPLETE-ENTRY] ProcessTaskCompletionWithNodeStatus called: TaskID=%s, QueueLength=%d, HasNodeStatus=%t\n", 
-		report.TaskId, queueLength, nodeStatus != nil)
-	logger.GetLogger().Infof("[AGENT-COMPLETE-ENTRY] ProcessTaskCompletionWithNodeStatus: TaskID=%s, QueueLength=%d, HasNodeStatus=%t", 
-		report.TaskId, queueLength, nodeStatus != nil)
-	
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if !a.isEnabled || a.algorithmManager == nil {
-		fmt.Printf("[DEBUG] [AGENT-COMPLETE-ERROR] Agent disabled or not initialized: TaskID=%s, Enabled=%t, Manager=%t\n", 
-			report.TaskId, a.isEnabled, a.algorithmManager != nil)
 		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] Agent disabled or not initialized: TaskID=%s, Enabled=%t, Manager=%t", 
 			report.TaskId, a.isEnabled, a.algorithmManager != nil)
 		return fmt.Errorf("agent is disabled or not initialized")
 	}
 
 	// Delegate to algorithm manager with node status and actual queue length from completion report
-	fmt.Printf("[DEBUG] [AGENT-COMPLETE-CALL] Calling algorithmManager.ProcessTaskCompletion: TaskID=%s\n", report.TaskId)
 	err := a.algorithmManager.ProcessTaskCompletion(task, report, nodeStatus, queueLength)
 	if err != nil {
-		fmt.Printf("[DEBUG] [AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: TaskID=%s, Error=%v\n", 
-			report.TaskId, err)
 		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: TaskID=%s, Error=%v", 
 			report.TaskId, err)
-	} else {
-		fmt.Printf("[DEBUG] [AGENT-COMPLETE-SUCCESS] algorithmManager.ProcessTaskCompletion succeeded: TaskID=%s\n", report.TaskId)
-		logger.GetLogger().Infof("[AGENT-COMPLETE-SUCCESS] algorithmManager.ProcessTaskCompletion succeeded: TaskID=%s", report.TaskId)
 	}
 	return err
 }

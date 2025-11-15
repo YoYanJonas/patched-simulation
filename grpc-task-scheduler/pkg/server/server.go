@@ -137,16 +137,10 @@ func (s *Server) Start() error {
 	logger.GetLogger().Info("[SCHEDULER-SERVER-START] Scheduler gRPC server ready to accept connections")
 	logger.GetLogger().Infof("[SCHEDULER-SERVER-LISTEN] Starting gRPC server on %s", addr)
 
-	// [DEBUG] About to start gRPC server
-	logger.GetLogger().Infof("[DEBUG] [SERVER-START-GRPC-BEFORE] About to start gRPC server (blocking call)")
 	// Start gRPC server (blocking call)
 	if err := s.grpcServer.Serve(listener); err != nil {
-		// [DEBUG] gRPC server failed
-		logger.GetLogger().Errorf("[DEBUG] [SERVER-START-GRPC-ERROR] gRPC server failed: %v", err)
 		return fmt.Errorf("gRPC server failed: %w", err)
 	}
-	// [DEBUG] gRPC server stopped (should not reach here normally)
-	logger.GetLogger().Infof("[DEBUG] [SERVER-START-GRPC-AFTER] gRPC server stopped")
 
 	return nil
 }
@@ -225,28 +219,28 @@ func (s *Server) LoadModelOnStartup() error {
 	if err != nil {
 		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Failed to load persisted model: %v", err)
 		logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Starting with fresh model (no previous learning data)")
-		return nil // Don't fail startup, just start fresh
-	}
-
-	// Verify model was actually loaded (not invalid)
-	// Check if Q-table has data
-	currentAlg := algorithmManager.GetCurrentAlgorithm()
-	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
-		qTable := qlAlg.GetQTable()
-		if len(qTable) == 0 {
-			logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Loaded model has empty Q-table, starting fresh")
-			// Model was loaded but is invalid - this shouldn't happen if validation works
-			// But add as safety check
-		} else {
-			logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Model loaded successfully: Q-table size=%d", len(qTable))
+		// Continue to set dirty callback even when starting fresh
+	} else {
+		// Verify model was actually loaded (not invalid)
+		// Check if Q-table has data
+		currentAlg := algorithmManager.GetCurrentAlgorithm()
+		if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+			qTable := qlAlg.GetQTable()
+			if len(qTable) == 0 {
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Loaded model has empty Q-table, starting fresh")
+				// Model was loaded but is invalid - this shouldn't happen if validation works
+				// But add as safety check
+			} else {
+				logger.GetLogger().Infof("[SCHEDULER-MODEL-LOAD] Model loaded successfully: Q-table size=%d", len(qTable))
+			}
 		}
+		logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Model loaded and applied successfully")
 	}
-
-	logger.GetLogger().Info("[SCHEDULER-MODEL-LOAD] Model loaded and applied successfully")
 
 	// Wire up dirty flag callback for Q-learning scheduler
 	// This ensures model is marked as dirty when Q-table updates (lightweight, no I/O)
-	currentAlg = algorithmManager.GetCurrentAlgorithm()
+	// IMPORTANT: Set this callback regardless of whether model was loaded or not
+	currentAlg := algorithmManager.GetCurrentAlgorithm()
 	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
 		qlAlg.SetDirtyCallback(func() {
 			s.modelStorage.MarkDirty()

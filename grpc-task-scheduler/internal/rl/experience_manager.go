@@ -330,8 +330,6 @@ func (em *ExperienceManager) checkQValueStability(stateKey string, actionType Ac
 
 	if !wasStable && stability.IsStable {
 		stability.StableEpisode = em.qLearningScheduler.GetCurrentEpisode()
-		fmt.Printf("State-Action pair %s:%v marked as stable (variance: %.6f)\n",
-			stateKey, actionType, variance)
 	}
 }
 
@@ -392,8 +390,6 @@ func (em *ExperienceManager) CleanupStableExperiences() int {
 	em.updateMemoryUsage()
 
 	if cleaned > 0 {
-		fmt.Printf("Stability-based cleanup: Removed %d stable experiences, kept %d\n",
-			cleaned, len(em.completeExperiences))
 	}
 
 	return cleaned
@@ -455,8 +451,6 @@ func (em *ExperienceManager) enforceExperienceLimit() int {
 	em.updateMemoryUsage()
 
 	if removed > 0 {
-		fmt.Printf("Experience limit enforcement: Removed %d old experiences, kept %d\n",
-			removed, len(em.completeExperiences))
 	}
 
 	return removed
@@ -464,10 +458,9 @@ func (em *ExperienceManager) enforceExperienceLimit() int {
 
 // Trigger memory cleanup when limits are exceeded
 func (em *ExperienceManager) triggerMemoryCleanup() {
-	fmt.Println("Memory limit exceeded, triggering emergency cleanup...")
 
 	// Try stability-based cleanup first
-	cleaned := em.CleanupStableExperiences()
+	em.CleanupStableExperiences()
 
 	// If still over limit, enforce hard limit
 	if len(em.completeExperiences) > em.config.MaxExperiences {
@@ -480,7 +473,6 @@ func (em *ExperienceManager) triggerMemoryCleanup() {
 		go em.emergencyMemoryCleanup() // Run in background to avoid deadlock
 	}
 
-	fmt.Printf("Emergency cleanup completed: %d experiences cleaned\n", cleaned)
 }
 
 // updateMemoryUsage calculates memory usage with optimized estimation
@@ -514,7 +506,6 @@ func (em *ExperienceManager) updateMemoryUsage() {
 
 // Emergency memory cleanup when bounds are exceeded
 func (em *ExperienceManager) emergencyMemoryCleanup() {
-	fmt.Println("EMERGENCY: Aggressive memory cleanup initiated...")
 
 	em.mu.Lock()
 	defer em.mu.Unlock()
@@ -546,25 +537,12 @@ func (em *ExperienceManager) emergencyMemoryCleanup() {
 	em.cleanupUnusedQValueHistoryUnsafe()
 
 	em.updateMemoryUsageUnsafe()
-	fmt.Printf("Emergency cleanup completed: Memory usage now %d KB\n", em.memoryUsageBytes/1024)
 }
 
 func (em *ExperienceManager) Cleanup() {
-	// [DEBUG] Entry point for Cleanup
-	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-ENTRY] Cleanup called: ConfigEnabled=%t, IncompleteCount=%d, CompleteCount=%d\n",
-		em.config.Enabled, len(em.incompleteExperiences), len(em.completeExperiences))
-	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-ACQUIRED] Lock acquired\n")
 	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-RELEASE] Releasing Lock\n")
 		em.mu.Unlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-LOCK-RELEASED] Lock released\n")
 	}()
 
 	now := time.Now()
@@ -584,8 +562,6 @@ func (em *ExperienceManager) Cleanup() {
 				taskID, age.String(), exp.Timeout.Format(time.RFC3339), timeUntilTimeout.String())
 		} else {
 			activeTaskIDs = append(activeTaskIDs, taskID)
-			logger.GetLogger().Debugf("[EXP-MGR-CLEANUP-TIMEOUT] Active experience: TaskID=%s, Age=%s, TimeUntilTimeout=%s",
-				taskID, age.String(), timeUntilTimeout.String())
 		}
 	}
 	
@@ -607,85 +583,30 @@ func (em *ExperienceManager) Cleanup() {
 		logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Cleaned up %d timed-out incomplete experiences: Before=%d, After=%d, RemovedTaskIDs=%v",
 			cleanedTimeout, beforeCleanupCount, afterCleanupCount, expiredTaskIDs)
 	} else {
-		logger.GetLogger().Debugf("[EXP-MGR-CLEANUP-TIMEOUT] No timed-out incomplete experiences to clean: Total=%d", beforeCleanupCount)
 	}
 
 	// Scheduled cleanup based on episode intervals
 	if em.config.Enabled {
-		// [DEBUG] Memory management enabled
-		oldCounter := em.episodeCleanupCounter
 		em.episodeCleanupCounter++
-		// [DEBUG] Episode cleanup counter incremented
-		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-COUNTER] Episode cleanup counter: %d->%d, CleanupInterval=%d\n",
-			oldCounter, em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes {
-			// [DEBUG] Cleanup interval reached
-			fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-INTERVAL] Cleanup interval reached: Counter=%d >= Interval=%d, calling performScheduledCleanup\n",
-				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 			em.performScheduledCleanup()
 			em.episodeCleanupCounter = 0
 			em.lastCleanupTime = now
-			// [DEBUG] Scheduled cleanup performed
-			fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-INTERVAL-DONE] Scheduled cleanup performed, counter reset to 0, LastCleanupTime=%v\n",
-				em.lastCleanupTime)
-		} else {
-			// [DEBUG] Cleanup interval not reached yet
-			fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-INTERVAL-NOT-YET] Cleanup interval not reached: Counter=%d < Interval=%d\n",
-				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 		}
-	} else {
-		// [DEBUG] Memory management disabled
-		fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-DISABLED] Memory management disabled, skipping scheduled cleanup\n")
 	}
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [EXP-MGR-CLEANUP-EXIT] Cleanup returning: IncompleteCount=%d, CompleteCount=%d\n",
-		len(em.incompleteExperiences), len(em.completeExperiences))
 }
 
 // Perform scheduled cleanup
 func (em *ExperienceManager) performScheduledCleanup() {
-	// [DEBUG] Entry point for performScheduledCleanup
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-ENTRY] performScheduledCleanup called: CleanupInterval=%d episodes\n",
-		em.config.CleanupIntervalEpisodes)
-	fmt.Printf("Performing scheduled cleanup (every %d episodes)...\n",
-		em.config.CleanupIntervalEpisodes)
-
-	// [DEBUG] About to cleanup stable experiences
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-STABLE-BEFORE] About to cleanup stable experiences\n")
-	cleanedStable := em.CleanupStableExperiences()
-	// [DEBUG] Stable experiences cleaned
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-STABLE-AFTER] Cleaned %d stable experiences\n", cleanedStable)
-
-	// [DEBUG] About to enforce experience limit
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-LIMIT-BEFORE] About to enforce experience limit: CurrentCount=%d, MaxExperiences=%d\n",
-		len(em.completeExperiences), em.config.MaxExperiences)
-	cleanedLimit := em.enforceExperienceLimit()
-	// [DEBUG] Experience limit enforced
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-LIMIT-AFTER] Cleaned %d experiences due to limit\n", cleanedLimit)
+	em.CleanupStableExperiences()
+	em.enforceExperienceLimit()
 
 	// Clean up old Q-value history for unused state-action pairs
-	// [DEBUG] About to cleanup unused Q-value history
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-QHIST-BEFORE] About to cleanup unused Q-value history\n")
 	em.cleanupUnusedQValueHistory()
-	// [DEBUG] Q-value history cleaned
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-QHIST-AFTER] Unused Q-value history cleaned\n")
 
-	// [DEBUG] About to update memory usage
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-MEMORY-BEFORE] About to update memory usage\n")
 	em.updateMemoryUsage()
-	// [DEBUG] Memory usage updated
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-MEMORY-AFTER] Memory usage updated: %d KB\n", em.memoryUsageBytes/1024)
 
-	fmt.Printf("Scheduled cleanup completed: %d stable + %d limit-based experiences cleaned\n",
-		cleanedStable, cleanedLimit)
-	fmt.Printf("Memory usage: %d KB, Complete experiences: %d, Q-value entries: %d\n",
-		em.memoryUsageBytes/1024, len(em.completeExperiences), em.getQValueEntryCount())
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [EXP-MGR-SCHEDULED-CLEANUP-EXIT] performScheduledCleanup returning: CleanedStable=%d, CleanedLimit=%d, CompleteExperiences=%d\n",
-		cleanedStable, cleanedLimit, len(em.completeExperiences))
 }
 
 // Clean up unused Q-value history
@@ -784,31 +705,14 @@ func (em *ExperienceManager) GetStats() map[string]interface{} {
 
 // FIXED MarkEpisodeComplete - compilation errors resolved
 func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
-	// [DEBUG] Entry point for MarkEpisodeComplete
-	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-ENTRY] MarkEpisodeComplete called: Episode=%d, ConfigEnabled=%t, TotalExperiences=%d\n",
-		episodeNumber, em.config.Enabled, len(em.completeExperiences))
-	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-BEFORE] About to acquire Lock\n")
 	em.mu.Lock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-ACQUIRED] Lock acquired\n")
 	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-RELEASE] Releasing Lock\n")
 		em.mu.Unlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-LOCK-RELEASED] Lock released\n")
 	}()
 
-	fmt.Printf("ExperienceManager: Episode %d marked as complete.\n", episodeNumber)
 
 	// Episode completion triggers cleanup and stability updates
 	if em.config.Enabled {
-		// [DEBUG] Memory management enabled
-		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-ENABLED] Memory management enabled, updating experience ages: TotalExperiences=%d\n",
-			len(em.completeExperiences))
-		
 		// Update ages of all complete experiences
 		updatedCount := 0
 		stableCount := 0
@@ -835,34 +739,16 @@ func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
 				}
 			}
 		}
-		// [DEBUG] Experience ages updated
-		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-AGES] Experience ages updated: UpdatedCount=%d, StableCount=%d\n",
-			updatedCount, stableCount)
 
 		// Check if cleanup should be triggered
-		// [DEBUG] Check cleanup counter
-		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-CLEANUP-CHECK] Cleanup counter: %d, CleanupInterval=%d\n",
-			em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes-1 {
 			// Will trigger on next Cleanup() call
-			// [DEBUG] Cleanup scheduled
-			fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-CLEANUP-SCHEDULED] Episode %d: Cleanup scheduled for next interval\n", episodeNumber)
-			fmt.Printf("Episode %d: Cleanup scheduled for next interval\n", episodeNumber)
-		} else {
-			// [DEBUG] Cleanup not scheduled yet
-			fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-CLEANUP-NOT-YET] Cleanup not scheduled yet: Counter=%d < Threshold=%d\n",
-				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes-1)
 		}
-	} else {
-		// [DEBUG] Memory management disabled
-		fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-DISABLED] Memory management disabled, skipping age updates\n")
 	}
 	
 	logger.GetLogger().Infof("[EXP-MGR-EPISODE] MarkEpisodeComplete completed: Episode=%d, IncompleteExperiences=%d, CompleteExperiences=%d, CleanupCounter=%d",
 		episodeNumber, len(em.incompleteExperiences), len(em.completeExperiences), em.episodeCleanupCounter)
 
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [EXP-MGR-EPISODE-EXIT] MarkEpisodeComplete returning: Episode=%d\n", episodeNumber)
 }
 
 // Unsafe version for internal use (already holding mutex)

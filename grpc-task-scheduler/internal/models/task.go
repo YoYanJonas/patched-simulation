@@ -158,7 +158,6 @@ func (te *TaskEntry) GetExecutionTimeMs() int64 {
 
 // Later Feature: deadline-aware disabled
 func (te *TaskEntry) GetDeadline() int64 {
-	// [DEBUG] Verify deadline always returns 0
 	if te.Task != nil && te.Task.Deadline != 0 {
 		logger.GetLogger().Warnf("[DEADLINE-DISABLED] Task %s has non-zero deadline %d, but GetDeadline() returns 0", te.Task.TaskId, te.Task.Deadline)
 	}

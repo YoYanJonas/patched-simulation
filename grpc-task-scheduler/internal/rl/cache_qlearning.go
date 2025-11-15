@@ -83,73 +83,45 @@ func NewCacheQLearningScheduler(cfg CacheRLConfig, weights CacheRewardWeights) *
 
 // SelectAction selects cache action using epsilon-greedy policy
 func (cql *CacheQLearningScheduler) SelectAction(state *CacheStateFeatures) Action {
-	// [DEBUG] Entry point for CacheQLearning SelectAction
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-ENTRY] CacheQLearning.SelectAction called\n")
 	
-	// [DEBUG] About to acquire lock
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-LOCK-BEFORE] About to acquire lock\n")
 	cql.mu.Lock()
-	// [DEBUG] Lock acquired
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-LOCK-ACQUIRED] Lock acquired\n")
 	defer func() {
-		// [DEBUG] About to release lock
-		fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-LOCK-RELEASE] Releasing lock\n")
 		cql.mu.Unlock()
-		// [DEBUG] Lock released
-		fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-LOCK-RELEASED] Lock released\n")
 	}()
 
-	// [DEBUG] Getting state key
 	stateKey := state.GetStateKey()
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-STATE-KEY] State key: %s\n", stateKey)
 	
-	// [DEBUG] Getting cache actions (two-action design)
 	cacheActions := GetAllCacheActions()
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-ACTIONS] Available cache actions: %d\n", len(cacheActions))
 
-	// [DEBUG] Epsilon-greedy selection
 	// Epsilon-greedy: explore with probability epsilon
 	explorationRate := cql.config.ExplorationRate
 	randomValue := cql.rng.Float64()
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EPSILON] ExplorationRate=%.3f, RandomValue=%.3f\n", explorationRate, randomValue)
 	
 	if randomValue < explorationRate {
-		// [DEBUG] Exploring
-		fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXPLORE] Exploring: choosing random action\n")
 		// Explore: random action
 		randomIdx := cql.rng.Intn(len(cacheActions))
 		cql.lastState = state
 		cql.lastAction = cacheActions[randomIdx]
 		cql.lastTimestamp = time.Now()
-		// [DEBUG] Random action selected
-		fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXPLORE-DONE] Random action selected: Type=%d, Index=%d\n", cacheActions[randomIdx].Type, randomIdx)
 		return cacheActions[randomIdx]
 	}
 
-	// [DEBUG] Exploiting
 	// Exploit: select best action from Q-table
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXPLOIT] Exploiting: selecting best action from Q-table\n")
 	bestAction := cacheActions[0]
 	bestQValue := cql.getQValue(stateKey, bestAction.Type)
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXPLOIT-INIT] Initial best action: Type=%d, QValue=%.3f\n", bestAction.Type, bestQValue)
 
-	for i, action := range cacheActions[1:] {
+	for _, action := range cacheActions[1:] {
 		qValue := cql.getQValue(stateKey, action.Type)
 		if qValue > bestQValue {
 			bestQValue = qValue
 			bestAction = action
-			fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXPLOIT-UPDATE] New best action: Type=%d, QValue=%.3f (index %d)\n", action.Type, qValue, i+1)
 		}
 	}
 
 	cql.lastState = state
 	cql.lastAction = bestAction
 	cql.lastTimestamp = time.Now()
-	// [DEBUG] Best action selected
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXPLOIT-DONE] Best action selected: Type=%d, QValue=%.3f\n", bestAction.Type, bestQValue)
 	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [CACHE-QLEARNING-SELECT-EXIT] CacheQLearning.SelectAction returning: Type=%d\n", bestAction.Type)
 	return bestAction
 }
 

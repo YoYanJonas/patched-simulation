@@ -3,7 +3,6 @@ package rl
 import (
 	"math"
 	"scheduler-grpc-server/pkg/config"
-	"scheduler-grpc-server/pkg/logger"
 	"time"
 )
 
@@ -112,8 +111,6 @@ func (rc *RewardCalculator) calculateMetrics(
 				cpuUtil := nodeStatusTracker.GetAvgCPUUtilization()
 				memUtil := nodeStatusTracker.GetAvgMemoryUtilization()
 				metrics.ResourceEff = (cpuUtil + memUtil) / 2.0
-				logger.GetLogger().Debugf("[REWARD-CALC-METRICS] Using NodeStatusTracker for ResourceEff: CPU=%.3f, Mem=%.3f, ResourceEff=%.3f",
-					cpuUtil, memUtil, metrics.ResourceEff)
 			}
 		}
 	}
@@ -131,8 +128,6 @@ func (rc *RewardCalculator) calculateMetrics(
 		systemLoad := nodeStatusTracker.GetSystemLoad()
 		// Energy efficiency is inversely related to system load (lower load = higher efficiency)
 		metrics.EnergyEfficiency = 1.0 - systemLoad
-		logger.GetLogger().Debugf("[REWARD-CALC-METRICS] Using NodeStatusTracker for EnergyEfficiency: SystemLoad=%.3f, EnergyEff=%.3f",
-			systemLoad, metrics.EnergyEfficiency)
 	} else if state != nil {
 		// Fallback: use state metrics if tracker not available
 		metrics.EnergyEfficiency = 1.0 - state.SystemLoad
@@ -306,9 +301,7 @@ func (rc *RewardCalculator) calculateFairness(tasks []TaskEntry) float64 {
 
 // Later Feature: deadline-aware miss rate calculation disabled
 func (rc *RewardCalculator) calculateDeadlineMissRate(tasks []TaskEntry) float64 {
-	// [DEBUG] Verify deadline miss rate always returns 0.0
 	if len(tasks) > 0 {
-		logger.GetLogger().Debugf("[DEADLINE-DISABLED] calculateDeadlineMissRate: %d tasks, returning 0.0 (deadline disabled)", len(tasks))
 	}
 	return 0.0 // No misses (deadline-aware disabled)
 }

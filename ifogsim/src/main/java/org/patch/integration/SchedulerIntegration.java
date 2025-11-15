@@ -121,8 +121,6 @@ public class SchedulerIntegration {
 
         // Check scheduler client availability
         if (schedulerClient == null) {
-            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Scheduler client is NULL",
-                    deviceId, sendAttemptCount));
             logger.severe("Scheduler client is null - cannot send tasks to scheduler");
             return;
         }
@@ -130,10 +128,6 @@ public class SchedulerIntegration {
         int queueSize = unscheduledQueue.size();
         if (queueSize == 0) {
             // Only log first few empty queue cases to avoid log bloat
-            if (sendAttemptCount <= 5) {
-                System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Unscheduled queue is empty",
-                        deviceId, sendAttemptCount));
-            }
             logger.fine("Unscheduled queue is empty - nothing to send");
             return;
         }
@@ -148,7 +142,6 @@ public class SchedulerIntegration {
             return;
         }
 
-        // [DEBUG] Log sending tasks to scheduler
         double currentTime = CloudSim.clock();
         System.out.println(String.format(
                 "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Sending %d tasks to scheduler server (unscheduled queue size: %d, attempt: %d)",
@@ -162,7 +155,6 @@ public class SchedulerIntegration {
         }
         logger.info("Sending " + tasksToSend.size() + " tasks to scheduler");
 
-        // [DEBUG] Log task details being sent
         for (UnscheduledQueue.TaskInfo taskInfo : tasksToSend) {
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND] Time: %.2f - FogNode (ID:%d) - Task details: ID=%d, CPU=%d, Mem=%d, Out=%d",
@@ -173,8 +165,6 @@ public class SchedulerIntegration {
 
         // Check if scheduler service is available
         if (!schedulerClient.isConnected()) {
-            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: Scheduler client NOT CONNECTED",
-                    deviceId, sendAttemptCount));
             logger.warning("Scheduler client not connected - cannot send tasks");
             fallbackToScheduledQueue(tasksToSend);
             return;
@@ -206,7 +196,6 @@ public class SchedulerIntegration {
             logger.info("Calling schedulerClient.addTasksToQueue with " + protoTasks.size() + " tasks (queue_size="
                     + totalQueueSize + ")");
 
-            // [DEBUG] Log before gRPC call - ENHANCED with proto details
             double sendTime = CloudSim.clock();
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND-START] Time: %.2f - FogNode (ID:%d) - PREPARING gRPC call to scheduler.addTasksToQueue",
@@ -298,7 +287,6 @@ public class SchedulerIntegration {
                     "[FLOW-FOG-SCHEDULER-SEND-ASYNC] Time: %.2f - FogNode (ID:%d) - Sent %d async scheduling requests, waiting for responses via events",
                     CloudSim.clock(), deviceId, protoTasks.size()));
             
-            // [DEBUG] Log after async calls initiated
             double receiveTime = CloudSim.clock();
             System.out.println(String.format(
                     "[FLOW-FOG-SCHEDULER-SEND-ASYNC-INITIATED] Time: %.2f - FogNode (ID:%d) - Initiated %d async scheduling requests (responses will arrive via events)",
@@ -324,8 +312,6 @@ public class SchedulerIntegration {
             // processSchedulerResponses() is no longer called here - handled in event handler
 
         } catch (Exception e) {
-            System.out.println(String.format("[SCHEDULER-SEND] Device %d - Attempt %d: EXCEPTION - %s",
-                    deviceId, sendAttemptCount, e.getMessage()));
             logger.severe("Failed to send tasks to scheduler: " + e.getMessage());
             e.printStackTrace();
             // Fallback: move tasks to scheduled queue without scheduler decision
@@ -362,7 +348,6 @@ public class SchedulerIntegration {
             UnscheduledQueue.TaskInfo taskInfo = tasks.get(i);
             Tuple tuple = taskInfo.getTuple();
 
-            // [DEBUG] Log tuple details before conversion
             System.out.println(String.format(
                     "[FLOW-FOG-PROTO-CONVERT-TUPLE] Time: %.2f - FogNode (ID:%d) - Task %d/%d: Tuple ID=%d, Type=%s, CPU=%d, Mem=%d",
                     currentTime, deviceId, i + 1, tasks.size(), tuple.getCloudletId(), tuple.getTupleType(),
@@ -490,7 +475,6 @@ public class SchedulerIntegration {
 
             protoTasks.add(protoTask);
 
-            // [DEBUG] Log proto task creation
             System.out.println(String.format(
                     "[FLOW-FOG-PROTO-CONVERT-SUCCESS] Time: %.2f - FogNode (ID:%d) - Created proto task: TaskID=%s, Type=%s, CPU=%d, Mem=%d, Priority=%d, MetadataSize=%d",
                     currentTime, deviceId, protoTask.getTaskId(), protoTask.getTaskType().toString(),
@@ -569,7 +553,6 @@ public class SchedulerIntegration {
         logger.info("Processing scheduler responses for " + responses.size()
                 + " tasks (tasks already removed from unscheduled queue)");
 
-        // [DEBUG] Log all responses
         System.out.println(String.format(
                 "[FLOW-SCHEDULER-RESPONSE-PROCESS] Time: %.2f - FogNode (ID:%d) - Processing %d scheduler responses",
                 currentTime, deviceId, responses.size()));
@@ -579,7 +562,6 @@ public class SchedulerIntegration {
             boolean isCached = taskResponse.getIsCachedTask();
             CacheAction cacheAction = taskResponse.getCacheAction();
 
-            // [DEBUG] Log response details
             System.out.println(String.format(
                     "[FLOW-SCHEDULER-RESPONSE-DETAIL] Time: %.2f - FogNode (ID:%d) - Task %s: Success=%s, Cached=%s, Action=%s, Position=%d",
                     currentTime, deviceId, taskId, taskResponse.getSuccess(), isCached,

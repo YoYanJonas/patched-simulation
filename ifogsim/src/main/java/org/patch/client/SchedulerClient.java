@@ -181,7 +181,6 @@ public class SchedulerClient implements AutoCloseable {
 
             logger.info(String.format("[IFOGSIM-SCHED-CALL] Calling gRPC addTaskToQueue: TaskID=%s", task.getTaskId()));
 
-            // [DEBUG] Enhanced logging before gRPC call
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-CALL-START] Time: %.2f - SchedulerClient - Preparing gRPC AddTaskToQueue request for TaskID=%s",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
@@ -209,7 +208,6 @@ public class SchedulerClient implements AutoCloseable {
 
             AddTaskToQueueRequest request = requestBuilder.build();
 
-            // [DEBUG] Log just before gRPC call
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-CALL-NOW] Time: %.2f - SchedulerClient - EXECUTING gRPC call: addTaskToQueue for TaskID=%s (BLOCKING)",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
@@ -287,7 +285,6 @@ public class SchedulerClient implements AutoCloseable {
                 return createFallbackAddTaskToQueueResponse(task, availableNodes);
             }
 
-            // [DEBUG] Log immediately after gRPC response
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-RESPONSE-RECEIVED] Time: %.2f - SchedulerClient - gRPC call COMPLETED for TaskID=%s (retries=%d)",
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), retryAttempt));
@@ -303,7 +300,6 @@ public class SchedulerClient implements AutoCloseable {
                     org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getPriority(),
                     task.getCpuRequirement(), task.getMemoryRequirement()));
 
-            // [DEBUG] Enhanced response logging
             double respTime = org.cloudbus.cloudsim.core.CloudSim.clock();
             System.out.println(String.format(
                     "[FLOW-GRPC-CLIENT-RESPONSE-DETAILS] Time: %.2f - SchedulerClient - Response for TaskID=%s: Success=%s, Position=%d, Wait=%dms, Cached=%s, CacheAction=%s, CacheKey=%s, Duration=%dms",

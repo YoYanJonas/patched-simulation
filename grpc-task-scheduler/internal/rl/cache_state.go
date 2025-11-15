@@ -65,92 +65,50 @@ func ExtractCacheStateFeatures(
 	systemLoad float64,
 	cacheTTLHours int,
 ) *CacheStateFeatures {
-	// [DEBUG] Entry point for ExtractCacheStateFeatures
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-ENTRY] ExtractCacheStateFeatures called: TaskID=%s, Fingerprint=%s, HitRate=%.3f, Load=%.3f\n",
-		task.TaskId, fingerprint, hitRate, systemLoad)
-	
 	state := &CacheStateFeatures{
 		keyDirty: true,
 	}
-	// [DEBUG] State struct created
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-CREATE] CacheStateFeatures struct created\n")
 
-	// [DEBUG] 1. TaskFingerprintPrefix
 	// 1. TaskFingerprintPrefix (first 8 chars)
 	if len(fingerprint) >= 8 {
 		state.TaskFingerprintPrefix = fingerprint[:8]
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-FP] Using first 8 chars: %s\n", state.TaskFingerprintPrefix)
 	} else {
 		state.TaskFingerprintPrefix = fingerprint
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-FP] Using full fingerprint: %s\n", state.TaskFingerprintPrefix)
 	}
 
-	// [DEBUG] 2. SystemLoadCategory
 	// 2. SystemLoadCategory (from node manager)
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-LOAD] Categorizing system load: %.3f\n", systemLoad)
 	state.SystemLoadCategory = categorizeSystemLoad(systemLoad)
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-LOAD-DONE] SystemLoadCategory: %s\n", state.SystemLoadCategory)
 
-	// [DEBUG] 3. QueueLengthCategory
 	// 3. QueueLengthCategory (from QueueContext)
 	totalQueueSize := int32(0)
 	if queueContext != nil {
 		totalQueueSize = queueContext.TotalQueueSize
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-QUEUE] QueueContext provided: TotalQueueSize=%d\n", totalQueueSize)
 	} else {
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-QUEUE] QueueContext is nil, using default: 0\n")
 	}
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-QUEUE-CAT] Categorizing queue length: %d\n", totalQueueSize)
 	state.QueueLengthCategory = categorizeQueueLength(int(totalQueueSize))
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-QUEUE-CAT-DONE] QueueLengthCategory: %s\n", state.QueueLengthCategory)
 
-	// [DEBUG] 4. CacheHitRateCategory
 	// 4. CacheHitRateCategory (from cache manager)
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-HITRATE] Categorizing cache hit rate: %.3f\n", hitRate)
 	state.CacheHitRateCategory = categorizeCacheHitRate(hitRate)
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-HITRATE-DONE] CacheHitRateCategory: %s\n", state.CacheHitRateCategory)
 
-	// [DEBUG] 5-7. Cache entry state
 	// 5. TaskFrequencyCategory (from entrySeenCount)
 	// 6. CacheExists
 	// 7. CacheAgeCategory
 	if entryFirstSeen > 0 {
-		// [DEBUG] Cache entry exists
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-ENTRY] Cache entry exists: FirstSeen=%d, SeenCount=%d\n", entryFirstSeen, entrySeenCount)
 		state.CacheExists = true
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-FREQ] Categorizing task frequency: SeenCount=%d\n", entrySeenCount)
 		state.TaskFrequencyCategory = categorizeTaskFrequency(entrySeenCount)
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-FREQ-DONE] TaskFrequencyCategory: %s\n", state.TaskFrequencyCategory)
 		
-		// [DEBUG] Calculate cache age
 		// Calculate cache age from FirstSeen
 		now := time.Now()
 		firstSeen := time.Unix(entryFirstSeen, 0)
 		age := now.Sub(firstSeen)
 		cacheTTL := time.Duration(cacheTTLHours) * time.Hour
 		ttlRatio := float64(age) / float64(cacheTTL)
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-AGE] Cache age: Age=%v, TTL=%v, Ratio=%.3f\n", age, cacheTTL, ttlRatio)
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-AGE-CAT] Categorizing cache age: Ratio=%.3f\n", ttlRatio)
 		state.CacheAgeCategory = CategorizeCacheAge(ttlRatio)
-		// [DEBUG] Cache age category set
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-AGE-CAT-DONE] CacheAgeCategory: %s\n", state.CacheAgeCategory)
 	} else {
-		// [DEBUG] No cache entry
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-NO-ENTRY] No cache entry: FirstSeen=%d\n", entryFirstSeen)
 		state.CacheExists = false
 		state.TaskFrequencyCategory = "none"
 		state.CacheAgeCategory = "none"
-		fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-NO-ENTRY-DONE] Set defaults: CacheExists=false, Frequency=none, Age=none\n")
 	}
-	
-	// [DEBUG] Generate state key
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-KEY-BEFORE] About to generate state key\n")
-	stateKey := state.GetStateKey()
-	// [DEBUG] State key generated
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-KEY-AFTER] State key generated: %s\n", stateKey)
-	
-	// [DEBUG] About to return
-	fmt.Printf("[DEBUG] [CACHE-STATE-EXTRACT-EXIT] ExtractCacheStateFeatures returning state: Key=%s, CacheExists=%t\n", stateKey, state.CacheExists)
 
 	return state
 }
