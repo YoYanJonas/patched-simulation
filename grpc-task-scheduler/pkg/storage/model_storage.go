@@ -448,7 +448,7 @@ func (ms *ModelStorage) updateModelHealthIndicators(modelData *ModelData) {
 }
 
 // StartPeriodicSave starts background saving routine for both scheduling and cache models
-func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, cacheAgentGetter func() *rl.CacheAgent) {
+func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, algorithmManagerGetter func() *rl.AlgorithmManager, cacheAgentGetter func() *rl.CacheAgent) {
 	if !ms.config.Enabled || ms.config.SaveInterval <= 0 {
 		logger.GetLogger().Info("Periodic model saving disabled")
 		return
@@ -463,12 +463,35 @@ func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, cacheAgentGetter 
 		select {
 		case <-ticker.C:
 			if ms.dirty {
-				logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Periodic save triggered: dirty=true, calling saveModel()")
-				if err := ms.saveModel(); err != nil {
-					logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] Failed to save RL model (periodic): %v", err)
+				logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Periodic save triggered: dirty=true, calling SaveModel()")
+				// CRITICAL FIX: Call SaveModel() instead of saveModel() to ensure SaveQLearningAgent is called first
+				// This updates both ms.currentModel and ms.modelData with the latest Q-table
+				if algorithmManagerGetter != nil {
+					algorithmManager := algorithmManagerGetter()
+					if algorithmManager != nil {
+						if err := ms.SaveModel(algorithmManager); err != nil {
+							logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] Failed to save RL model (periodic): %v", err)
+						} else {
+							logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] RL model saved successfully (periodic)")
+							ms.dirty = false
+						}
+					} else {
+						logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Periodic save: Algorithm manager is nil, falling back to saveModel()")
+						if err := ms.saveModel(); err != nil {
+							logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] Failed to save RL model (periodic): %v", err)
+						} else {
+							logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] RL model saved successfully (periodic)")
+							ms.dirty = false
+						}
+					}
 				} else {
-					logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] RL model saved successfully (periodic)")
-					ms.dirty = false
+					logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Periodic save: Algorithm manager getter is nil, falling back to saveModel()")
+					if err := ms.saveModel(); err != nil {
+						logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] Failed to save RL model (periodic): %v", err)
+					} else {
+						logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] RL model saved successfully (periodic)")
+						ms.dirty = false
+					}
 				}
 			} else {
 				logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] Periodic save skipped: dirty=false")
@@ -490,10 +513,30 @@ func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, cacheAgentGetter 
 			// This ensures model is saved even if periodic save hasn't run yet
 			if ms.config.SaveOnShutdown {
 				logger.GetLogger().Info("Performing final RL model save on shutdown...")
-				if err := ms.saveModel(); err != nil {
-					logger.GetLogger().Errorf("Failed to save RL model on shutdown: %v", err)
+				// CRITICAL FIX: Call SaveModel() instead of saveModel() to ensure SaveQLearningAgent is called first
+				if algorithmManagerGetter != nil {
+					algorithmManager := algorithmManagerGetter()
+					if algorithmManager != nil {
+						if err := ms.SaveModel(algorithmManager); err != nil {
+							logger.GetLogger().Errorf("Failed to save RL model on shutdown: %v", err)
+						} else {
+							logger.GetLogger().Info("RL model saved successfully on shutdown")
+						}
+					} else {
+						logger.GetLogger().Warnf("Shutdown save: Algorithm manager is nil, falling back to saveModel()")
+						if err := ms.saveModel(); err != nil {
+							logger.GetLogger().Errorf("Failed to save RL model on shutdown: %v", err)
+						} else {
+							logger.GetLogger().Info("RL model saved successfully on shutdown")
+						}
+					}
 				} else {
-					logger.GetLogger().Info("RL model saved successfully on shutdown")
+					logger.GetLogger().Warnf("Shutdown save: Algorithm manager getter is nil, falling back to saveModel()")
+					if err := ms.saveModel(); err != nil {
+						logger.GetLogger().Errorf("Failed to save RL model on shutdown: %v", err)
+					} else {
+						logger.GetLogger().Info("RL model saved successfully on shutdown")
+					}
 				}
 			}
 			// Final cache save on shutdown (handled by SaveModelOnShutdown, but also here for safety)
@@ -515,9 +558,57 @@ func (ms *ModelStorage) StartPeriodicSave(ctx context.Context, cacheAgentGetter 
 
 // saveModel performs the actual file I/O (background operation)
 func (ms *ModelStorage) saveModel() error {
+	// CRITICAL DIAGNOSTIC: Check both modelData and currentModel
+	logger.GetLogger().Warnf("[MODEL-SAVE] saveModel() called: ========== CHECKING MODEL DATA SOURCES ==========")
+	
 	ms.mutex.RLock()
 	modelCopy := ms.modelData
 	ms.mutex.RUnlock()
+	
+	// Check modelData
+	if modelCopy == nil {
+		logger.GetLogger().Errorf("[MODEL-SAVE] ERROR: ms.modelData is NIL!")
+	} else {
+		if modelData, ok := modelCopy.(*ModelData); ok {
+			qTableSize := 0
+			if modelData.QLearningData != nil && modelData.QLearningData.QTable != nil {
+				qTableSize = len(modelData.QLearningData.QTable)
+			}
+			logger.GetLogger().Warnf("[MODEL-SAVE] ms.modelData: QTableSize=%d", qTableSize)
+		} else {
+			logger.GetLogger().Warnf("[MODEL-SAVE] ms.modelData is not *ModelData (type: %T)", modelCopy)
+		}
+	}
+	
+	// Check currentModel
+	if ms.currentModel == nil {
+		logger.GetLogger().Errorf("[MODEL-SAVE] ERROR: ms.currentModel is NIL!")
+	} else {
+		qTableSize := 0
+		if ms.currentModel.QLearningData != nil && ms.currentModel.QLearningData.QTable != nil {
+			qTableSize = len(ms.currentModel.QLearningData.QTable)
+		}
+		logger.GetLogger().Warnf("[MODEL-SAVE] ms.currentModel: QTableSize=%d", qTableSize)
+		
+		// CRITICAL: Check if they're different!
+		if modelCopy != nil {
+			if modelData, ok := modelCopy.(*ModelData); ok {
+				modelDataQTableSize := 0
+				if modelData.QLearningData != nil && modelData.QLearningData.QTable != nil {
+					modelDataQTableSize = len(modelData.QLearningData.QTable)
+				}
+				if modelDataQTableSize != qTableSize {
+					logger.GetLogger().Errorf("[MODEL-SAVE] CRITICAL MISMATCH: ms.modelData.QTableSize (%d) != ms.currentModel.QTableSize (%d)!", 
+						modelDataQTableSize, qTableSize)
+					logger.GetLogger().Errorf("[MODEL-SAVE] This means modelData and currentModel are out of sync!")
+					logger.GetLogger().Errorf("[MODEL-SAVE] saveModel() uses modelData (old), but SaveQLearningAgent updates currentModel (new)")
+					logger.GetLogger().Warnf("[MODEL-SAVE] Using currentModel instead of modelData for save...")
+					modelCopy = ms.currentModel // Use currentModel instead!
+				}
+			}
+		}
+	}
+	logger.GetLogger().Warnf("[MODEL-SAVE] ========== END MODEL DATA CHECK ==========")
 
 	// Create directory structure
 	modelDir := filepath.Join(ms.config.ModelsPath, ms.config.ModelName)
@@ -553,18 +644,26 @@ func (ms *ModelStorage) saveModel() error {
 		return fmt.Errorf("failed to rename temp RL model file: %w", err)
 	}
 
-	// Log RL-specific save details
-	if modelData, ok := modelCopy.(*ModelData); ok {
-		logger.GetLogger().Infof("[MODEL-SAVE] RL model saved successfully to: %s", currentPath)
-		logger.GetLogger().Infof("[MODEL-SAVE] Model details: Episodes=%d, Q-table=%v, MultiObj=%v, Experience=%v, Size=%d bytes",
-			modelData.Metadata.TrainingEps,
-			modelData.QLearningData != nil,
-			modelData.MultiObjectiveData != nil,
-			modelData.ExperienceBufferData != nil,
-			len(data))
-	} else {
-		logger.GetLogger().Infof("[MODEL-SAVE] Model saved successfully to: %s (Size=%d bytes)", currentPath, len(data))
-	}
+		// Log RL-specific save details
+		if modelData, ok := modelCopy.(*ModelData); ok {
+			qTableSizeInSaved := 0
+			if modelData.QLearningData != nil && modelData.QLearningData.QTable != nil {
+				qTableSizeInSaved = len(modelData.QLearningData.QTable)
+			}
+			logger.GetLogger().Warnf("[MODEL-SAVE] RL model saved successfully to: %s", currentPath)
+			logger.GetLogger().Warnf("[MODEL-SAVE] Model details: Episodes=%d, Q-table size=%d, MultiObj=%v, Experience=%v, Size=%d bytes",
+				modelData.Metadata.TrainingEps,
+				qTableSizeInSaved,
+				modelData.MultiObjectiveData != nil,
+				modelData.ExperienceBufferData != nil,
+				len(data))
+			
+			if qTableSizeInSaved == 0 {
+				logger.GetLogger().Errorf("[MODEL-SAVE] CRITICAL: Q-table size in saved model is 0! This is the root cause of empty Q-table in file!")
+			}
+		} else {
+			logger.GetLogger().Infof("[MODEL-SAVE] Model saved successfully to: %s (Size=%d bytes)", currentPath, len(data))
+		}
 
 	return nil
 }
@@ -714,9 +813,13 @@ func (ms *ModelStorage) createDefaultModel() *ModelData {
 }
 
 // SaveQLearningAgent saves Q-learning agent state to persistent storage
+// NOTE: This function assumes the caller already holds ms.mutex (e.g., SaveModel)
+// If called directly, caller must hold the lock
 func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
-	ms.mutex.Lock()
-	defer ms.mutex.Unlock()
+	// CRITICAL FIX: Don't lock here - SaveModel already holds the lock
+	// Locking here causes a deadlock when called from SaveModel
+	// ms.mutex.Lock()
+	// defer ms.mutex.Unlock()
 
 	if ms.currentModel == nil {
 		ms.currentModel = ms.createDefaultModel()
@@ -775,10 +878,44 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 		logger.GetLogger().Debugf("[SCHEDULER-MODEL-SAVE] Q-table is small (size=%d), saving anyway (early learning)", qTableSize)
 	}
 
+	// CRITICAL DIAGNOSTIC: Log complete Q-table structure BEFORE conversion
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] ========== Q-TABLE SAVE DIAGNOSTIC START ==========")
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] BEFORE CONVERSION: Original Q-table has %d states", len(originalQTable))
+	if len(originalQTable) > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Listing ALL states in original Q-table:")
+		stateIndex := 0
+		for stateKey, actions := range originalQTable {
+			stateIndex++
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+			for actionType, qValue := range actions {
+				actionName := ms.actionTypeToString(actionType)
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]     -> ActionType=%d (%s), QValue=%.6f", actionType, actionName, qValue)
+			}
+		}
+	} else {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] ERROR: Original Q-table is EMPTY (0 states) - nothing to convert!")
+	}
+
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Converting Q-table to string format: %d states", len(originalQTable))
 	convertedQTable := ms.convertQTableToStringFormat(originalQTable)
 	convertedQTableSize := len(convertedQTable)
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table conversion complete: InputStates=%d, OutputStates=%d", len(originalQTable), convertedQTableSize)
+	
+	// CRITICAL DIAGNOSTIC: Log complete converted Q-table structure AFTER conversion
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] AFTER CONVERSION: Converted Q-table has %d states", convertedQTableSize)
+	if convertedQTableSize > 0 {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Listing ALL states in converted Q-table:")
+		stateIndex := 0
+		for stateKey, actions := range convertedQTable {
+			stateIndex++
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+			for actionStr, qValue := range actions {
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]     -> Action='%s', QValue=%.6f", actionStr, qValue)
+			}
+		}
+	} else {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] ERROR: Converted Q-table is EMPTY (0 states) after conversion!")
+	}
 	
 	// Validate conversion result
 	if len(originalQTable) > 0 && convertedQTableSize == 0 {
@@ -797,6 +934,7 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Converted Q-table statistics: States=%d, TotalActions=%d", convertedQTableSize, totalConvertedActions)
 	
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Creating QLearningModelData structure...")
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] About to create QData with convertedQTable (size=%d)", len(convertedQTable))
 	qData := &QLearningModelData{
 		QTable:              convertedQTable,
 		CurrentEpisode:      agent.GetCurrentEpisode(),
@@ -818,17 +956,35 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: QData.QTable is nil after creation!")
 		qData.QTable = make(map[string]map[string]float64) // Initialize empty map to prevent nil pointer
 	}
-	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] QLearningModelData created: QTableSize=%d, Episode=%d, IsLearning=%v",
-		len(qData.QTable), qData.CurrentEpisode, qData.IsLearning)
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] QLearningModelData created: QTableSize=%d (from qData.QTable), OriginalQTableSize=%d, Episode=%d, IsLearning=%v",
+		len(qData.QTable), len(originalQTable), qData.CurrentEpisode, qData.IsLearning)
+	
+	// CRITICAL DIAGNOSTIC: Verify QData.QTable matches convertedQTable
+	if len(qData.QTable) != len(convertedQTable) {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL MISMATCH: qData.QTable size (%d) != convertedQTable size (%d)", len(qData.QTable), len(convertedQTable))
+	} else {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] QData.QTable size matches convertedQTable: %d states", len(qData.QTable))
+	}
 
 	// Update model data
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Updating model data structure...")
+	beforeUpdateSize := -1
+	if ms.currentModel != nil && ms.currentModel.QLearningData != nil {
+		beforeUpdateSize = len(ms.currentModel.QLearningData.QTable)
+	}
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Before update: currentModel.QLearningData.QTable size = %d", beforeUpdateSize)
 	ms.currentModel.QLearningData = qData
 	ms.currentModel.Algorithm = "qlearning"
 	ms.currentModel.LearningRate = agent.GetConfig().LearningRate
 	ms.currentModel.Metadata.UpdatedAt = time.Now()
 	ms.currentModel.Metadata.TrainingEps = int64(agent.GetCurrentEpisode())
 	ms.currentModel.Metadata.RLEnabled = true
+	
+	// CRITICAL FIX: Also update ms.modelData to keep them in sync
+	// This ensures periodic save (saveModel) uses the updated Q-table
+	// NOTE: Don't lock here - SaveModel already holds the lock. Locking here causes deadlock!
+	ms.modelData = ms.currentModel
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Updated ms.modelData to match ms.currentModel (QTableSize=%d)", len(qData.QTable))
 
 	// Update hyperparameters
 	ms.currentModel.Hyperparams["current_episode"] = agent.GetCurrentEpisode()
@@ -837,6 +993,17 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 	ms.currentModel.Hyperparams["q_table_size"] = len(agent.GetQTable())
 	ms.currentModel.Hyperparams["total_q_updates"] = qData.TotalQUpdates
 	ms.currentModel.Hyperparams["average_q_value"] = qData.AverageQValue
+	
+	// CRITICAL DIAGNOSTIC: Verify Q-table is in currentModel before save
+	if ms.currentModel.QLearningData != nil {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] After update: currentModel.QLearningData.QTable size = %d", len(ms.currentModel.QLearningData.QTable))
+		if len(ms.currentModel.QLearningData.QTable) == 0 {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: currentModel.QLearningData.QTable is EMPTY before saveToFile()!")
+		}
+	} else {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: currentModel.QLearningData is NIL before saveToFile()!")
+	}
+	
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Model data structure updated: Algorithm=%s, Episode=%d, QTableSize=%d",
 		ms.currentModel.Algorithm, agent.GetCurrentEpisode(), len(agent.GetQTable()))
 
@@ -845,12 +1012,30 @@ func (ms *ModelStorage) SaveQLearningAgent(agent *rl.QLearningScheduler) error {
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveQLearningAgent: Model marked as dirty (Q-table size: %d, will be saved on next periodic save)", qTableSize)
 
 	// Save to file immediately (for shutdown saves)
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] ========== ABOUT TO CALL saveToFile() ==========")
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Final check before saveToFile():")
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]   - originalQTable size: %d", len(originalQTable))
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]   - convertedQTable size: %d", len(convertedQTable))
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]   - qData.QTable size: %d", len(qData.QTable))
+	if ms.currentModel != nil && ms.currentModel.QLearningData != nil {
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE]   - currentModel.QLearningData.QTable size: %d", len(ms.currentModel.QLearningData.QTable))
+	} else {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE]   - currentModel.QLearningData is NIL!")
+	}
+	
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Calling saveToFile() to persist model to disk...")
+	// CRITICAL: Add panic recovery to catch any panics in saveToFile
+	defer func() {
+		if r := recover(); r != nil {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL PANIC in saveToFile(): %v", r)
+		}
+	}()
 	if err := ms.saveToFile(); err != nil {
 		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] ERROR: saveToFile() failed: %v", err)
 		return fmt.Errorf("failed to save Q-learning agent: %w", err)
 	}
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile() completed successfully")
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] ========== Q-TABLE SAVE DIAGNOSTIC END ==========")
 
 	logger.GetLogger().Info("[SCHEDULER-MODEL-SAVE] Q-learning agent state saved successfully",
 		"episode", agent.GetCurrentEpisode(),
@@ -1755,6 +1940,9 @@ func (ms *ModelStorage) IsQLearningAgentSaved() bool {
 
 // saveToFile saves the current model to file
 func (ms *ModelStorage) saveToFile() error {
+	// CRITICAL: Log immediately to verify function is being called
+	logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: FUNCTION CALLED - Entry point reached")
+	
 	// Use getCurrentModelPath() to get the correct path (with new structure)
 	storagePath := ms.getCurrentModelPath()
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Entry - storagePath=%s", storagePath)
@@ -1772,7 +1960,8 @@ func (ms *ModelStorage) saveToFile() error {
 	}
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Directory created/verified successfully")
 
-	// Check Q-table size before marshaling
+	// CRITICAL DIAGNOSTIC: Check Q-table size before marshaling
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile: ========== CHECKING Q-TABLE BEFORE MARSHALING ==========")
 	qTableSize := 0
 	totalActionsInQTable := 0
 	if ms.currentModel.QLearningData != nil && ms.currentModel.QLearningData.QTable != nil {
@@ -1780,14 +1969,34 @@ func (ms *ModelStorage) saveToFile() error {
 		for _, actions := range ms.currentModel.QLearningData.QTable {
 			totalActionsInQTable += len(actions)
 		}
-		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Q-table size in model: %d states, %d total actions", qTableSize, totalActionsInQTable)
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile: Q-table size in model: %d states, %d total actions", qTableSize, totalActionsInQTable)
+		
+		if qTableSize > 0 {
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile: Listing ALL states in Q-table before marshaling:")
+			stateIndex := 0
+			for stateKey, actions := range ms.currentModel.QLearningData.QTable {
+				stateIndex++
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile:   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+				for actionStr, qValue := range actions {
+					logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile:     -> Action='%s', QValue=%.6f", actionStr, qValue)
+				}
+			}
+		} else {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR: Q-table is EMPTY (0 states) before marshaling!")
+		}
 		
 		if qTableSize > 0 && totalActionsInQTable == 0 {
 			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] CRITICAL: Q-table has %d states but 0 actions! All states are empty.", qTableSize)
 		}
 	} else {
+		if ms.currentModel.QLearningData == nil {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR: QLearningData is nil!")
+		} else if ms.currentModel.QLearningData.QTable == nil {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] saveToFile: ERROR: QTable is nil!")
+		}
 		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile: QLearningData or QTable is nil")
 	}
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] saveToFile: ========== END Q-TABLE CHECK ==========")
 
 	// Marshal model data to JSON
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] saveToFile: Marshaling model data to JSON...")
@@ -1838,9 +2047,12 @@ func (ms *ModelStorage) loadFromFile() error {
 // ============= ALGORITHM MANAGER ESSENTIAL STATE PERSISTENCE =============
 
 // SaveAlgorithmManagerState saves essential algorithm manager state to persistent storage
+// If called directly, caller must hold the lock
 func (ms *ModelStorage) SaveAlgorithmManagerState(manager *rl.AlgorithmManager) error {
-	ms.mutex.Lock()
-	defer ms.mutex.Unlock()
+	// CRITICAL FIX: Don't lock here - SaveModel already holds the lock
+	// Locking here causes a deadlock when called from SaveModel
+	// ms.mutex.Lock()
+	// defer ms.mutex.Unlock()
 
 	if ms.currentModel == nil {
 		ms.currentModel = ms.createDefaultModel()
@@ -2151,16 +2363,40 @@ func (ms *ModelStorage) SaveModel(algorithmManager *rl.AlgorithmManager) error {
 
 	// Save Q-Learning state
 	currentAlg := algorithmManager.GetCurrentAlgorithm()
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModel: Current algorithm type = %T", currentAlg)
+	
+	if currentAlg == nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModel: ERROR - currentAlg is NIL!")
+		return fmt.Errorf("current algorithm is nil")
+	}
+	
 	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+		// CRITICAL DIAGNOSTIC: Get Q-table BEFORE calling SaveQLearningAgent
+		qTableBeforeSave := qlAlg.GetQTable()
+		qTableSizeBeforeSave := len(qTableBeforeSave)
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModel: Q-table size BEFORE SaveQLearningAgent = %d", qTableSizeBeforeSave)
+		
+		if qTableSizeBeforeSave > 0 {
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModel: Listing Q-table states BEFORE SaveQLearningAgent:")
+			stateIndex := 0
+			for stateKey, actions := range qTableBeforeSave {
+				stateIndex++
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModel:   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+			}
+		} else {
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModel: ERROR - Q-table is EMPTY before SaveQLearningAgent!")
+		}
+		
 		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveModel: Calling SaveQLearningAgent (Q-table size: %d)",
-			len(qlAlg.GetQTable()))
+			qTableSizeBeforeSave)
 		if err := ms.SaveQLearningAgent(qlAlg); err != nil {
 			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModel: Failed to save Q-Learning state: %v", err)
 			return fmt.Errorf("failed to save Q-Learning state: %w", err)
 		}
 		logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] SaveModel: SaveQLearningAgent completed successfully")
 	} else {
-		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModel: Current algorithm is not QLearningScheduler (type: %T)", currentAlg)
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModel: Current algorithm is not QLearningScheduler (type: %T)", currentAlg)
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModel: This means Q-table will NOT be saved!")
 	}
 
 	// Save Algorithm Manager state
