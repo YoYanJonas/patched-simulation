@@ -105,18 +105,39 @@ func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeM
 	}
 	state := ExtractStateFeatures(tasks, tracker)
 	stateKey := state.GetStateKey()
+	logger.GetLogger().Warnf("[RL-VERIFY] [Q-LEARNING-SCHEDULE-STATE] State extracted: QueueLength=%d, CPUUtil=%.2f%%, MemUtil=%.2f%%, Load=%.2f%%, StateKey=%s",
+		state.QueueLength, state.CPUUtilization*100, state.MemoryUtilization*100, state.SystemLoad*100, stateKey)
+	logger.GetLogger().Infof("[RL-VERIFY] [Q-LEARNING-SCHEDULE-STATE-DETAIL] State details: AvgWait=%.2f, AvgExec=%.2f, AvgPriority=%.2f, HighPriorityRatio=%.2f, ShortTaskRatio=%.2f",
+		state.AvgWaitingTime, state.AvgExecutionTime, state.AvgPriority, state.HighPriorityRatio, state.ShortTaskRatio)
+	logger.GetLogger().Infof("[RL-VERIFY] [Q-LEARNING-SCHEDULE-STATE-CATEGORIES] State categories: CPU=%s, Memory=%s, Queue=%s, Load=%s, Priority=%s",
+		state.CPUCategory, state.MemoryCategory, state.QueueCategory, state.LoadCategory, state.PriorityCategory)
 	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-STATE] State extracted: QueueLength=%d, CPUUtil=%.2f, MemUtil=%.2f, Load=%.2f, StateKey=%s",
 		state.QueueLength, state.CPUUtilization, state.MemoryUtilization, state.SystemLoad, stateKey)
 
 	// Select action using Q-learning policy
 	action := q.SelectAction(state)
+	logger.GetLogger().Warnf("[RL-VERIFY] [Q-LEARNING-SCHEDULE-ACTION-SELECTED] 🎯 ACTION SELECTED: Type=%d, Description=%s, Episode=%d, StateKey=%s",
+		action.Type, action.Description, q.currentEpisode, stateKey)
 	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-ACTION] Action selected: Type=%d, Description=%s, Episode=%d",
 		action.Type, action.Description, q.currentEpisode)
 
 	// Apply the selected action
+	logger.GetLogger().Warnf("[RL-VERIFY] [Q-LEARNING-SCHEDULE-APPLY-BEFORE] About to apply action: Type=%d, Description=%s, Tasks=%d",
+		action.Type, action.Description, len(tasks))
 	reorderedTasks := ApplyAction(action, tasks)
+	logger.GetLogger().Warnf("[RL-VERIFY] [Q-LEARNING-SCHEDULE-APPLY-AFTER] Action applied: Type=%d, Description=%s, Tasks=%d->%d, OrderChanged=%t",
+		action.Type, action.Description, len(tasks), len(reorderedTasks), len(reorderedTasks) == len(tasks))
 	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-APPLY] Action applied: Tasks=%d->%d, OrderChanged=%t",
 		len(tasks), len(reorderedTasks), len(reorderedTasks) == len(tasks))
+	
+	// CRITICAL VALIDATION: Ensure no tasks are lost during action application
+	if len(reorderedTasks) != len(tasks) {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [Q-LEARNING-SCHEDULE-TASK-LOSS] CRITICAL: Task count mismatch after ApplyAction! Input: %d, Output: %d, Lost: %d tasks", 
+			len(tasks), len(reorderedTasks), len(tasks)-len(reorderedTasks))
+		// Recover by returning original tasks
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [Q-LEARNING-SCHEDULE-RECOVER] Recovering by returning original tasks to prevent task loss")
+		return tasks
+	}
 
 	// Store experience for each task if learning is enabled
 	if q.isLearning && q.experienceManager != nil {
@@ -468,6 +489,8 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 		result := q.getRandomAction()
 		// [DEBUG] Random action selected
 		fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXPLORE-DONE] Random action selected: Type=%d\n", result.Type)
+		logger.GetLogger().Warnf("[RL-VERIFY] [Q-LEARNING-SELECT-EXPLORE] 🔍 EXPLORING: Random action selected, Type=%d, Description=%s, Episode=%d, ExplorationRate=%.3f, RandomValue=%.3f",
+			result.Type, result.Description, q.currentEpisode, explorationRate, randomValue)
 		logger.GetLogger().Infof("[Q-LEARNING-SELECT-EXPLORE] Exploring: Random action selected, Type=%d, Description=%s, Episode=%d",
 			result.Type, result.Description, q.currentEpisode)
 		return result
@@ -480,13 +503,20 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 	// [DEBUG] Best action selected
 	fmt.Printf("[DEBUG] [QLEARNING-SELECT-EXPLOIT-DONE] Best action selected: Type=%d, Description=%s\n", result.Type, result.Description)
 	
-	// Get best Q-value for logging
+	// Get best Q-value and log ALL Q-values for this state
 	bestQValue := math.Inf(-1)
+	allQValues := make(map[int]float64)
 	if stateActions, exists := q.qTable[stateKey]; exists {
-		if qVal, exists := stateActions[result.Type]; exists {
-			bestQValue = qVal
+		for actionType, qVal := range stateActions {
+			allQValues[int(actionType)] = qVal
+			if actionType == result.Type {
+				bestQValue = qVal
+			}
 		}
 	}
+	logger.GetLogger().Warnf("[RL-VERIFY] [Q-LEARNING-SELECT-EXPLOIT] Exploiting: Best action selected, Type=%d, Description=%s, QValue=%.3f, Episode=%d",
+		result.Type, result.Description, bestQValue, q.currentEpisode)
+	logger.GetLogger().Infof("[RL-VERIFY] [Q-LEARNING-SELECT-ALL-QVALUES] All Q-values for state '%s': %v", stateKey, allQValues)
 	logger.GetLogger().Infof("[Q-LEARNING-SELECT-EXPLOIT] Exploiting: Best action selected, Type=%d, Description=%s, QValue=%.3f, Episode=%d",
 		result.Type, result.Description, bestQValue, q.currentEpisode)
 	
@@ -640,7 +670,11 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 
 	// Mark model as dirty (lightweight - no I/O, just sets flag)
 	if q.onDirty != nil {
+		logger.GetLogger().Warnf("[Q-LEARNING-UPDATE] Calling onDirty callback (Q-table size=%d)", len(q.qTable))
 		q.onDirty()
+		logger.GetLogger().Warnf("[Q-LEARNING-UPDATE] onDirty callback completed")
+	} else {
+		logger.GetLogger().Errorf("[Q-LEARNING-UPDATE] ERROR: onDirty callback is NIL! Model will not be marked as dirty!")
 	}
 
 	newSize := len(q.qTable)
@@ -780,6 +814,24 @@ func (q *QLearningScheduler) Configure(params map[string]interface{}) error {
 
 // GetQTable returns a copy of the Q-table for inspection
 func (q *QLearningScheduler) GetQTable() map[string]map[ActionType]float64 {
+	// CRITICAL DIAGNOSTIC: Log original Q-table before copying
+	originalSize := len(q.qTable)
+	logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] GetQTable called: Original q.qTable size = %d", originalSize)
+	
+	if originalSize > 0 {
+		logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] Listing ALL states in original q.qTable:")
+		stateIndex := 0
+		for stateKey, actions := range q.qTable {
+			stateIndex++
+			logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE]   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+			for actionType, qValue := range actions {
+				logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE]     -> ActionType=%d, QValue=%.6f", actionType, qValue)
+			}
+		}
+	} else {
+		logger.GetLogger().Errorf("[Q-LEARNING-GET-QTABLE] ERROR: Original q.qTable is EMPTY (0 states)!")
+	}
+	
 	qTableCopy := make(map[string]map[ActionType]float64)
 	for state, actions := range q.qTable {
 		qTableCopy[state] = make(map[ActionType]float64)
@@ -787,6 +839,13 @@ func (q *QLearningScheduler) GetQTable() map[string]map[ActionType]float64 {
 			qTableCopy[state][action] = value
 		}
 	}
+	
+	copySize := len(qTableCopy)
+	logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] GetQTable returning: Copy size = %d (original was %d)", copySize, originalSize)
+	if originalSize != copySize {
+		logger.GetLogger().Errorf("[Q-LEARNING-GET-QTABLE] CRITICAL MISMATCH: Original size (%d) != Copy size (%d)!", originalSize, copySize)
+	}
+	
 	return qTableCopy
 }
 

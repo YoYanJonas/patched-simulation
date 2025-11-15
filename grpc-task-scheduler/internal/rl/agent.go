@@ -192,6 +192,15 @@ func (a *Agent) ScheduleTasks(tasks []TaskEntry, nodeManager SingleNodeManager) 
 	scheduledTasks := algorithm.Schedule(tasks, nodeManager)
 	// [DEBUG] Algorithm.Schedule returned
 	log.Printf("[DEBUG] [AGENT-SCHEDULE-ALG-AFTER] algorithm.Schedule returned %d tasks", len(scheduledTasks))
+	
+	// CRITICAL VALIDATION: Ensure no tasks are lost during algorithm scheduling
+	if len(scheduledTasks) != len(tasks) {
+		log.Printf("[DIAGNOSTIC] [AGENT-SCHEDULE-TASK-LOSS] CRITICAL: Task count mismatch after algorithm.Schedule! Input: %d, Output: %d, Lost: %d tasks", 
+			len(tasks), len(scheduledTasks), len(tasks)-len(scheduledTasks))
+		// Recover by returning original tasks
+		log.Printf("[DIAGNOSTIC] [AGENT-SCHEDULE-RECOVER] Recovering by returning original tasks to prevent task loss")
+		return tasks
+	}
 
 	// [DEBUG] About to record performance
 	// Record performance
