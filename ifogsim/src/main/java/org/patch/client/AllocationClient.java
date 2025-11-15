@@ -492,10 +492,16 @@ public class AllocationClient implements AutoCloseable {
                 "[DEBUG-ASYNC-ALLOCATOR] Time: %.2f - Scheduling allocation response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
                 CloudSim.clock(), taskId, realLatency, simulationLatency, actualEnergy, actualCost));
             
-            // Schedule CloudSim event for response (ensure valid delay to prevent "Past event detected" errors)
+            // CRITICAL: Add to deferred queue instead of calling CloudSim.send() directly
+            // This prevents ConcurrentModificationException by deferring until end of tick
             double validDelay = NetworkLatencyConverter.ensureValidEventDelay(simulationLatency);
-            CloudSim.send(deviceId, deviceId, validDelay, 
-                org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_RESPONSE, pending);
+            org.patch.utils.DeferredEventQueue.addDeferredEvent(
+                deviceId,
+                deviceId,
+                validDelay,
+                org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_RESPONSE,
+                pending
+            );
         });
         
         return pending;
@@ -571,16 +577,16 @@ public class AllocationClient implements AutoCloseable {
                 return;
             }
             
-            // Calculate actual energy and cost
-            double actualEnergy = NetworkEnergyCostCalculator.calculateNetworkEnergy(
-                simulationLatency, messageSizeBytes);
-            double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
-                simulationLatency, messageSizeBytes);
-            
-            // Schedule CloudSim event for response (ensure valid delay to prevent "Past event detected" errors)
+            // CRITICAL: Add to deferred queue instead of calling CloudSim.send() directly
+            // This prevents ConcurrentModificationException by deferring until end of tick
             double validDelay = NetworkLatencyConverter.ensureValidEventDelay(simulationLatency);
-            CloudSim.send(deviceId, deviceId, validDelay, 
-                org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_RESPONSE, pending);
+            org.patch.utils.DeferredEventQueue.addDeferredEvent(
+                deviceId,
+                deviceId,
+                validDelay,
+                org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_OUTCOME_RESPONSE,
+                pending
+            );
         });
         
         return pending;

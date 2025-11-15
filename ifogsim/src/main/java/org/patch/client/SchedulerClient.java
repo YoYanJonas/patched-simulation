@@ -736,10 +736,16 @@ public class SchedulerClient implements AutoCloseable {
                     "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Scheduling response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
                     CloudSim.clock(), task.getTaskId(), realLatency, simulationLatency, actualEnergy, actualCost));
 
-            // Schedule CloudSim event for response (ensure valid delay to prevent "Past event detected" errors)
+            // CRITICAL: Add to deferred queue instead of calling CloudSim.send() directly
+            // This prevents ConcurrentModificationException by deferring until end of tick
             double validDelay = NetworkLatencyConverter.ensureValidEventDelay(simulationLatency);
-            CloudSim.send(deviceId, deviceId, validDelay,
-                    org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_RESPONSE, pending);
+            org.patch.utils.DeferredEventQueue.addDeferredEvent(
+                deviceId,
+                deviceId,
+                validDelay,
+                org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_RESPONSE,
+                pending
+            );
         });
 
         return pending;

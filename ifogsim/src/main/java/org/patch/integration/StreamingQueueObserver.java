@@ -277,25 +277,23 @@ public class StreamingQueueObserver {
             return;
         }
 
-        // Adaptive polling: Skip if too many consecutive empty polls
+        // Adaptive polling: Use longer interval if too many consecutive empty polls, but STILL POLL
+        // CRITICAL FIX: Don't skip polling entirely - we need to check if tasks were added later
         if (consecutiveEmptyPolls >= MAX_CONSECUTIVE_EMPTY_POLLS) {
-            // Use longer interval when queue is consistently empty
+            // Use longer interval when queue is consistently empty, but continue polling
             currentPollInterval = streamingIntervalSeconds * ADAPTIVE_POLL_INTERVAL_MULTIPLIER;
             logger.fine(String.format(
-                    "[POLL-ADAPTIVE] Device %d - Skipping poll (consecutive empty=%d), using longer interval=%.2fs",
+                    "[POLL-ADAPTIVE] Device %d - Using longer interval (consecutive empty=%d), interval=%.2fs, but still polling",
                     deviceId, consecutiveEmptyPolls, currentPollInterval));
-            if (isStreaming.get() && !shouldStop.get()) {
-                scheduleNextQueueUpdate(currentTime);
-            }
-            return;
+            // Continue to poll below - don't return early!
         }
 
         // Increment poll count
         pollCount++;
         
         System.out.println(String.format(
-                "[FLOW-STREAMING-POLL] Device %d - Polling queue from scheduler (time=%.2f, poll=%d/%d, consecutiveEmpty=%d)",
-                deviceId, currentTime, pollCount, maxPolls, consecutiveEmptyPolls));
+                "[FLOW-STREAMING-POLL] Device %d - Polling queue from scheduler (time=%.2f, poll=%d/%d, consecutiveEmpty=%d, interval=%.2fs)",
+                deviceId, currentTime, pollCount, maxPolls, consecutiveEmptyPolls, currentPollInterval));
 
         // Get current queue state from scheduler
         GetSortedQueueResponse response = getSortedQueueFromScheduler();
@@ -318,8 +316,8 @@ public class StreamingQueueObserver {
                 // Reset to base interval when queue has tasks
                 consecutiveEmptyPolls = 0;
                 currentPollInterval = streamingIntervalSeconds;
-                logger.fine(String.format(
-                        "[POLL-ADAPTIVE] Device %d - Queue has %d tasks, resetting to base interval=%.2fs",
+                logger.info(String.format(
+                        "[POLL-ADAPTIVE] Device %d - Queue has %d tasks, resetting consecutiveEmpty=0 and interval=%.2fs",
                         deviceId, taskCount, currentPollInterval));
             }
             
