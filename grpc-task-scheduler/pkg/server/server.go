@@ -123,10 +123,13 @@ func (s *Server) Start() error {
 	// Start model persistence (with cache agent periodic save)
 	// Use cancellable context so we can notify periodic save on shutdown
 	s.periodicSaveCtx, s.periodicSaveCancel = context.WithCancel(context.Background())
+	algorithmManagerGetter := func() *rl.AlgorithmManager {
+		return s.getAlgorithmManagerFromSystem()
+	}
 	cacheAgentGetter := func() *rl.CacheAgent {
 		return s.getCacheAgentFromSystem()
 	}
-	go s.modelStorage.StartPeriodicSave(s.periodicSaveCtx, cacheAgentGetter)
+	go s.modelStorage.StartPeriodicSave(s.periodicSaveCtx, algorithmManagerGetter, cacheAgentGetter)
 
 	// ADD: Start scheduler service (use background context for service lifecycle)
 	s.schedulerService.Start(context.Background())
@@ -285,13 +288,34 @@ func (s *Server) SaveModelOnShutdown() error {
 
 	// Get current algorithm and log Q-table status
 	currentAlg := algorithmManager.GetCurrentAlgorithm()
+	logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: Current algorithm type = %T", currentAlg)
+	
+	if currentAlg == nil {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: ERROR - currentAlg is NIL!")
+		return fmt.Errorf("current algorithm is nil")
+	}
+	
 	if qlAlg, ok := currentAlg.(*rl.QLearningScheduler); ok {
+		// CRITICAL DIAGNOSTIC: Get Q-table and log it
 		qTable := qlAlg.GetQTable()
-		if len(qTable) == 0 {
-			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Q-table is empty, but saving model anyway (for next run initialization)")
+		qTableSize := len(qTable)
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: Q-table size = %d", qTableSize)
+		
+		if qTableSize > 0 {
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: Listing ALL Q-table states:")
+			stateIndex := 0
+			for stateKey, actions := range qTable {
+				stateIndex++
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown:   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+			}
+			logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table has data (size=%d), proceeding with save", qTableSize)
 		} else {
-			logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] Q-table has data (size=%d), proceeding with save", len(qTable))
+			logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: ERROR - Q-table is EMPTY (0 states)!")
+			logger.GetLogger().Warnf("[SCHEDULER-MODEL-SAVE] Q-table is empty, but saving model anyway (for next run initialization)")
 		}
+	} else {
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: Current algorithm is NOT QLearningScheduler (type: %T)", currentAlg)
+		logger.GetLogger().Errorf("[SCHEDULER-MODEL-SAVE] SaveModelOnShutdown: This means Q-table will NOT be saved!")
 	}
 	// Always save, even if Q-table is empty
 

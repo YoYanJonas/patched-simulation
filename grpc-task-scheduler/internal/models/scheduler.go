@@ -233,6 +233,15 @@ func (se *SchedulerEngine) resortQueue() {
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESORT-DEBUG] Resorting %d tasks (algorithm: %s, RL enabled: %t)", 
 		len(allTasks), se.algorithm.String(), se.agent != nil && se.agent.IsEnabled())
 	
+	// CRITICAL RL VERIFICATION: Log agent state
+	agentExists := se.agent != nil
+	agentEnabled := false
+	if agentExists {
+		agentEnabled = se.agent.IsEnabled()
+	}
+	logger.GetLogger().Warnf("[RL-VERIFY] [SCHEDULER-RESORT-AGENT-CHECK] Agent state: exists=%t, enabled=%t, willUseRL=%t", 
+		agentExists, agentEnabled, agentExists && agentEnabled)
+	
 	// [DEBUG] Log task IDs before resorting
 	taskIdsBefore := make([]string, 0, len(allTasks))
 	for _, task := range allTasks {
@@ -255,6 +264,7 @@ func (se *SchedulerEngine) resortQueue() {
 	
 	if se.agent != nil && se.agent.IsEnabled() {
 		// [DEBUG] Using RL-based sorting
+		logger.GetLogger().Warnf("[RL-VERIFY] [SCHEDULER-RESORT-SORT-RL] ✅ USING RL-BASED SORTING with multi-objective (agent exists and enabled)")
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESORT-SORT-RL] Using RL-based sorting with multi-objective")
 		// RL-based resorting with multi-objective configuration
 		sortedTasks = se.sortQueueWithObjectives(taskEntries)
@@ -290,6 +300,8 @@ func (se *SchedulerEngine) resortQueue() {
 		}
 	} else {
 		// [DEBUG] Using traditional sorting
+		logger.GetLogger().Warnf("[RL-VERIFY] [SCHEDULER-RESORT-SORT-TRAD] ❌ USING TRADITIONAL ALGORITHM (RL NOT USED: agent=%t, enabled=%t)", 
+			se.agent != nil, se.agent != nil && se.agent.IsEnabled())
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-RESORT-SORT-TRAD] Using traditional algorithm sorting")
 		// Traditional algorithm resorting
 		sortedTasks = se.resortQueueTraditional(taskEntries)
@@ -334,14 +346,17 @@ func (se *SchedulerEngine) resortQueueTraditional(tasks []rl.TaskEntry) []rl.Tas
 }
 
 // updateQueueWithSortedTasks updates the queue with sorted tasks
-// NOTE: This is called from within resortQueue() which already holds the lock, so we don't need to lock again
+// NOTE: This is called from within resortQueue() which already holds se.mu lock
+// CRITICAL: Queue operations (Clear, Enqueue) have their own locks, so they can happen
+// concurrently with other queue operations, but we hold se.mu to prevent concurrent resorting
 func (se *SchedulerEngine) updateQueueWithSortedTasks(sortedTasks []rl.TaskEntry) {
 	// [DEBUG] Entry point for updateQueueWithSortedTasks
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-ENTRY] updateQueueWithSortedTasks called with %d tasks", len(sortedTasks))
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE] Starting queue update: clearing queue and re-adding %d sorted tasks", len(sortedTasks))
 	
 	// [DEBUG] Getting current queue state
-	// [DEBUG] Log task IDs before clearing
+	// CRITICAL: queue.GetAll() has its own lock, so it's safe to call even though we hold se.mu
+	// The queue's internal lock protects against concurrent enqueue/dequeue operations
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-BEFORE-GETALL] About to get current queue tasks")
 	taskIdsBeforeClear := make([]string, 0, se.queue.Size())
 	allTasksBefore := se.queue.GetAll()
@@ -353,7 +368,8 @@ func (se *SchedulerEngine) updateQueueWithSortedTasks(sortedTasks []rl.TaskEntry
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-UPDATE-QUEUE-BEFORE-CLEAR] Task IDs before clearing: %v (count: %d)", taskIdsBeforeClear, len(taskIdsBeforeClear))
 	
 	// [DIAGNOSTIC] About to clear queue
-	// Clear current queue
+	// CRITICAL: queue.Clear() has its own lock, so it's safe even if tasks are being enqueued concurrently
+	// However, we hold se.mu to ensure only one resort operation happens at a time
 	oldSize := se.queue.Size()
 	logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-CLEAR-BEFORE] About to clear queue (old size: %d, sortedTasks to add: %d)", oldSize, len(sortedTasks))
 	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-CLEAR-WARNING] CLEARING QUEUE: oldSize=%d, sortedTasks=%d, taskIdsBeforeClear=%v", 
@@ -394,6 +410,8 @@ func (se *SchedulerEngine) updateQueueWithSortedTasks(sortedTasks []rl.TaskEntry
 		// Convert back to TaskEntry and enqueue
 		if taskEntry, ok := task.(*TaskEntry); ok {
 			// [DIAGNOSTIC] Type assertion successful
+			// CRITICAL: queue.Enqueue() has its own lock, so it's safe even if tasks are being added concurrently
+			// We hold se.mu to prevent concurrent resorting, but queue operations are thread-safe
 			queueSizeBeforeThisEnqueue := se.queue.Size()
 			logger.GetLogger().Infof("[DIAGNOSTIC] [SCHEDULER-UPDATE-QUEUE-ADD-TASK-ASSERT] Type assertion successful for task %s (queue size before enqueue: %d)", 
 				taskEntry.GetTaskID(), queueSizeBeforeThisEnqueue)
@@ -527,6 +545,39 @@ func (se *SchedulerEngine) sortQueueWithObjectives(tasks []rl.TaskEntry) []rl.Ta
 	sortedTasks := se.agent.Schedule(tasks, se.nodeManager)
 	// [DEBUG] agent.Schedule returned
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-SORT-OBJECTIVES-AGENT-AFTER] agent.Schedule returned %d tasks", len(sortedTasks))
+	
+	// CRITICAL VALIDATION: Ensure no tasks are lost during sorting
+	if len(sortedTasks) != len(tasks) {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-SORT-OBJECTIVES-TASK-LOSS] CRITICAL: Task count mismatch! Input: %d, Output: %d, Lost: %d tasks", 
+			len(tasks), len(sortedTasks), len(tasks)-len(sortedTasks))
+		// Recover by returning original tasks if count doesn't match
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-SORT-OBJECTIVES-RECOVER] Recovering by returning original tasks to prevent task loss")
+		return tasks
+	}
+	
+	// CRITICAL VALIDATION: Ensure all task IDs are preserved
+	inputTaskIds := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		inputTaskIds[task.GetTaskID()] = true
+	}
+	missingTaskIds := make([]string, 0)
+	for _, task := range sortedTasks {
+		if !inputTaskIds[task.GetTaskID()] {
+			missingTaskIds = append(missingTaskIds, task.GetTaskID())
+		}
+		delete(inputTaskIds, task.GetTaskID())
+	}
+	if len(missingTaskIds) > 0 {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-SORT-OBJECTIVES-UNEXPECTED-TASKS] Found unexpected task IDs in output: %v", missingTaskIds)
+	}
+	if len(inputTaskIds) > 0 {
+		missingInOutput := make([]string, 0, len(inputTaskIds))
+		for taskId := range inputTaskIds {
+			missingInOutput = append(missingInOutput, taskId)
+		}
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-SORT-OBJECTIVES-MISSING-TASKS] CRITICAL: Missing task IDs in output: %v, Recovering by returning original tasks", missingInOutput)
+		return tasks
+	}
 	
 	// [DEBUG] Log sorting results
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-SORT-OBJECTIVES-COMPLETE] Multi-objective queue sorting completed: %d tasks resorted", len(sortedTasks))
@@ -822,18 +873,33 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-FLOW-DEBUG] Task %s: Step 4 - Adding to queue (isCached=%t, cacheAction=%v)", 
 		task.TaskId, isCached, cacheAction)
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-ENQUEUE-BEFORE] About to enqueue TaskID=%s", task.TaskId)
+	
+	// CRITICAL: Acquire lock BEFORE enqueueing to prevent race condition with resortQueue
+	// This ensures:
+	// 1. If resortQueue is running (clearing/re-adding), we wait for it to complete
+	// 2. Tasks are not lost during queue.Clear() in updateQueueWithSortedTasks
+	// 3. New tasks are added after resorting completes, ensuring they're included in next resort
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-LOCK-BEFORE] About to acquire write lock before enqueue")
+	se.mu.Lock()
+	
+	// Check queue capacity while holding lock (queue.Size() is thread-safe, but we want consistent state)
 	queueSizeBeforeEnqueue := se.queue.Size()
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-ENQUEUE-BEFORE-SIZE] Queue size before enqueue: %d", queueSizeBeforeEnqueue)
 	
 	// Check queue capacity if configured
 	maxQueueSize := se.config.Queue.MaxQueueSize
 	if maxQueueSize > 0 && queueSizeBeforeEnqueue >= maxQueueSize {
+		se.mu.Unlock()
 		err := fmt.Errorf("queue capacity exceeded: current size=%d, max size=%d", queueSizeBeforeEnqueue, maxQueueSize)
 		logger.GetLogger().Errorf("[SCHEDULER-ADD-TASK-ERROR] Task %s: %v", task.TaskId, err)
 		return 0, 0, false, "", pb.CacheAction_CACHE_ACTION_NONE, err
 	}
 	
+	// CRITICAL: Enqueue to queue while holding se.mu lock
+	// This ensures we don't enqueue during resortQueue's queue.Clear() operation
+	// queue.Enqueue() has its own internal lock, so it's still thread-safe
 	if err := se.queue.Enqueue(taskEntry); err != nil {
+		se.mu.Unlock()
 		// [DEBUG] Enqueue failed
 		logger.GetLogger().Errorf("[SCHEDULER-ADD-TASK-ERROR] Task %s: Failed to enqueue: %v (queue size: %d, max: %d)", 
 			task.TaskId, err, queueSizeBeforeEnqueue, maxQueueSize)
@@ -878,15 +944,12 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 		}
 	}
 
-	// [DEBUG] About to add to scheduledTasks map and update statistics
-	// Track scheduled task for delayed rewards and update statistics in a single lock acquisition
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-BEFORE] About to add TaskID=%s to scheduledTasks map", task.TaskId)
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-BEFORE] About to acquire write lock for scheduledTasks and statistics")
-	se.mu.Lock()
-	// [DEBUG] Lock acquired
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-ACQUIRED] Write lock acquired for scheduledTasks")
+	// CRITICAL: Add to scheduledTasks map and update statistics while still holding the lock
+	// This ensures atomic operation: task is in queue AND in scheduledTasks map
+	// We already hold se.mu from above, so we can directly update scheduledTasks
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-BEFORE] About to add TaskID=%s to scheduledTasks map (already holding lock)", task.TaskId)
 	
-	// Check for duplicate (now that we have the lock)
+	// Check for duplicate (we already have the lock)
 	if _, exists := se.scheduledTasks[cloudletId]; exists {  // ✅ Check using cloudletId
 		// [DEBUG] Duplicate found
 		logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-DUPLICATE-FOUND] Task %s (cloudletId=%s) already exists in scheduledTasks", task.TaskId, cloudletId)
@@ -898,14 +961,17 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	se.scheduledTasks[cloudletId] = taskEntry  // ✅ Store using cloudletId (unique)
 	se.totalTasksProcessed++
 	totalProcessed := se.totalTasksProcessed
+	scheduledTasksSize := len(se.scheduledTasks)
 	// [DEBUG] Added to scheduledTasks
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-ADDED] TaskID=%s (cloudletId=%s) added to scheduledTasks map (size: %d)", task.TaskId, cloudletId, len(se.scheduledTasks))
-			// [DEBUG-LOG] Log exact key used for storage
-			logger.GetLogger().Errorf("[DEBUG-KEY-STORAGE] AddTaskToQueueWithCache: Storing task in scheduledTasks with key='%s' (TaskId='%s', cloudletId='%s', keysMatch=%t)", 
-				cloudletId, task.TaskId, cloudletId, task.TaskId == cloudletId)
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-ADDED] TaskID=%s (cloudletId=%s) added to scheduledTasks map (size: %d)", task.TaskId, cloudletId, scheduledTasksSize)
+	// [DEBUG-LOG] Log exact key used for storage
+	logger.GetLogger().Errorf("[DEBUG-KEY-STORAGE] AddTaskToQueueWithCache: Storing task in scheduledTasks with key='%s' (TaskId='%s', cloudletId='%s', keysMatch=%t)", 
+		cloudletId, task.TaskId, cloudletId, task.TaskId == cloudletId)
+	
+	// Release lock after all operations complete (enqueue + scheduledTasks update)
 	se.mu.Unlock()
 	// [DEBUG] Lock released
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-SCHEDULED-MAP-LOCK-RELEASED] Write lock released for scheduledTasks")
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-ADD-TASK-LOCK-RELEASED] Write lock released (enqueue and scheduledTasks update complete)")
 
 	// [DEBUG] Log queue state after adding
 	queueSizeAfterAdd := se.queue.Size()
@@ -1105,10 +1171,36 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	var nodeStatus *pb.FogNode
 	if req.NodeStatus != nil {
 		nodeStatus = req.NodeStatus
+		
+		// Enhanced logging: Show all received values and capacity
+		var cpuUsagePercent float64 = 0.0
+		var memoryUsageMb int64 = 0
+		var cpuCores int64 = 0
+		var memoryCapacityMb int64 = 0
+		
+		if nodeStatus.CurrentUsage != nil {
+			cpuUsagePercent = float64(nodeStatus.CurrentUsage.CpuUsage)
+			memoryUsageMb = nodeStatus.CurrentUsage.MemoryUsageMb
+		}
+		
+		if nodeStatus.Capacity != nil {
+			cpuCores = nodeStatus.Capacity.CpuCores
+			memoryCapacityMb = nodeStatus.Capacity.MemoryMb
+		}
+		
+		// Calculate memory percentage for logging
+		var memoryPercent float64 = 0.0
+		if memoryCapacityMb > 0 {
+			memoryPercent = (float64(memoryUsageMb) / float64(memoryCapacityMb)) * 100.0
+		}
+		
+		logger.GetLogger().Warnf("[NODE-STATUS-RECEIVE] Task=%s, Node=%s - Received node status: CPU=%.2f%% (%d cores), Memory=%.2f%% (%d/%d MB)",
+			req.TaskId, nodeStatus.NodeId,
+			cpuUsagePercent, cpuCores,
+			memoryPercent, memoryUsageMb, memoryCapacityMb)
 		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-NODE-STATUS] Task=%s, Node=%s, CPU=%.2f%%, Memory=%d MB",
 			req.TaskId, nodeStatus.NodeId,
-			float64(nodeStatus.CurrentUsage.CpuUsage),
-			nodeStatus.CurrentUsage.MemoryUsageMb)
+			cpuUsagePercent, memoryUsageMb)
 		
 		// Update NodeStatusTracker with node status from completion report
 		se.nodeStatusTracker.UpdateFromCompletionReport(nodeStatus)
@@ -1461,42 +1553,52 @@ func (se *SchedulerEngine) GetCacheAgent() *rl.CacheAgent {
 
 // GetSortedQueue returns the current sorted queue as proto tasks
 // CRITICAL: Resorts queue on-demand before returning to ensure fresh, sorted order
-// FIX: Simplified lock acquisition to prevent deadlocks - use single write lock for all operations
+// FIX: Proper locking to prevent race conditions between GetSortedQueue and AddTaskToQueueWithCache
 func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQueueResponse {
 	// [DEBUG] Entry point for GetSortedQueue
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-START] GetSortedQueue called (on-demand resorting)")
+	
+	// CRITICAL FIX: Acquire lock BEFORE checking queue size to prevent race condition
+	// This ensures we see a consistent state even if tasks are being added concurrently
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-LOCK-BEFORE] About to acquire write lock for queue size check")
+	se.mu.Lock()
 	queueSizeBefore := se.queue.Size()
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-START] GetSortedQueue called (on-demand resorting, queue size before resort=%d)", 
-		queueSizeBefore)
+	scheduledTasksCount := len(se.scheduledTasks)
+	se.mu.Unlock()
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-SIZE-CHECK] Queue size: %d, scheduledTasks: %d", queueSizeBefore, scheduledTasksCount)
 	
 	// Optimization: Skip resorting if queue is empty (no work to do)
 	if queueSizeBefore == 0 {
-		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-EMPTY] Queue is EMPTY when GetSortedQueue called! (scheduledTasks map size: %d)", len(se.scheduledTasks))
+		logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-EMPTY] Queue is EMPTY when GetSortedQueue called! (scheduledTasks map size: %d)", scheduledTasksCount)
 		
 		// [DIAGNOSTIC] Log scheduledTasks map contents if it has tasks
-		if len(se.scheduledTasks) > 0 {
+		if scheduledTasksCount > 0 {
+			se.mu.RLock()
 			scheduledTaskIds := make([]string, 0, len(se.scheduledTasks))
 			for taskId := range se.scheduledTasks {
 				scheduledTaskIds = append(scheduledTaskIds, taskId)
 			}
+			se.mu.RUnlock()
 			logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-EMPTY-WARNING] Queue is empty but scheduledTasks map has %d tasks: %v", 
-				len(se.scheduledTasks), scheduledTaskIds)
+				scheduledTasksCount, scheduledTaskIds)
 		}
 		
 		logger.GetLogger().Debugf("[SCHEDULER-GET-QUEUE-EMPTY] Queue is empty, skipping resorting")
-		se.mu.Lock()
-		defer se.mu.Unlock()
-		
-		// Return empty response immediately
+		se.mu.RLock()
 		algorithmName := se.algorithm.String()
 		if se.agent != nil && se.agent.IsEnabled() {
 			algorithmName = "qlearning"
 		}
+		nodeId := se.nodeManager.GetNodeID()
+		se.mu.RUnlock()
+		
+		// Return empty response immediately
 		return &pb.GetSortedQueueResponse{
 			SortedTasks:   []*pb.Task{},
 			AlgorithmUsed: algorithmName,
 			QueueSize:     0,
 			Timestamp:     time.Now().Unix(),
-			NodeId:        se.nodeManager.GetNodeID(),
+			NodeId:        nodeId,
 		}
 	}
 	
@@ -1507,7 +1609,10 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-BEFORE] About to call resortQueue() (queue size=%d)", queueSizeBefore)
 	se.resortQueue() // This will lock internally and apply algorithm/RL policy
 	// [DEBUG] ResortQueue completed
+	// CRITICAL: Check queue size again after resorting (with lock) to ensure we have accurate count
+	se.mu.RLock()
 	queueSizeAfter := se.queue.Size()
+	se.mu.RUnlock()
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RESORT-AFTER] resortQueue() completed, queue size after resort: %d", queueSizeAfter)
 	
 	// FIX: Acquire write lock ONCE for all operations (prevents deadlock from multiple lock acquisitions)
@@ -1525,13 +1630,24 @@ func (se *SchedulerEngine) GetSortedQueue(includeMetadata bool) *pb.GetSortedQue
 
 	// [DEBUG] About to get all tasks from queue
 	// Get all tasks from queue (now freshly resorted)
-	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-GETALL-BEFORE] About to call queue.GetAll()")
+	// CRITICAL: We hold the write lock, so queue.GetAll() should see all tasks
+	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-GETALL-BEFORE] About to call queue.GetAll() (queueSizeAfter=%d, scheduledTasks=%d)", queueSizeAfter, len(se.scheduledTasks))
 	allTasks := se.queue.GetAll()
 	// [DEBUG] Got all tasks
+	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-GETALL-AFTER] queue.GetAll() returned %d tasks (expected: %d, queueSizeAfter: %d, scheduledTasks: %d)", 
+		len(allTasks), queueSizeAfter, queueSizeAfter, len(se.scheduledTasks))
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-GETALL-AFTER] queue.GetAll() returned %d tasks", len(allTasks))
 	
 	// [DEBUG] Log retrieved tasks
 	logger.GetLogger().Infof("[DEBUG] [SCHEDULER-GET-QUEUE-RETRIEVE] Retrieved %d tasks from queue for response", len(allTasks))
+	
+	// CRITICAL DIAGNOSTIC: If queue size says we have tasks but GetAll() returns empty, this is a bug!
+	if queueSizeAfter > 0 && len(allTasks) == 0 {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-BUG] CRITICAL BUG: queue.Size()=%d but queue.GetAll() returned 0 tasks! Queue may be corrupted or there's a bug in queue implementation", queueSizeAfter)
+	}
+	if queueSizeAfter != len(allTasks) {
+		logger.GetLogger().Errorf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-SIZE-MISMATCH] Queue size mismatch: queue.Size()=%d but GetAll() returned %d tasks", queueSizeAfter, len(allTasks))
+	}
 	
 	// [DIAGNOSTIC] Log queue state with detailed information
 	logger.GetLogger().Warnf("[DIAGNOSTIC] [SCHEDULER-GET-QUEUE-STATE] GetSortedQueue state: queue size=%d, scheduledTasks map size=%d (queueSizeBefore=%d, queueSizeAfter=%d)",
