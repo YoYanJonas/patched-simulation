@@ -544,21 +544,34 @@ public class TaskExecutionEngine {
             }
 
             // Capture actual utilization DURING execution (while task is running)
-            // This is the accurate value that reflects the task's resource usage
+            // FIX: Calculate from task's actual CPU requirement vs VM's allocated capacity
+            // This gives the real CPU usage percentage (e.g., 500 MI task on 2800 MIPS = 17.86%)
             String taskId = taskInfo.getTaskId();
             // FIX (Issue 4): Use cloudletId as key instead of taskId
             TaskExecutionState state = activeTasks.get(String.valueOf(tuple.getCloudletId()));
             if (state != null) {
-                // CPU utilization: getUtilizationOfCpu() returns percentage [0.0, 1.0]
-                double actualCpuUtilization = fogDevice.getHost().getUtilizationOfCpu();
+                // Get task's CPU requirement (cloudletLength in MI - Million Instructions)
+                long taskCpuRequirement = tuple.getCloudletLength();
                 
-                // Memory utilization: getUtilizationOfRam() returns MB USED (not percentage!)
-                // Convert to percentage [0.0, 1.0] by dividing by total RAM
-                double actualRamUsedMb = fogDevice.getHost().getUtilizationOfRam();
+                // Get VM's allocated MIPS capacity
+                double allocatedMips = fogDevice.getHost().getVmScheduler().getTotalAllocatedMipsForVm(targetVm);
+                
+                // CPU utilization: task requirement / allocated capacity
+                // Example: 500 MI task on 2800 MIPS VM = 500/2800 = 17.86%
+                double actualCpuUtilization = 0.0;
+                if (allocatedMips > 0 && taskCpuRequirement > 0) {
+                    actualCpuUtilization = (double) taskCpuRequirement / allocatedMips;
+                }
+                
+                // Memory utilization: Calculate from VM's allocated RAM / total host RAM
+                // Use VM's RAM allocation (what was allocated to the VM)
+                int vmRamMb = targetVm.getRam(); // VM's allocated RAM
                 int totalRamMb = fogDevice.getHost().getRam();
-                double actualRamUtilization = (totalRamMb > 0) ? (actualRamUsedMb / totalRamMb) : 0.0;
+                double actualRamUtilization = (totalRamMb > 0) ? ((double) vmRamMb / totalRamMb) : 0.0;
                 
                 // Clamp to valid range [0.0, 1.0]
+                if (actualCpuUtilization < 0.0) actualCpuUtilization = 0.0;
+                if (actualCpuUtilization > 1.0) actualCpuUtilization = 1.0;
                 if (actualRamUtilization < 0.0) actualRamUtilization = 0.0;
                 if (actualRamUtilization > 1.0) actualRamUtilization = 1.0;
                 
@@ -568,8 +581,10 @@ public class TaskExecutionEngine {
                 
                 // Log for debugging
                 logger.info(String.format(
-                    "[TASK-EXEC-CAPTURE] Time: %.2f - cloudletId: %d, taskId: %s, Captured utilization: CPU=%.2f%%, Memory=%.2f%% (used=%d MB / total=%d MB)",
-                    CloudSim.clock(), tuple.getCloudletId(), taskId, actualCpuUtilization * 100, actualRamUtilization * 100, (int)actualRamUsedMb, totalRamMb));
+                    "[TASK-EXEC-CAPTURE] Time: %.2f - cloudletId: %d, taskId: %s, Captured utilization: CPU=%.2f%% (task=%d MI / allocated=%.2f MIPS), Memory=%.2f%% (allocated=%d MB / total=%d MB)",
+                    CloudSim.clock(), tuple.getCloudletId(), taskId, 
+                    actualCpuUtilization * 100, taskCpuRequirement, allocatedMips,
+                    actualRamUtilization * 100, vmRamMb, totalRamMb));
             } else {
                 logger.warning(String.format(
                     "[TASK-EXEC-CAPTURE] Time: %.2f - cloudletId: %d, taskId: %s, WARNING: TaskExecutionState not found, cannot capture utilization",

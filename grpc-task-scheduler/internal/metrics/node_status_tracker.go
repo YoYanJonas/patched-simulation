@@ -60,8 +60,10 @@ func (nst *NodeStatusTracker) UpdateFromCompletionReport(nodeStatus *pb.FogNode)
 
 	// Extract CPU utilization (0-100 percentage to 0.0-1.0)
 	var cpuUtil float64
+	var cpuUsageRaw int64 = 0
 	if nodeStatus.CurrentUsage != nil {
-		cpuUtil = float64(nodeStatus.CurrentUsage.CpuUsage) / 100.0
+		cpuUsageRaw = nodeStatus.CurrentUsage.CpuUsage
+		cpuUtil = float64(cpuUsageRaw) / 100.0
 		// Clamp to [0.0, 1.0]
 		if cpuUtil < 0.0 {
 			cpuUtil = 0.0
@@ -69,6 +71,8 @@ func (nst *NodeStatusTracker) UpdateFromCompletionReport(nodeStatus *pb.FogNode)
 		if cpuUtil > 1.0 {
 			cpuUtil = 1.0
 		}
+		logger.GetLogger().Infof("[NODE-STATUS-TRACKER-EXTRACT] CPU extraction: Raw=%d%%, Normalized=%.3f (Node=%s)",
+			cpuUsageRaw, cpuUtil, nodeStatus.NodeId)
 	} else {
 		logger.GetLogger().Warnf("[NODE-STATUS-TRACKER] UpdateFromCompletionReport: CurrentUsage is nil, using 0.0 for CPU")
 		cpuUtil = 0.0
@@ -76,17 +80,29 @@ func (nst *NodeStatusTracker) UpdateFromCompletionReport(nodeStatus *pb.FogNode)
 
 	// Extract Memory utilization (actual MB used / total MB capacity)
 	var memUtil float64
-	if nodeStatus.CurrentUsage != nil && nodeStatus.Capacity != nil && nodeStatus.Capacity.MemoryMb > 0 {
-		memUtil = float64(nodeStatus.CurrentUsage.MemoryUsageMb) / float64(nodeStatus.Capacity.MemoryMb)
-		// Clamp to [0.0, 1.0]
-		if memUtil < 0.0 {
+	var memoryUsageMb int64 = 0
+	var memoryCapacityMb int64 = 0
+	if nodeStatus.CurrentUsage != nil && nodeStatus.Capacity != nil {
+		memoryUsageMb = nodeStatus.CurrentUsage.MemoryUsageMb
+		memoryCapacityMb = nodeStatus.Capacity.MemoryMb
+		if memoryCapacityMb > 0 {
+			memUtil = float64(memoryUsageMb) / float64(memoryCapacityMb)
+			// Clamp to [0.0, 1.0]
+			if memUtil < 0.0 {
+				memUtil = 0.0
+			}
+			if memUtil > 1.0 {
+				memUtil = 1.0
+			}
+			logger.GetLogger().Infof("[NODE-STATUS-TRACKER-EXTRACT] Memory extraction: Raw=%d/%d MB, Normalized=%.3f (Node=%s)",
+				memoryUsageMb, memoryCapacityMb, memUtil, nodeStatus.NodeId)
+		} else {
+			logger.GetLogger().Warnf("[NODE-STATUS-TRACKER] UpdateFromCompletionReport: Memory capacity is 0, using 0.0 for Memory")
 			memUtil = 0.0
 		}
-		if memUtil > 1.0 {
-			memUtil = 1.0
-		}
 	} else {
-		logger.GetLogger().Warnf("[NODE-STATUS-TRACKER] UpdateFromCompletionReport: Missing CurrentUsage or Capacity, using 0.0 for Memory")
+		logger.GetLogger().Warnf("[NODE-STATUS-TRACKER] UpdateFromCompletionReport: Missing CurrentUsage or Capacity, using 0.0 for Memory (Usage=%d, Capacity=%d)",
+			memoryUsageMb, memoryCapacityMb)
 		memUtil = 0.0
 	}
 
