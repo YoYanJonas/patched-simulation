@@ -169,6 +169,15 @@ public class RL3FogSimulation {
                 logger.warning("[DEBUG-CLEANUP] Controller is null, skipping gRPC cleanup");
             }
 
+            // Process any remaining deferred events before shutdown
+            if (org.patch.utils.DeferredEventQueue.hasDeferredEvents()) {
+                logger.warning("[DEBUG-CLEANUP] Processing remaining deferred events before shutdown");
+                org.patch.utils.DeferredEventQueue.processDeferredEvents();
+            }
+            
+            // Clear deferred queue
+            org.patch.utils.DeferredEventQueue.clear();
+            
             // Give threads a moment to terminate (gRPC worker threads are daemon threads)
             // They should terminate quickly after channels are closed
             logger.info("[DEBUG-CLEANUP] Waiting 500ms for gRPC worker threads to terminate...");
