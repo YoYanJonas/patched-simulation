@@ -759,6 +759,7 @@ public class RLFogDevice extends FogDevice {
      * Report task completion to scheduler
      * 
      * @param tuple          The completed tuple
+     * @param taskInfo       The task information (contains pattern-based taskId)
      * @param success        Whether task completed successfully
      * @param executionTime  Execution time in milliseconds
      * @param isCached       Whether task was cached
@@ -766,7 +767,8 @@ public class RLFogDevice extends FogDevice {
      * @param ramUtilization RAM utilization (percentage 0.0-1.0)
      * @return true if server confirmed (ACK success), false otherwise
      */
-    public boolean reportTaskCompletion(Tuple tuple, boolean success, long executionTime, boolean isCached,
+    public boolean reportTaskCompletion(Tuple tuple, org.patch.models.ScheduledQueue.TaskInfo taskInfo, boolean success,
+            long executionTime, boolean isCached,
             double cpuUtilization, double ramUtilization) {
         if (schedulerClient == null || !schedulerClient.isConnected()) {
             return false; // Not connected, can't report
@@ -837,64 +839,88 @@ public class RLFogDevice extends FogDevice {
                     tuple.getCloudletId(), isCached, executionTime, reportedExecutionTime, success,
                     cpuUtilization * 100, ramUtilization * 100));
 
-            // [DEBUG-LOG] Log cloudletId and TaskId being sent for ACK failure
-            // investigation
+            // Extract cloudletId (unique instance identifier) from tuple
             long cloudletId = tuple.getCloudletId();
-            String taskIdToSend = String.valueOf(cloudletId);
+            String cloudletIdStr = String.valueOf(cloudletId);
+
+            // Extract taskId (pattern-based, for caching/fingerprinting) from TaskInfo
+            // CRITICAL: taskId and cloudletId are separate - taskId is pattern-based, cloudletId is unique
+            // NO FALLBACK to cloudletId - taskId must come from TaskInfo
+            String taskId = null;
+            if (taskInfo != null) {
+                taskId = taskInfo.getTaskId(); // Pattern-based taskId from server response
+            }
+
+            // CRITICAL: If taskId not found, log error and use empty string (do NOT use cloudletId as fallback)
+            // taskId and cloudletId are separate values - taskId is pattern-based, cloudletId is unique identifier
+            if (taskId == null || taskId.isEmpty()) {
+                logger.severe(String.format(
+                        "[COMPLETION-REPORT-ERROR] TaskId not found in TaskInfo for cloudletId=%s. " +
+                        "taskId and cloudletId are separate - taskId must come from TaskInfo.",
+                        cloudletIdStr));
+                taskId = ""; // Use empty string, but still send cloudletId (which is required)
+            }
+
             System.out.println(String.format(
-                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: cloudletId=%d, TaskId to send='%s' (String.valueOf(cloudletId))",
-                    cloudletId, taskIdToSend));
+                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: cloudletId=%d, taskId='%s', cloudletIdStr='%s'",
+                    cloudletId, taskId, cloudletIdStr));
             logger.info(String.format(
-                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: cloudletId=%d, TaskId to send='%s' (String.valueOf(cloudletId))",
-                    cloudletId, taskIdToSend));
+                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: cloudletId=%d, taskId='%s', cloudletIdStr='%s'",
+                    cloudletId, taskId, cloudletIdStr));
 
             // Later Feature: deadline-aware tracking disabled
             // if (!success) {
-            //     RLStatisticsManager.getInstance().incrementDeadlineMisses();
-            //     logger.fine(String.format("[SYSTEM-METRICS] Task %s failed, incrementing deadline misses", taskIdToSend));
+            // RLStatisticsManager.getInstance().incrementDeadlineMisses();
+            // logger.fine(String.format("[SYSTEM-METRICS] Task %s failed, incrementing
+            // deadline misses", taskIdToSend));
             // }
 
             // Calculate system metrics from iFogSim data
             SystemPerformanceMetrics metrics = SystemMetricsCalculator.calculateMetrics(
-                    this,  // Current fog device
-                    null   // Optional: all fog devices (can enhance later for fairness)
+                    this, // Current fog device
+                    null // Optional: all fog devices (can enhance later for fairness)
             );
 
-            // ⚠️ CRITICAL: Use CloudSim.clock() for completionTimestamp, NOT System.currentTimeMillis()
+            // ⚠️ CRITICAL: Use CloudSim.clock() for completionTimestamp, NOT
+            // System.currentTimeMillis()
             // Convert simulation time to milliseconds if proto requires it
             long completionTimestampMs = (long) (CloudSim.clock() * 1000); // ✅ Simulation time in ms
 
             // Report to grpc-task-scheduler for learning
+            // Send both task_id (pattern-based, for caching) and cloudlet_id (unique
+            // instance, for experience lookup)
             TaskCompletionReport report = TaskCompletionReport.newBuilder()
-                    .setTaskId(taskIdToSend)
+                    .setTaskId(taskId) // Pattern-based taskId (for backward compatibility)
+                    .setCloudletId(cloudletIdStr) // REQUIRED: Unique cloudletId (for experience lookup)
                     .addTasks(CompletedTask.newBuilder()
-                            .setTaskId(taskIdToSend)
+                            .setTaskId(taskId) // Pattern-based taskId
+                            .setCloudletId(cloudletIdStr) // REQUIRED: Unique cloudletId
                             .setAssignedNodeId(String.valueOf(getId()))
                             .setActualExecutionTimeMs(reportedExecutionTime)
                             .setDeadlineMet(true) // Later Feature: deadline-aware disabled (always true)
                             .build())
                     .setCompletionTimestamp(completionTimestampMs) // ✅ Simulation time, not real-world time
                     .setNodeStatus(nodeStatus) // Real node status
-                    .setMetrics(metrics)  // ✅ NEW: Add calculated system metrics
+                    .setMetrics(metrics) // ✅ NEW: Add calculated system metrics
                     .build();
 
-            // [DEBUG-LOG] Log final TaskId value in report
+            // [DEBUG-LOG] Log final TaskId and CloudletId values in report
             System.out.println(String.format(
-                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: Final report.getTaskId()='%s'",
-                    report.getTaskId()));
+                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: Final report.getTaskId()='%s', report.getCloudletId()='%s'",
+                    report.getTaskId(), report.getCloudletId()));
             logger.info(String.format(
-                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: Final report.getTaskId()='%s'",
-                    report.getTaskId()));
+                    "[DEBUG-KEY-COMPLETION] reportTaskCompletion: Final report.getTaskId()='%s', report.getCloudletId()='%s'",
+                    report.getTaskId(), report.getCloudletId()));
 
             System.out.println(String.format(
-                    "[CACHE-COMPLETION-REPORT] Sending completion report: TaskId=%s, ActualExecutionTimeMs=%.2f, DeadlineMet=%s, NodeStatus.CPU=%.2f%%, NodeStatus.Memory=%d MB",
-                    report.getTaskId(), report.getTasks(0).getActualExecutionTimeMs(),
+                    "[CACHE-COMPLETION-REPORT] Sending completion report: TaskId=%s, CloudletId=%s, ActualExecutionTimeMs=%.2f, DeadlineMet=%s, NodeStatus.CPU=%.2f%%, NodeStatus.Memory=%d MB",
+                    report.getTaskId(), report.getCloudletId(), report.getTasks(0).getActualExecutionTimeMs(),
                     report.getTasks(0).getDeadlineMet(),
                     (double) nodeStatus.getCurrentUsage().getCpuUsage(),
                     nodeStatus.getCurrentUsage().getMemoryUsageMb()));
             logger.info(String.format(
-                    "[CACHE-COMPLETION-REPORT] Sending completion report: TaskId=%s, ActualExecutionTimeMs=%.2f, DeadlineMet=%s, NodeStatus.CPU=%.2f%%, NodeStatus.Memory=%d MB",
-                    report.getTaskId(), report.getTasks(0).getActualExecutionTimeMs(),
+                    "[CACHE-COMPLETION-REPORT] Sending completion report: TaskId=%s, CloudletId=%s, ActualExecutionTimeMs=%.2f, DeadlineMet=%s, NodeStatus.CPU=%.2f%%, NodeStatus.Memory=%d MB",
+                    report.getTaskId(), report.getCloudletId(), report.getTasks(0).getActualExecutionTimeMs(),
                     report.getTasks(0).getDeadlineMet(),
                     (double) nodeStatus.getCurrentUsage().getCpuUsage(),
                     nodeStatus.getCurrentUsage().getMemoryUsageMb()));
@@ -975,7 +1001,7 @@ public class RLFogDevice extends FogDevice {
         if (ramUtilization > 1.0)
             ramUtilization = 1.0;
 
-        reportTaskCompletion(tuple, success, executionTime, false, cpuUtilization, ramUtilization);
+        reportTaskCompletion(tuple, null, success, executionTime, false, cpuUtilization, ramUtilization);
     }
 
     /**
@@ -1725,7 +1751,8 @@ public class RLFogDevice extends FogDevice {
                     }
 
                     // Report completion to scheduler and get ACK
-                    boolean ackSuccess = reportTaskCompletion(completedTuple, success, executionTime, isCached,
+                    boolean ackSuccess = reportTaskCompletion(completedTuple, taskInfo, success, executionTime,
+                            isCached,
                             cpuUtilization,
                             ramUtilization);
 
@@ -2101,20 +2128,20 @@ public class RLFogDevice extends FogDevice {
                     cloudletId = Integer.parseInt(cloudletIdStr);
                 } catch (NumberFormatException e) {
                     logger.severe(String.format(
-                        "[RLFOGDEVICE] Failed to parse cloudlet_id='%s' for TaskId=%s",
-                        cloudletIdStr, protoTask.getTaskId()));
+                            "[RLFOGDEVICE] Failed to parse cloudlet_id='%s' for TaskId=%s",
+                            cloudletIdStr, protoTask.getTaskId()));
                     return null; // Cannot create without valid cloudletId
                 }
             } else {
                 logger.severe(String.format(
-                    "[RLFOGDEVICE] cloudlet_id in metadata is null/empty for TaskId=%s",
-                    protoTask.getTaskId()));
+                        "[RLFOGDEVICE] cloudlet_id in metadata is null/empty for TaskId=%s",
+                        protoTask.getTaskId()));
                 return null;
             }
         } else {
             logger.severe(String.format(
-                "[RLFOGDEVICE] cloudlet_id not found in metadata for TaskId=%s",
-                protoTask.getTaskId()));
+                    "[RLFOGDEVICE] cloudlet_id not found in metadata for TaskId=%s",
+                    protoTask.getTaskId()));
             return null;
         }
 
@@ -2122,8 +2149,8 @@ public class RLFogDevice extends FogDevice {
         long cloudletLength = protoTask.getCpuRequirement();
         if (cloudletLength <= 0) {
             logger.warning(String.format(
-                "[RLFOGDEVICE] TaskId=%s has invalid cpu_requirement=%d, using default 1000 MI",
-                protoTask.getTaskId(), cloudletLength));
+                    "[RLFOGDEVICE] TaskId=%s has invalid cpu_requirement=%d, using default 1000 MI",
+                    protoTask.getTaskId(), cloudletLength));
             cloudletLength = 1000; // Default minimum
         }
 
@@ -2131,8 +2158,8 @@ public class RLFogDevice extends FogDevice {
         long cloudletFileSize = protoTask.getMemoryRequirement() * 1024 * 1024;
         if (cloudletFileSize <= 0) {
             logger.warning(String.format(
-                "[RLFOGDEVICE] TaskId=%s has invalid memory_requirement=%d MB, using default 1 MB",
-                protoTask.getTaskId(), protoTask.getMemoryRequirement()));
+                    "[RLFOGDEVICE] TaskId=%s has invalid memory_requirement=%d MB, using default 1 MB",
+                    protoTask.getTaskId(), protoTask.getMemoryRequirement()));
             cloudletFileSize = 1024 * 1024; // Default 1 MB in bytes
         }
 
@@ -2141,8 +2168,8 @@ public class RLFogDevice extends FogDevice {
         if (cloudletOutputSize <= 0) {
             // Fallback: estimate from memory_requirement if output_size not provided
             logger.warning(String.format(
-                "[RLFOGDEVICE] TaskId=%s has invalid output_size=%d, estimating from memory_requirement",
-                protoTask.getTaskId(), cloudletOutputSize));
+                    "[RLFOGDEVICE] TaskId=%s has invalid output_size=%d, estimating from memory_requirement",
+                    protoTask.getTaskId(), cloudletOutputSize));
             cloudletOutputSize = protoTask.getMemoryRequirement() * 1024 * 1024; // Estimate from input
             if (cloudletOutputSize <= 0) {
                 cloudletOutputSize = 1024 * 1024; // Default 1 MB in bytes
