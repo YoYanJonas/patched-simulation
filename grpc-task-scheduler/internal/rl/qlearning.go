@@ -89,6 +89,9 @@ func (q *QLearningScheduler) Name() string {
 
 // Schedule schedules tasks using Q-learning
 func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
+	// DEBUG CODE: Track when Schedule() is called (during resorting)
+	logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-SCHEDULE-ENTRY] Schedule() called: TaskCount=%d, Episode=%d",
+		len(tasks), q.currentEpisode)
 	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE] Schedule called: Tasks=%d, Episode=%d, TaskCount=%d, QTableSize=%d, IsLearning=%t",
 		len(tasks), q.currentEpisode, q.episodeTaskCount, len(q.qTable), q.isLearning)
 	
@@ -125,28 +128,39 @@ func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeM
 
 	// Store experience for each task if learning is enabled
 	if q.isLearning && q.experienceManager != nil {
-		logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-EXPERIENCE] Storing experiences: Tasks=%d, State=%s, Action=%s",
-			len(reorderedTasks), stateKey, action.Description)
+		// DEBUG CODE: Entry point for experience storage
+		logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-SCHEDULE-EXPERIENCE-ENTRY] Storing experiences: Tasks=%d, Episode=%d, State=%s, Action=%s, isLearning=%t",
+			len(reorderedTasks), q.currentEpisode, stateKey, action.Description, q.isLearning)
+		
 		for _, task := range reorderedTasks {
-			// CRITICAL: iFogSim sends cloudletId in req.TaskId when completing, so we must use cloudletId for lookup
-			// Try to get cloudletId from TaskEntry if it's a *models.TaskEntry
-			taskIdForStore := task.GetTaskID()
-			cloudletIdForStore := ""
+			// Extract taskId (pattern-based) and cloudletId (unique identifier) separately
+			taskId := task.GetTaskID() // Pattern-based taskId (for cache, not for experience lookup)
+			logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-SCHEDULE-EXPERIENCE-TASK] Processing task: taskId=%s", taskId)
 			
-			// Type assert to get cloudletId if available (TaskEntry interface -> *models.TaskEntry)
+			// CRITICAL: Extract cloudletId from TaskEntry (unique identifier for experience lookup)
+			// NO FALLBACK to taskId - cloudletId is required for experience storage
+			cloudletId := ""
 			if taskEntry, ok := task.(interface{ GetCloudletId() string }); ok {
-				cloudletIdForStore = taskEntry.GetCloudletId()
+				cloudletId = taskEntry.GetCloudletId()
+				if cloudletId == "" {
+					logger.GetLogger().Errorf("[Q-LEARNING-SCHEDULE-ERROR] cloudletId is empty for taskId=%s. Cannot store experience without cloudletId.", taskId)
+					continue // Skip this task - cannot store experience without cloudletId
+				}
+				logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-SCHEDULE-EXPERIENCE-CLOUDLET] Extracted: taskId=%s, cloudletId=%s", taskId, cloudletId)
+			} else {
+				logger.GetLogger().Errorf("[Q-LEARNING-SCHEDULE-ERROR] Cannot extract cloudletId for taskId=%s. TaskEntry does not implement GetCloudletId().", taskId)
+				continue // Skip this task - cannot get cloudletId
 			}
 			
-			// CRITICAL FIX: Use cloudletId if available, otherwise fallback to TaskId
-			// But prefer cloudletId since completion report uses cloudletId
-			experienceKey := cloudletIdForStore
-			if experienceKey == "" {
-				experienceKey = taskIdForStore
-				logger.GetLogger().Warnf("cloudletId not available, using TaskId=%s as fallback", taskIdForStore)
-			}
+			// Use cloudletId for experience storage (unique identifier)
+			// taskId is NOT used for experience lookup - only cloudletId
+			logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-SCHEDULE-EXPERIENCE-BEFORE-STORE] Storing experience: cloudletId=%s, taskId=%s, StateKey=%s, Action=%s",
+				cloudletId, taskId, stateKey, action.Description)
 			
-			q.experienceManager.StoreIncompleteExperience(experienceKey, state, action)
+			q.experienceManager.StoreIncompleteExperience(cloudletId, state, action, q.currentEpisode)
+			
+			// DEBUG CODE: After calling StoreIncompleteExperience
+			logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-SCHEDULE-EXPERIENCE-AFTER-STORE] Experience stored: cloudletId=%s", cloudletId)
 		}
 		logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-EXPERIENCE] Experiences stored: Count=%d", len(reorderedTasks))
 	}
@@ -170,6 +184,10 @@ func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeM
 
 // checkEpisodeCompletion checks if current episode should end and handles completion
 func (q *QLearningScheduler) checkEpisodeCompletion() {
+	// DEBUG CODE: Entry to checkEpisodeCompletion
+	logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-CHECK-ENTRY] checkEpisodeCompletion called: Episode=%d, TaskCount=%d, EpisodeType=%s",
+		q.currentEpisode, q.episodeTaskCount, q.config.EpisodeConfig.Type)
+	
 	episodeComplete := false
 
 	switch q.config.EpisodeConfig.Type {
@@ -178,6 +196,9 @@ func (q *QLearningScheduler) checkEpisodeCompletion() {
 			episodeComplete = true
 			logger.GetLogger().Infof("[EPISODE-CHECK] Episode completion triggered: Episode=%d, TaskCount=%d >= Threshold=%d",
 				q.currentEpisode, q.episodeTaskCount, q.config.EpisodeConfig.TasksPerEpisode)
+			// DEBUG CODE: Episode completion triggered
+			logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-CHECK-COMPLETE] Episode will complete: Episode=%d, TaskCount=%d",
+				q.currentEpisode, q.episodeTaskCount)
 		}
 	case "time_based":
 		episodeDuration := time.Since(q.episodeStartTime)
@@ -189,15 +210,25 @@ func (q *QLearningScheduler) checkEpisodeCompletion() {
 	}
 
 	if episodeComplete {
+		// DEBUG CODE: Before handleEpisodeCompletion
+		logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-CHECK-BEFORE-HANDLE] About to handle episode completion: Episode=%d",
+			q.currentEpisode)
 		q.handleEpisodeCompletion()
+		// DEBUG CODE: After handleEpisodeCompletion
+		logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-CHECK-AFTER-HANDLE] Episode completion handled: Episode=%d",
+			q.currentEpisode)
 	}
 }
 
 // handleEpisodeCompletion handles the completion of an episode
 func (q *QLearningScheduler) handleEpisodeCompletion() {
+	// DEBUG CODE: Entry to handleEpisodeCompletion
+	episode := q.currentEpisode
+	logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-HANDLE-ENTRY] handleEpisodeCompletion called: Episode=%d, TaskCount=%d",
+		episode, q.episodeTaskCount)
+	
 	// Diagnostic logging: Q-table state at episode end
 	qTableSize := len(q.qTable)
-	episode := q.currentEpisode
 	taskCount := q.episodeTaskCount
 	episodeDuration := time.Since(q.episodeStartTime)
 
@@ -226,25 +257,30 @@ func (q *QLearningScheduler) handleEpisodeCompletion() {
 
 	// Mark episode as complete in experience manager
 	if q.experienceManager != nil {
+		// DEBUG CODE: Before MarkEpisodeComplete
+		logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-HANDLE-BEFORE-MARK] About to mark episode complete: Episode=%d, TaskCount=%d",
+			q.currentEpisode, q.episodeTaskCount)
+		
 		logger.GetLogger().Infof("[EPISODE-COMPLETE-EXPMGR] Experience manager notified: Episode=%d, TaskCount=%d",
 			q.currentEpisode, q.episodeTaskCount)
 		q.experienceManager.MarkEpisodeComplete(q.currentEpisode)
+		
+		// DEBUG CODE: After MarkEpisodeComplete
+		logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-EPISODE-HANDLE-AFTER-MARK] Episode marked complete: Episode=%d",
+			q.currentEpisode)
+		
 		logger.GetLogger().Infof("[EPISODE-COMPLETE-EXPMGR] Episode marked complete in experience manager: Episode=%d", q.currentEpisode)
 	} else {
 		logger.GetLogger().Warnf("[WARN-EPISODE] Experience manager not available for episode %d", q.currentEpisode)
 	}
 
-	// Reset episode if configured
-	if q.config.EpisodeConfig.ResetOnEpisodeEnd {
-		logger.GetLogger().Infof("[EPISODE-COMPLETE-RESET] Resetting episode: Episode=%d", q.currentEpisode)
-		q.resetEpisode()
-		logger.GetLogger().Infof("[EPISODE-RESET] Episode reset: Episode=%d, ExplorationRate=%.3f", q.currentEpisode, q.config.ExplorationRate)
-	} else {
-		oldEpisode := q.currentEpisode
-		logger.GetLogger().Infof("[EPISODE-COMPLETE-ADVANCE] Advancing to next episode: %d->%d", oldEpisode, q.currentEpisode+1)
-		q.advanceEpisode()
-		logger.GetLogger().Infof("[EPISODE-ADVANCE] Episode advanced: %d->%d, TaskCount reset, StartTime updated", oldEpisode, q.currentEpisode)
-	}
+	// Each simulation run = 1 episode (episode number stays at 1, no increment)
+	// Just reset task count and start time, but keep episode at 1
+	logger.GetLogger().Infof("[EPISODE-COMPLETE] Episode %d completed, resetting task count (episode stays at %d for continuous learning)",
+		q.currentEpisode, q.currentEpisode)
+	q.episodeTaskCount = 0
+	q.episodeStartTime = time.Now()
+	logger.GetLogger().Infof("[EPISODE-COMPLETE] Task count reset, episode remains at %d", q.currentEpisode)
 	
 }
 
@@ -320,11 +356,6 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 		q.initializeStateQValues(stateKey)
 	} else {
 	}
-	
-	// Check if deadline is disabled and log
-	deadlineDisabled := q.rewardWeights.DeadlineMiss == 0.0
-	if deadlineDisabled {
-	}
 
 	// Epsilon-greedy action selection
 	explorationRate := q.config.ExplorationRate
@@ -369,36 +400,26 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 }
 
 // getRandomAction returns a random action with optimized access
-// Filters out ActionDeadlineAware if deadline is disabled
 func (q *QLearningScheduler) getRandomAction() Action {
-	// Get all actions and filter out deadline-aware if disabled
-	actions := q.getAvailableActions()
+	// Get all actions
+	actions := GetAllActions()
 	if len(actions) == 0 {
-		// Fallback to ActionNone if no actions available
-		allActions := GetAllActions()
-		return allActions[0] // ActionNone
+		// Fallback to first action if no actions available
+		return Action{Type: ActionSortByPriority, Description: "Sort by priority", Priority: 0.6}
 	}
 	return actions[q.rng.Intn(len(actions))]
 }
 
 // getBestActionOptimized finds the best action with optimized Q-table lookup
-// Filters out ActionDeadlineAware if deadline is disabled
 func (q *QLearningScheduler) getBestActionOptimized(stateKey string) Action {
 	stateActions := q.qTable[stateKey]
 	
 	// Pre-allocate for better performance
-	bestAction := ActionNone
+	bestAction := ActionSortByPriority
 	bestValue := math.Inf(-1)
-	
-	// Check if deadline is disabled (weight = 0.0)
-	deadlineDisabled := q.rewardWeights.DeadlineMiss == 0.0
 
 	// Optimized iteration with early exit for common cases
 	for actionType, qValue := range stateActions {
-		// Filter out ActionDeadlineAware if deadline is disabled
-		if deadlineDisabled && actionType == ActionDeadlineAware {
-			continue
-		}
 		if qValue > bestValue {
 			bestValue = qValue
 			bestAction = actionType
@@ -421,27 +442,9 @@ func (q *QLearningScheduler) getActionByType(actionType ActionType) Action {
 	return actions[0] // Fallback
 }
 
-// getAvailableActions returns available actions, filtering out ActionDeadlineAware if deadline is disabled
+// getAvailableActions returns all available actions
 func (q *QLearningScheduler) getAvailableActions() []Action {
-	allActions := GetAllActions()
-	
-	// Check if deadline is disabled (weight = 0.0)
-	deadlineDisabled := q.rewardWeights.DeadlineMiss == 0.0
-	
-	if !deadlineDisabled {
-		// Deadline enabled, return all actions
-		return allActions
-	}
-	
-	// Deadline disabled, filter out ActionDeadlineAware
-	filteredActions := make([]Action, 0, len(allActions))
-	for _, action := range allActions {
-		if action.Type != ActionDeadlineAware {
-			filteredActions = append(filteredActions, action)
-		}
-	}
-	
-	return filteredActions
+	return GetAllActions()
 }
 
 // cleanupFrequentStatesCache removes old entries from frequent states cache
@@ -503,6 +506,10 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 	newQ := currentQ + q.config.LearningRate*(targetQ-currentQ)
 	q.qTable[currentStateKey][experience.Action.Type] = newQ
 
+	// DEBUG CODE: Track Q-update (Q-table is updated, model persistence will track total_q_updates)
+	logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-UPDATE-COUNT] Q-table updated: State=%s, Action=%s, OldQ=%.3f, NewQ=%.3f",
+		currentStateKey, q.getActionDescription(experience.Action.Type), currentQ, newQ)
+	
 	// Mark model as dirty (lightweight - no I/O, just sets flag)
 	if q.onDirty != nil {
 		q.onDirty()
@@ -540,11 +547,10 @@ func (q *QLearningScheduler) getActionDescription(actionType ActionType) string 
 }
 
 // initializeStateQValues initializes Q-values for a state
-// Filters out ActionDeadlineAware if deadline is disabled
 func (q *QLearningScheduler) initializeStateQValues(stateKey string) {
 	if _, exists := q.qTable[stateKey]; !exists {
 		q.qTable[stateKey] = make(map[ActionType]float64)
-		// Use getAvailableActions to filter out ActionDeadlineAware if disabled
+		// Use getAvailableActions to get all actions
 		actions := q.getAvailableActions()
 		for _, action := range actions {
 			q.qTable[stateKey][action.Type] = 0.0
@@ -744,35 +750,54 @@ func (q *QLearningScheduler) SetMultiObjectiveCalculator(calc *MultiObjectiveRew
 }
 
 // ProcessTaskCompletion handles task completion for experience collection
-func (q *QLearningScheduler) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
-	logger.GetLogger().Infof("[QLEARNING-COMPLETE-ENTRY] ProcessTaskCompletion: TaskID=%s, QueueLength=%d, HasNodeStatus=%t, HasExpMgr=%t", 
-		task.GetTaskID(), queueLength, nodeStatus != nil, q.experienceManager != nil)
+func (q *QLearningScheduler) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
+	logger.GetLogger().Infof("[QLEARNING-COMPLETE-ENTRY] ProcessTaskCompletion: cloudletId=%s, QueueLength=%d, HasNodeStatus=%t, HasExpMgr=%t", 
+		cloudletId, queueLength, nodeStatus != nil, q.experienceManager != nil)
 	
 	if q.experienceManager == nil {
-		logger.GetLogger().Errorf("[QLEARNING-COMPLETE-ERROR] Experience manager not initialized: TaskID=%s", task.GetTaskID())
+		logger.GetLogger().Errorf("[QLEARNING-COMPLETE-ERROR] Experience manager not initialized: cloudletId=%s", cloudletId)
 		return fmt.Errorf("experience manager not initialized")
 	}
 
 	// Validate task completion report
 	if report == nil {
-		return fmt.Errorf("task completion report is nil for task %s", task.GetTaskID())
+		return fmt.Errorf("task completion report is nil for task cloudletId=%s", cloudletId)
 	}
 
 	if report.Metrics == nil {
-		return fmt.Errorf("system metrics missing in completion report for task %s", task.GetTaskID())
+		return fmt.Errorf("system metrics missing in completion report for task cloudletId=%s", cloudletId)
 	}
 
-	// CRITICAL: iFogSim sends cloudletId in req.TaskId when completing tasks
-	// We must use report.TaskId (cloudletId) for lookup, not task.GetTaskID() (TaskId)
-	cloudletIdForCompletion := report.TaskId
+	// CRITICAL: Use cloudletId parameter (explicitly passed, no fallback to taskId)
+	// cloudletId is the unique identifier for experience lookup
+	// taskId (from report.TaskId) is pattern-based and used for cache operations, NOT for experience lookup
+	// Both cloudletId and taskId are sent separately from iFogSim - we do NOT assume taskId contains cloudletId
 	
-	// CRITICAL FIX: Use report.TaskId (cloudletId) for experience lookup
-	// This matches what iFogSim sends in the completion report
-	err := q.experienceManager.CompleteExperience(cloudletIdForCompletion, report, nodeStatus, queueLength)
+	// DEBUG CODE: Entry to ProcessTaskCompletion
+	logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-COMPLETE-ENTRY] ProcessTaskCompletion called: cloudletId=%s, taskId=%s, task.GetTaskID()=%s, QueueLength=%d",
+		cloudletId, report.TaskId, task.GetTaskID(), queueLength)
+	
+	// DEBUG CODE: Before calling CompleteExperience
+	logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-COMPLETE-BEFORE-CALL] About to complete experience: cloudletId=%s, HasNodeStatus=%t",
+		cloudletId, nodeStatus != nil)
+	
+	// CRITICAL: Use cloudletId parameter for experience lookup (required, no fallback)
+	// Note: taskId is NOT used for experience lookup - only cloudletId
+	logger.GetLogger().Infof("[Q-LEARNING-COMPLETE-CALL] Calling CompleteExperience with cloudletId=%s (NOT taskId=%s)", cloudletId, report.TaskId)
+	err := q.experienceManager.CompleteExperience(cloudletId, report, nodeStatus, queueLength)
+	
+	// DEBUG CODE: After calling CompleteExperience
+	if err != nil {
+		logger.GetLogger().Errorf("[DEBUG CODE] [Q-LEARNING-COMPLETE-AFTER-CALL-ERROR] CompleteExperience returned error: cloudletId=%s, Error=%v",
+			cloudletId, err)
+	} else {
+		logger.GetLogger().Infof("[DEBUG CODE] [Q-LEARNING-COMPLETE-AFTER-CALL-SUCCESS] CompleteExperience succeeded: cloudletId=%s",
+			cloudletId)
+	}
 	if err != nil {
 		// Log but don't fail completely - allows system to continue
-		logger.GetLogger().Errorf("[QLEARNING-COMPLETE-ERROR] experienceManager.CompleteExperience failed: TaskID=%s, Error=%v", 
-			task.GetTaskID(), err)
+		logger.GetLogger().Errorf("[QLEARNING-COMPLETE-ERROR] experienceManager.CompleteExperience failed: cloudletId=%s, Error=%v", 
+			cloudletId, err)
 		return fmt.Errorf("experience completion failed for task %s: %w", task.GetTaskID(), err)
 	}
 

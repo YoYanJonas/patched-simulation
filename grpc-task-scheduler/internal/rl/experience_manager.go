@@ -11,7 +11,7 @@ import (
 
 type ExperienceManager struct {
 	mu                    sync.RWMutex
-	incompleteExperiences map[string]*IncompleteExperience // key is task_id
+	incompleteExperiences map[string]*IncompleteExperience // key is cloudletId (unique instance identifier)
 	experienceTimeout     time.Duration
 	qLearningScheduler    *QLearningScheduler
 	multiObjectiveCalc    *MultiObjectiveRewardCalculator
@@ -27,11 +27,12 @@ type ExperienceManager struct {
 }
 
 type IncompleteExperience struct {
-	TaskID    string // Using task_id as identifier
+	TaskID    string // Using cloudletId as unique identifier (not pattern-based taskId)
 	State     *StateFeatures
 	Action    Action
 	Timestamp time.Time
 	Timeout   time.Time
+	Episode   int // Track episode number to prevent overwrites
 }
 
 // New structs for memory management
@@ -55,9 +56,18 @@ type StabilityInfo struct {
 func NewExperienceManager(scheduler *QLearningScheduler, multiObj *MultiObjectiveRewardCalculator) *ExperienceManager {
 	cfg := config.GetConfig()
 
+	// Set very long timeout (24 hours) to prevent expiration during simulation
+	experienceTimeout := cfg.RL.MemoryManagement.ExperienceTimeoutMinutes * time.Minute
+	if experienceTimeout == 0 || experienceTimeout < 24*time.Hour {
+		experienceTimeout = 24 * time.Hour // 24 hours - long enough for any simulation
+		logger.GetLogger().Infof("[EXP-MGR-INIT] Experience timeout set to 24 hours (default)")
+	} else {
+		logger.GetLogger().Infof("[EXP-MGR-INIT] Experience timeout set to %v (from config)", experienceTimeout)
+	}
+
 	return &ExperienceManager{
 		incompleteExperiences: make(map[string]*IncompleteExperience),
-		experienceTimeout:     cfg.RL.MemoryManagement.ExperienceTimeoutMinutes * time.Minute,
+		experienceTimeout:     experienceTimeout,
 		qLearningScheduler:    scheduler,
 		multiObjectiveCalc:    multiObj,
 
@@ -72,17 +82,35 @@ func NewExperienceManager(scheduler *QLearningScheduler, multiObj *MultiObjectiv
 	}
 }
 
-func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *StateFeatures, action Action) {
-	logger.GetLogger().Infof("[EXP-MGR-STORE] Creating incomplete experience: TaskID=%s, Action=%s, StateKey=%s, QueueLength=%d",
-		taskID, action.Description, state.GetStateKey(), state.QueueLength)
+func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *StateFeatures, action Action, episode int) {
+	// NOTE: taskID parameter is cloudletId (unique instance identifier from iFogSim)
+	// This is NOT the pattern-based taskId - cloudletId and taskId are sent separately
+	// cloudletId is used for experience lookup, taskId is used for cache operations
+	// DEBUG CODE: Entry to StoreIncompleteExperience (before lock)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-ENTRY] StoreIncompleteExperience called: cloudletId=%s, Action=%s, StateKey=%s, QueueLength=%d, Episode=%d",
+		taskID, action.Description, state.GetStateKey(), state.QueueLength, episode)
 	
 	em.mu.Lock()
+	
+	// DEBUG CODE: After lock acquired
+	currentCountBeforeStore := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-AFTER-LOCK] Lock acquired: cloudletId=%s, CurrentIncompleteCount=%d, Episode=%d",
+		taskID, currentCountBeforeStore, episode)
+	
 	defer em.mu.Unlock()
 
-	// Check if experience already exists (shouldn't happen, but log if it does)
+	// Check if experience exists for this task in the current episode
 	if existing, exists := em.incompleteExperiences[taskID]; exists {
-		logger.GetLogger().Warnf("[EXP-MGR-STORE] WARNING: Experience already exists for TaskID=%s (created at %s, timeout at %s). Overwriting.",
-			taskID, existing.Timestamp.Format(time.RFC3339), existing.Timeout.Format(time.RFC3339))
+		if existing.Episode == episode {
+			// Experience already exists for this task in this episode
+			// Skip storage to prevent overwrite
+			logger.GetLogger().Infof("[EXP-MGR-STORE-SKIP] Skipping duplicate experience: cloudletId=%s, Episode=%d, ExistingAction=%s, NewAction=%s",
+				taskID, episode, existing.Action.Description, action.Description)
+			return // Return without overwriting
+		}
+		// Different episode - allow overwrite (task reused across episodes)
+		logger.GetLogger().Warnf("[EXP-MGR-STORE-OVERWRITE] Overwriting experience from different episode: cloudletId=%s, OldEpisode=%d, NewEpisode=%d",
+			taskID, existing.Episode, episode)
 	}
 
 	em.incompleteExperiences[taskID] = &IncompleteExperience{
@@ -91,82 +119,111 @@ func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *Sta
 		Action:    action,
 		Timestamp: time.Now(),
 		Timeout:   time.Now().Add(em.experienceTimeout),
+		Episode:   episode, // Store episode number
 	}
 	
+	// DEBUG CODE: After storing
 	totalIncomplete := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[EXP-MGR-STORE] Experience stored successfully: TaskID=%s, TotalIncomplete=%d, Timeout=%s",
-		taskID, totalIncomplete, em.incompleteExperiences[taskID].Timeout.Format(time.RFC3339))
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-AFTER-STORE] Experience stored: cloudletId=%s, TotalIncomplete=%d (was %d), Timeout=%s, Episode=%d",
+		taskID, totalIncomplete, currentCountBeforeStore, em.incompleteExperiences[taskID].Timeout.Format(time.RFC3339), episode)
+	
+	logger.GetLogger().Infof("[EXP-MGR-STORE] Experience stored successfully: cloudletId=%s, TotalIncomplete=%d, Timeout=%s, Episode=%d",
+		taskID, totalIncomplete, em.incompleteExperiences[taskID].Timeout.Format(time.RFC3339), episode)
 
 	// Update memory usage estimation
 	em.updateMemoryUsage()
+	
+	// DEBUG CODE: After memory update
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-AFTER-MEMORY] Memory updated: cloudletId=%s, MemoryUsageBytes=%d",
+		taskID, em.memoryUsageBytes)
 }
 
 func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Completing experience: TaskID=%s, QueueLength=%d, HasNodeStatus=%t",
-		taskID, queueLength, nodeStatus != nil)
+	// NOTE: taskID parameter is cloudletId (unique instance identifier from iFogSim)
+	// This is passed explicitly from ProcessTaskCompletion to ensure correct lookup
+	// taskId (from report.TaskId) is pattern-based and used for cache operations, NOT for experience lookup
+	// Both cloudletId and taskId are sent separately from iFogSim - we do NOT assume taskId contains cloudletId
+	
+	// DEBUG CODE: Entry to CompleteExperience (before lock)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-ENTRY] CompleteExperience called: cloudletId=%s, report.taskId=%s, report.cloudletId=%s, QueueLength=%d, HasNodeStatus=%t",
+		taskID, report.TaskId, report.CloudletId, queueLength, nodeStatus != nil)
 	
 	em.mu.Lock()
 	
-	// Log all available task IDs before lookup (for debugging)
-	availableTaskIDs := make([]string, 0, len(em.incompleteExperiences))
+	// DEBUG CODE: After lock acquired
+	currentCountBeforeLookup := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-LOCK] Lock acquired: cloudletId=%s, CurrentIncompleteCount=%d",
+		taskID, currentCountBeforeLookup)
+	
+	// Log all available cloudletIds before lookup (for debugging)
+	availableCloudletIds := make([]string, 0, len(em.incompleteExperiences))
 	for id := range em.incompleteExperiences {
-		availableTaskIDs = append(availableTaskIDs, id)
+		availableCloudletIds = append(availableCloudletIds, id)
 	}
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Looking up TaskID=%s, AvailableIncompleteExperiences=%d, IDs=%v",
-		taskID, len(availableTaskIDs), availableTaskIDs)
+	
+	// DEBUG CODE: Before lookup
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-BEFORE-LOOKUP] About to lookup: cloudletId=%s, AvailableIncompleteExperiences=%d, cloudletIds=%v",
+		taskID, len(availableCloudletIds), availableCloudletIds)
+	
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Looking up cloudletId=%s, AvailableIncompleteExperiences=%d, cloudletIds=%v",
+		taskID, len(availableCloudletIds), availableCloudletIds)
 	
 	// Lookup experience
 	incompleteExp, exists := em.incompleteExperiences[taskID]
-	if !exists {
+	em.mu.Unlock()
+	
+	// DEBUG CODE: After lookup
+	if exists {
+		logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-LOOKUP-FOUND] Experience found: cloudletId=%s, CreatedAt=%s, Age=%s, Action=%s",
+			taskID, incompleteExp.Timestamp.Format(time.RFC3339), time.Since(incompleteExp.Timestamp).String(), incompleteExp.Action.Description)
+	} else {
+		logger.GetLogger().Warnf("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-LOOKUP-NOT-FOUND] Experience NOT found: cloudletId=%s, AvailableCloudletIds=%v",
+			taskID, availableCloudletIds)
+		
+		// Retry with small delay (handles race conditions between storage and completion)
+		// This can happen if completion report arrives very quickly after scheduling
+		time.Sleep(10 * time.Millisecond)
+		em.mu.Lock()
+		incompleteExp, exists = em.incompleteExperiences[taskID]
 		em.mu.Unlock()
 		
-		// Log detailed diagnostic information
-		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] TaskID=%s NOT FOUND in incomplete experiences", taskID)
-		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] Total incomplete experiences: %d", len(availableTaskIDs))
-		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] Available task IDs: %v", availableTaskIDs)
-		
-		// Check if task ID might have been cleaned up due to timeout
-		now := time.Now()
-		for _, exp := range em.incompleteExperiences {
-			if exp.Timeout.Before(now) {
-				logger.GetLogger().Warnf("[EXP-MGR-COMPLETE-ERROR] Found expired experience: TaskID=%s, Timeout=%s, Age=%s",
-					exp.TaskID, exp.Timeout.Format(time.RFC3339), now.Sub(exp.Timeout).String())
-			}
+		if !exists {
+			// Still not found - log detailed error
+			logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] cloudletId=%s NOT FOUND after retry", taskID)
+			logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] Total incomplete experiences: %d", len(availableCloudletIds))
+			logger.GetLogger().Errorf("[EXP-MGR-COMPLETE-ERROR] Available cloudletIds: %v", availableCloudletIds)
+			return fmt.Errorf("cloudletId %s not found in incomplete experiences after retry (total available: %d)", taskID, len(availableCloudletIds))
 		}
-		
-		// Try to find similar task IDs (for debugging ID mismatch issues)
-		for _, availableID := range availableTaskIDs {
-			if len(availableID) > 0 && len(taskID) > 0 {
-				// Check if IDs are similar (same prefix or suffix)
-				if len(availableID) >= 5 && len(taskID) >= 5 {
-					if availableID[:5] == taskID[:5] || availableID[len(availableID)-5:] == taskID[len(taskID)-5:] {
-						logger.GetLogger().Warnf("[EXP-MGR-COMPLETE-ERROR] Found similar task ID: Available=%s, Requested=%s",
-							availableID, taskID)
-					}
-				}
-			}
-		}
-		
-		return fmt.Errorf("task %s not found in incomplete experiences (total available: %d)", taskID, len(availableTaskIDs))
+		logger.GetLogger().Infof("[EXP-MGR-COMPLETE-RETRY] Experience found after retry: cloudletId=%s", taskID)
 	}
+	
+	// DEBUG CODE: Before delete
+	em.mu.Lock()
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-BEFORE-DELETE] About to delete: cloudletId=%s, CurrentCount=%d",
+		taskID, len(em.incompleteExperiences))
 	
 	// Remove from incomplete experiences
 	delete(em.incompleteExperiences, taskID)
 	remainingIncomplete := len(em.incompleteExperiences)
+	
+	// DEBUG CODE: After delete
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-DELETE] Experience deleted: cloudletId=%s, RemainingIncomplete=%d (was %d)",
+		taskID, remainingIncomplete, currentCountBeforeLookup)
+	
 	em.mu.Unlock()
 	
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Experience found: TaskID=%s, CreatedAt=%s, Age=%s, RemainingIncomplete=%d",
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Experience found: cloudletId=%s, CreatedAt=%s, Age=%s, RemainingIncomplete=%d",
 		taskID, incompleteExp.Timestamp.Format(time.RFC3339), time.Since(incompleteExp.Timestamp).String(), remainingIncomplete)
 	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] State comparison: OldQueueLength=%d, NewQueueLength=%d, OldStateKey=%s",
 		incompleteExp.State.QueueLength, queueLength, incompleteExp.State.GetStateKey())
 
 	// Calculate delayed reward with node status
-	reward, err := em.calculateDelayedReward(incompleteExp, report, nodeStatus)
+	reward, err := em.calculateDelayedReward(incompleteExp, report, nodeStatus, taskID)
 	if err != nil {
-		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] Failed to calculate reward: TaskID=%s, Error=%v", taskID, err)
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] Failed to calculate reward: cloudletId=%s, Error=%v", taskID, err)
 		return fmt.Errorf("failed to calculate reward: %w", err)
 	}
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Reward calculated: TaskID=%s, Reward=%.3f", taskID, reward)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Reward calculated: cloudletId=%s, Reward=%.3f", taskID, reward)
 
 	// Create next state from node status (for Q-learning update)
 	// Use actual current queue length (passed from scheduler engine)
@@ -176,7 +233,7 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 		nodeStatus,
 		queueLength, // Use actual queue length at completion time
 	)
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Next state created: TaskID=%s, NextStateKey=%s, QueueLength=%d",
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Next state created: cloudletId=%s, NextStateKey=%s, QueueLength=%d",
 		taskID, nextState.GetStateKey(), queueLength)
 
 	experience := &Experience{
@@ -189,19 +246,19 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	}
 
 	// Update Q-learning policy
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Updating Q-learning policy: TaskID=%s, State=%s, Action=%s, Reward=%.3f",
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Updating Q-learning policy: cloudletId=%s, State=%s, Action=%s, Reward=%.3f",
 		taskID, experience.State.GetStateKey(), experience.Action.Description, experience.Reward)
 	if err := em.qLearningScheduler.UpdatePolicy(experience); err != nil {
-		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] ERROR: Failed to update Q-learning policy: TaskID=%s, Error=%v", taskID, err)
+		logger.GetLogger().Errorf("[EXP-MGR-COMPLETE] ERROR: Failed to update Q-learning policy: cloudletId=%s, Error=%v", taskID, err)
 		return err
 	}
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Q-learning policy updated successfully: TaskID=%s", taskID)
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Q-learning policy updated successfully: cloudletId=%s", taskID)
 
 	// Store complete experience and track stability
 	em.storeCompleteExperience(experience, taskID)
 	em.trackQValueStability(incompleteExp.State, incompleteExp.Action)
 	
-	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Experience completed successfully: TaskID=%s, Reward=%.3f, StateKey=%s->%s",
+	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Experience completed successfully: cloudletId=%s, Reward=%.3f, StateKey=%s->%s",
 		taskID, reward, experience.State.GetStateKey(), experience.NextState.GetStateKey())
 	return nil
 }
@@ -540,65 +597,65 @@ func (em *ExperienceManager) emergencyMemoryCleanup() {
 }
 
 func (em *ExperienceManager) Cleanup() {
+	// DEBUG CODE: Entry to Cleanup
 	em.mu.Lock()
+	
+	// DEBUG CODE: After lock acquired
+	beforeCleanupCount := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-ENTRY] Cleanup called: CurrentIncompleteCount=%d, EpisodeCleanupCounter=%d, ConfigEnabled=%t",
+		beforeCleanupCount, em.episodeCleanupCounter, em.config.Enabled)
+	
 	defer func() {
 		em.mu.Unlock()
 	}()
 
 	now := time.Now()
 
-	// Clean up timed-out incomplete experiences
-	// Log all incomplete experiences before cleanup for diagnostics
-	beforeCleanupCount := len(em.incompleteExperiences)
-	expiredTaskIDs := make([]string, 0)
-	activeTaskIDs := make([]string, 0)
+	// CRITICAL: Do NOT clean up incomplete experiences during simulation
+	// Only clean them at simulation end (via explicit cleanup method)
+	// This prevents "experience not found" errors
+	logger.GetLogger().Infof("[EXP-MGR-CLEANUP] Skipping incomplete experience cleanup during simulation (preserving all incomplete experiences)")
 	
-	for taskID, exp := range em.incompleteExperiences {
-		age := now.Sub(exp.Timestamp)
-		timeUntilTimeout := exp.Timeout.Sub(now)
-		if now.After(exp.Timeout) {
-			expiredTaskIDs = append(expiredTaskIDs, taskID)
-			logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Removing expired experience: TaskID=%s, Age=%s, Timeout=%s, Overdue=%s",
-				taskID, age.String(), exp.Timeout.Format(time.RFC3339), timeUntilTimeout.String())
-		} else {
-			activeTaskIDs = append(activeTaskIDs, taskID)
-		}
-	}
-	
-	logger.GetLogger().Infof("[EXP-MGR-CLEANUP-TIMEOUT] Before cleanup: Total=%d, Expired=%d, Active=%d",
-		beforeCleanupCount, len(expiredTaskIDs), len(activeTaskIDs))
-	
-	cleanedTimeout := 0
-	for _, taskID := range expiredTaskIDs {
-		if exp, exists := em.incompleteExperiences[taskID]; exists {
-			delete(em.incompleteExperiences, taskID)
-			cleanedTimeout++
-			logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Removed expired experience: TaskID=%s, CreatedAt=%s, Timeout=%s",
-				taskID, exp.Timestamp.Format(time.RFC3339), exp.Timeout.Format(time.RFC3339))
-		}
-	}
-	
-	afterCleanupCount := len(em.incompleteExperiences)
-	if cleanedTimeout > 0 {
-		logger.GetLogger().Warnf("[EXP-MGR-CLEANUP-TIMEOUT] Cleaned up %d timed-out incomplete experiences: Before=%d, After=%d, RemovedTaskIDs=%v",
-			cleanedTimeout, beforeCleanupCount, afterCleanupCount, expiredTaskIDs)
-	} else {
+	// Only clean up complete experiences if memory limit exceeded
+	// This is safe because complete experiences are already used for learning
+	if len(em.completeExperiences) > em.config.MaxExperiences {
+		logger.GetLogger().Infof("[EXP-MGR-CLEANUP] Memory limit exceeded, cleaning complete experiences: Current=%d, Max=%d",
+			len(em.completeExperiences), em.config.MaxExperiences)
+		em.enforceExperienceLimit()
 	}
 
-	// Scheduled cleanup based on episode intervals
+	// Scheduled cleanup based on episode intervals (only for complete experiences)
 	if em.config.Enabled {
+		// DEBUG CODE: Before scheduled cleanup check
+		logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-BEFORE-SCHEDULED] Scheduled cleanup check: EpisodeCleanupCounter=%d, CleanupIntervalEpisodes=%d",
+			em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
+		
 		em.episodeCleanupCounter++
 
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes {
+			// DEBUG CODE: Before performScheduledCleanup
+			logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-BEFORE-PERFORM] About to perform scheduled cleanup: EpisodeCleanupCounter=%d",
+				em.episodeCleanupCounter)
+			
 			em.performScheduledCleanup()
 			em.episodeCleanupCounter = 0
 			em.lastCleanupTime = now
+			
+			// DEBUG CODE: After performScheduledCleanup
+			afterScheduledCleanupCount := len(em.incompleteExperiences)
+			logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-AFTER-PERFORM] Scheduled cleanup complete: AfterCount=%d (incomplete experiences preserved)",
+				afterScheduledCleanupCount)
 		}
 	}
 }
 
 // Perform scheduled cleanup
 func (em *ExperienceManager) performScheduledCleanup() {
+	// DEBUG CODE: Entry to performScheduledCleanup
+	beforeCount := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-PERFORM-SCHEDULED-ENTRY] performScheduledCleanup called: BeforeIncompleteCount=%d",
+		beforeCount)
+	
 	em.CleanupStableExperiences()
 	em.enforceExperienceLimit()
 
@@ -606,6 +663,11 @@ func (em *ExperienceManager) performScheduledCleanup() {
 	em.cleanupUnusedQValueHistory()
 
 	em.updateMemoryUsage()
+	
+	// DEBUG CODE: After performScheduledCleanup
+	afterCount := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-PERFORM-SCHEDULED-EXIT] performScheduledCleanup complete: AfterIncompleteCount=%d (was %d)",
+		afterCount, beforeCount)
 
 }
 
@@ -705,7 +767,13 @@ func (em *ExperienceManager) GetStats() map[string]interface{} {
 
 // FIXED MarkEpisodeComplete - compilation errors resolved
 func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
+	// DEBUG CODE: Entry to MarkEpisodeComplete
 	em.mu.Lock()
+	
+	beforeCount := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-EPISODE-ENTRY] MarkEpisodeComplete called: Episode=%d, BeforeIncompleteCount=%d, EpisodeCleanupCounter=%d",
+		episodeNumber, beforeCount, em.episodeCleanupCounter)
+	
 	defer func() {
 		em.mu.Unlock()
 	}()
@@ -743,8 +811,16 @@ func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
 		// Check if cleanup should be triggered
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes-1 {
 			// Will trigger on next Cleanup() call
+			// DEBUG CODE: Cleanup will trigger
+			logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-EPISODE-CLEANUP-TRIGGER] Cleanup will trigger on next Cleanup() call: EpisodeCleanupCounter=%d, CleanupIntervalEpisodes=%d",
+				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 		}
 	}
+	
+	// DEBUG CODE: After episode processing
+	afterCount := len(em.incompleteExperiences)
+	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-EPISODE-EXIT] MarkEpisodeComplete complete: Episode=%d, AfterIncompleteCount=%d (was %d), CompleteExperiences=%d",
+		episodeNumber, afterCount, beforeCount, len(em.completeExperiences))
 	
 	logger.GetLogger().Infof("[EXP-MGR-EPISODE] MarkEpisodeComplete completed: Episode=%d, IncompleteExperiences=%d, CompleteExperiences=%d, CleanupCounter=%d",
 		episodeNumber, len(em.incompleteExperiences), len(em.completeExperiences), em.episodeCleanupCounter)
@@ -769,14 +845,12 @@ func (em *ExperienceManager) updateMemoryUsageUnsafe() {
 	em.memoryUsageBytes = experienceBytes + incompleteBytes + qValueBytes + stabilityBytes
 }
 
-func (em *ExperienceManager) calculateDelayedReward(incompleteExp *IncompleteExperience, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode) (float64, error) {
-	taskID := "unknown"
-	if len(report.Tasks) > 0 {
-		taskID = report.Tasks[0].TaskId
-	}
+func (em *ExperienceManager) calculateDelayedReward(incompleteExp *IncompleteExperience, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, cloudletId string) (float64, error) {
+	// NOTE: cloudletId is the unique instance identifier passed from CompleteExperience
+	// Use cloudletId for logging consistency (not pattern-based taskId from report)
 
-	logger.GetLogger().Infof("[REWARD-CALC] Calculating delayed reward: TaskID=%s, MultiObj=%t, CompletedTasks=%d, NodeStatus=%t",
-		taskID, em.multiObjectiveCalc != nil, len(report.Tasks), nodeStatus != nil)
+	logger.GetLogger().Infof("[REWARD-CALC] Calculating delayed reward: cloudletId=%s, MultiObj=%t, CompletedTasks=%d, NodeStatus=%t",
+		cloudletId, em.multiObjectiveCalc != nil, len(report.Tasks), nodeStatus != nil)
 
 	if em.multiObjectiveCalc != nil {
 		// Pass node status to multi-objective calculator
@@ -788,18 +862,18 @@ func (em *ExperienceManager) calculateDelayedReward(incompleteExp *IncompleteExp
 			nodeStatus, // NEW: Pass node status
 		)
 		if err != nil {
-			logger.GetLogger().Errorf("[REWARD-CALC] Multi-objective reward calculation failed: TaskID=%s, Error=%v",
-				taskID, err)
+			logger.GetLogger().Errorf("[REWARD-CALC] Multi-objective reward calculation failed: cloudletId=%s, Error=%v",
+				cloudletId, err)
 			return 0.0, err
 		}
-		logger.GetLogger().Infof("[REWARD-CALC-RESULT] Multi-objective reward calculated: TaskID=%s, Reward=%.3f",
-			taskID, reward)
+		logger.GetLogger().Infof("[REWARD-CALC-RESULT] Multi-objective reward calculated: cloudletId=%s, Reward=%.3f",
+			cloudletId, reward)
 		return reward, nil
 	}
 
 	reward := em.calculateSimpleReward(report)
-	logger.GetLogger().Infof("[REWARD-SIMPLE] Simple reward calculated: TaskID=%s, Reward=%.3f, Latency=%.2fms, Throughput=%.2f, DeadlineMisses=%d",
-		taskID, reward, report.Metrics.AverageLatencyMs, report.Metrics.TotalThroughput, report.Metrics.DeadlineMisses)
+	logger.GetLogger().Infof("[REWARD-SIMPLE] Simple reward calculated: cloudletId=%s, Reward=%.3f, Latency=%.2fms, Throughput=%.2f, DeadlineMisses=%d",
+		cloudletId, reward, report.Metrics.AverageLatencyMs, report.Metrics.TotalThroughput, report.Metrics.DeadlineMisses)
 	return reward, nil
 }
 
