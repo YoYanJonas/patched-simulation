@@ -232,7 +232,8 @@ message UpdateObjectiveWeightsResponse {
 
 // Task completion reporting for delayed reward system
 message TaskCompletionReport {
-  string task_id = 1;                     // Using task_id as unique identifier
+  string task_id = 1;                     // DEPRECATED: Pattern-based taskId (for caching/fingerprinting). Use cloudlet_id for experience lookup.
+  string cloudlet_id = 6;                 // REQUIRED: CloudletId (unique instance identifier) - used for experience lookup
   repeated CompletedTask tasks = 2;
   SystemPerformanceMetrics metrics = 3;
   int64 completion_timestamp = 4;
@@ -240,7 +241,8 @@ message TaskCompletionReport {
 }
 
 message CompletedTask {
-  string task_id = 1;
+  string task_id = 1;                     // DEPRECATED: Pattern-based taskId (for caching/fingerprinting). Use cloudlet_id for experience lookup.
+  string cloudlet_id = 10;                // REQUIRED: CloudletId (unique instance identifier) - used for experience lookup
   string assigned_node_id = 2;
   double actual_execution_time_ms = 3;
   double actual_latency_ms = 4;

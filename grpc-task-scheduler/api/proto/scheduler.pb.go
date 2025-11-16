@@ -2008,7 +2008,8 @@ func (x *UpdateObjectiveWeightsResponse) GetMessage() string {
 // Task completion reporting for delayed reward system
 type TaskCompletionReport struct {
 	state               protoimpl.MessageState    `protogen:"open.v1"`
-	TaskId              string                    `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"` // Using task_id as unique identifier
+	TaskId              string                    `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`             // DEPRECATED: Pattern-based taskId (for caching/fingerprinting). Use cloudlet_id for experience lookup.
+	CloudletId          string                    `protobuf:"bytes,6,opt,name=cloudlet_id,json=cloudletId,proto3" json:"cloudlet_id,omitempty"` // REQUIRED: CloudletId (unique instance identifier) - used for experience lookup
 	Tasks               []*CompletedTask          `protobuf:"bytes,2,rep,name=tasks,proto3" json:"tasks,omitempty"`
 	Metrics             *SystemPerformanceMetrics `protobuf:"bytes,3,opt,name=metrics,proto3" json:"metrics,omitempty"`
 	CompletionTimestamp int64                     `protobuf:"varint,4,opt,name=completion_timestamp,json=completionTimestamp,proto3" json:"completion_timestamp,omitempty"`
@@ -2054,6 +2055,13 @@ func (x *TaskCompletionReport) GetTaskId() string {
 	return ""
 }
 
+func (x *TaskCompletionReport) GetCloudletId() string {
+	if x != nil {
+		return x.CloudletId
+	}
+	return ""
+}
+
 func (x *TaskCompletionReport) GetTasks() []*CompletedTask {
 	if x != nil {
 		return x.Tasks
@@ -2084,7 +2092,8 @@ func (x *TaskCompletionReport) GetNodeStatus() *FogNode {
 
 type CompletedTask struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
-	TaskId                string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	TaskId                string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`              // DEPRECATED: Pattern-based taskId (for caching/fingerprinting). Use cloudlet_id for experience lookup.
+	CloudletId            string                 `protobuf:"bytes,10,opt,name=cloudlet_id,json=cloudletId,proto3" json:"cloudlet_id,omitempty"` // REQUIRED: CloudletId (unique instance identifier) - used for experience lookup
 	AssignedNodeId        string                 `protobuf:"bytes,2,opt,name=assigned_node_id,json=assignedNodeId,proto3" json:"assigned_node_id,omitempty"`
 	ActualExecutionTimeMs float64                `protobuf:"fixed64,3,opt,name=actual_execution_time_ms,json=actualExecutionTimeMs,proto3" json:"actual_execution_time_ms,omitempty"`
 	ActualLatencyMs       float64                `protobuf:"fixed64,4,opt,name=actual_latency_ms,json=actualLatencyMs,proto3" json:"actual_latency_ms,omitempty"`
@@ -2130,6 +2139,13 @@ func (*CompletedTask) Descriptor() ([]byte, []int) {
 func (x *CompletedTask) GetTaskId() string {
 	if x != nil {
 		return x.TaskId
+	}
+	return ""
+}
+
+func (x *CompletedTask) GetCloudletId() string {
+	if x != nil {
+		return x.CloudletId
 	}
 	return ""
 }
@@ -2759,16 +2775,21 @@ const file_api_proto_scheduler_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"T\n" +
 	"\x1eUpdateObjectiveWeightsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xfd\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x9e\x02\n" +
 	"\x14TaskCompletionReport\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12+\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
+	"\vcloudlet_id\x18\x06 \x01(\tR\n" +
+	"cloudletId\x12+\n" +
 	"\x05tasks\x18\x02 \x03(\v2\x15.thesis.CompletedTaskR\x05tasks\x12:\n" +
 	"\ametrics\x18\x03 \x01(\v2 .thesis.SystemPerformanceMetricsR\ametrics\x121\n" +
 	"\x14completion_timestamp\x18\x04 \x01(\x03R\x13completionTimestamp\x120\n" +
 	"\vnode_status\x18\x05 \x01(\v2\x0f.thesis.FogNodeR\n" +
-	"nodeStatus\"\xde\x03\n" +
+	"nodeStatus\"\xff\x03\n" +
 	"\rCompletedTask\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12(\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
+	"\vcloudlet_id\x18\n" +
+	" \x01(\tR\n" +
+	"cloudletId\x12(\n" +
 	"\x10assigned_node_id\x18\x02 \x01(\tR\x0eassignedNodeId\x127\n" +
 	"\x18actual_execution_time_ms\x18\x03 \x01(\x01R\x15actualExecutionTimeMs\x12*\n" +
 	"\x11actual_latency_ms\x18\x04 \x01(\x01R\x0factualLatencyMs\x12'\n" +
