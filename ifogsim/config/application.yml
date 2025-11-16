@@ -124,13 +124,21 @@ schedulers:
       update-interval-ms: ${STREAMING_UPDATE_INTERVAL_MS:1000} # Interval in milliseconds for polling queue updates (default: 1000ms = 1 second)
 
 # Sensor task parameters (for dynamic CPU/Memory)
+# 36 task styles: 6 CPU × 6 Memory combinations (all within fog node capacity: 2800 MIPS, 4000 MB)
 sensors:
   parameters:
     cpu:
-      options: [500, 1000, 2000, 4000, 8000, 16000] # 6 options (MIPS)
+      options: [500, 1000, 1500, 2000, 2500, 2800] # 6 options (MIPS) - all ≤ 2800
     memory:
-      options: [500, 2000] # 2 options (bytes)
-    repeated-task-probability: 0.6 # 60% chance of reusing task ID for same pattern (realistic for IoT)
+      options: [
+          104857600,
+          524288000,
+          1048576000,
+          2097152000,
+          3145728000,
+          4194304000,
+        ] # 6 options (bytes) = 100, 500, 1000, 2000, 3000, 4000 MB - all ≤ 4000 MB
+    repeated-task-probability: 0.3 # 30% chance of reusing task ID for same pattern (realistic for IoT)
 
 # External Task Generation Configuration
 external-tasks:
@@ -147,21 +155,29 @@ external-tasks:
     number-of-pes: 1
 
     # CPU requirements (MIPS)
+    # 36 task styles: 6 CPU × 6 Memory combinations (all within fog node capacity: 2800 MIPS, 4000 MB)
     cpu:
-      options: [500, 1000, 2000, 4000, 8000, 16000] # 6 options (MIPS)
+      options: [500, 1000, 1500, 2000, 2500, 2800] # 6 options (MIPS) - all ≤ 2800
       # Legacy support: min/max still supported for backward compatibility
       min: 500
-      max: 16000
+      max: 2800
 
     # Memory requirements (bytes)
     memory:
-      options: [500, 2000] # 2 options (bytes)
+      options: [
+          104857600,
+          524288000,
+          1048576000,
+          2097152000,
+          3145728000,
+          4194304000,
+        ] # 6 options (bytes) = 100, 500, 1000, 2000, 3000, 4000 MB - all ≤ 4000 MB
       # Legacy support: min/max still supported for backward compatibility
-      min: 500
-      max: 2000
+      min: 104857600
+      max: 4194304000
 
     # Repeated task probability (for cache testing)
-    repeated-task-probability: 0.6 # 60% chance of reusing task ID for same pattern (realistic for IoT)
+    repeated-task-probability: 0.3 # 30% chance of reusing task ID for same pattern (realistic for IoT)
 
     # Output size (bytes)
     output:

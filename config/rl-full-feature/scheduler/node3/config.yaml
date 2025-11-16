@@ -85,8 +85,8 @@ rl:
       categories: ['idle', 'normal', 'busy', 'overloaded']
       boundaries: [0.25, 0.65, 0.9]
     task_priority:
-      categories: ['low', 'normal', 'high', 'critical']
-      boundaries: [3, 6, 8] # Priority levels 1-10
+      categories: ['low', 'normal', 'high']
+      boundaries: [2, 3] # 1=low, 2=normal, 3=high (matches random priority range 1-3)
     cache_ratio:
       categories: ['none', 'low', 'medium', 'high', 'very_high']
       boundaries: [0.0, 0.2, 0.5, 0.8] # Repeated task ratio boundaries
@@ -102,7 +102,7 @@ rl:
     preserve_recent_episodes: 6 # Always preserve last N episodes
 
     # Enhanced memory management settings
-    experience_timeout_minutes: '10m' # Timeout for incomplete experiences
+    experience_timeout_minutes: '24h' # Timeout for incomplete experiences (24 hours to prevent expiration during simulation)
     estimated_bytes_per_experience: 2400 # Memory estimation per complete experience
     estimated_bytes_per_incomplete_experience: 1200 # Memory estimation per incomplete experience
     emergency_cleanup_threshold_mb: 100 # Emergency cleanup threshold in MB
