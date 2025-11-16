@@ -1,23 +1,14 @@
 package rl
 
-import (
-	"scheduler-grpc-server/pkg/logger"
-)
-
 // ActionType represents different types of scheduling actions
 type ActionType int
 
 const (
-	ActionNone ActionType = iota
-	ActionScheduleNext
-	ActionReorder
-	ActionDelay
-	ActionPriorityBoost
-	ActionPromoteHighPriority
-	ActionPromoteShortJobs
-	ActionBalancedScheduling
-	ActionDeadlineAware
-	ActionResourceOptimized
+	ActionSortByPriority ActionType = iota
+	ActionSortByExecutionTime
+	ActionSortByBalanced
+	ActionSortByResource
+	ActionSortByUrgency
 )
 
 // Action represents a scheduling decision
@@ -31,16 +22,11 @@ type Action struct {
 // GetAllActions returns all possible actions
 func GetAllActions() []Action {
 	return []Action{
-		{Type: ActionNone, Description: "No action - use default algorithm", Priority: 0.0},
-		{Type: ActionScheduleNext, Description: "Schedule next task immediately", Priority: 0.5},
-		{Type: ActionReorder, Description: "Reorder task queue for optimization", Priority: 0.7},
-		{Type: ActionDelay, Description: "Delay task execution", Priority: 0.3},
-		{Type: ActionPriorityBoost, Description: "Boost priority of selected tasks", Priority: 0.8},
-		{Type: ActionPromoteHighPriority, Description: "Promote high priority tasks to front", Priority: 0.6},
-		{Type: ActionPromoteShortJobs, Description: "Promote short execution time tasks", Priority: 0.6},
-		{Type: ActionBalancedScheduling, Description: "Balance priority and execution time", Priority: 0.7},
-		{Type: ActionDeadlineAware, Description: "FIFO scheduling (deadline disabled)", Priority: 0.5},
-		{Type: ActionResourceOptimized, Description: "Optimize for resource utilization", Priority: 0.8},
+		{Type: ActionSortByPriority, Description: "Sort by priority (highest first)", Priority: 0.6},
+		{Type: ActionSortByExecutionTime, Description: "Sort by execution time (shortest first)", Priority: 0.6},
+		{Type: ActionSortByBalanced, Description: "Sort by balanced score (priority 60% + execution time 40%)", Priority: 0.7},
+		{Type: ActionSortByResource, Description: "Sort by resource requirement (lowest first)", Priority: 0.8},
+		{Type: ActionSortByUrgency, Description: "Sort by urgency (priority 70% + deadline 30%)", Priority: 0.8},
 	}
 }
 
@@ -60,48 +46,24 @@ func ApplyAction(action Action, tasks []TaskEntry) []TaskEntry {
 	copy(reordered, tasks)
 
 	switch action.Type {
-	case ActionNone:
-		return reordered
-
-	case ActionScheduleNext:
+	case ActionSortByPriority:
 		result := sortByPriority(reordered)
 		return result
 
-	case ActionReorder:
-		if action.Priority > 0.7 {
-			result := sortByBalanced(reordered)
-			return result
-		}
-		result := sortByPriority(reordered)
-		return result
-
-	case ActionDelay:
-		result := sortByPriority(reordered)
-		return result
-
-	case ActionPriorityBoost:
-		result := sortByUrgency(reordered)
-		return result
-
-	case ActionPromoteHighPriority:
-		result := sortByPriority(reordered)
-		return result
-
-	case ActionPromoteShortJobs:
+	case ActionSortByExecutionTime:
 		result := sortByShortestJob(reordered)
 		return result
 
-	case ActionBalancedScheduling:
+	case ActionSortByBalanced:
 		result := sortByBalanced(reordered)
 		return result
 
-	case ActionDeadlineAware:
-		// Later Feature: deadline-aware disabled - using FIFO
-		logger.GetLogger().Infof("[ACTION] FIFO scheduling (deadline disabled)")
-		return reordered // Return unchanged (deadline-aware disabled)
-
-	case ActionResourceOptimized:
+	case ActionSortByResource:
 		result := sortByResource(reordered)
+		return result
+
+	case ActionSortByUrgency:
+		result := sortByUrgency(reordered)
 		return result
 
 	default:
@@ -241,7 +203,11 @@ func CreateAction(actionType ActionType, priority float64) Action {
 			return action
 		}
 	}
-	return actions[0] // Return ActionNone as default
+	// Return first action (ActionSortByPriority) as default
+	if len(actions) > 0 {
+		return actions[0]
+	}
+	return Action{Type: ActionSortByPriority, Description: "Sort by priority", Priority: 0.6}
 }
 
 // GetActionByType returns an action by its type
@@ -252,5 +218,9 @@ func GetActionByType(actionType ActionType) Action {
 			return action
 		}
 	}
-	return actions[0] // Return ActionNone as default
+	// Return first action (ActionSortByPriority) as default
+	if len(actions) > 0 {
+		return actions[0]
+	}
+	return Action{Type: ActionSortByPriority, Description: "Sort by priority", Priority: 0.6}
 }

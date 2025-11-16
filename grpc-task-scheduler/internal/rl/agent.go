@@ -340,6 +340,30 @@ func (a *Agent) GetAvailableAlgorithms() []string {
 	return a.algorithmManager.GetAvailableAlgorithms()
 }
 
+// GetQLearningScheduler returns the Q-learning scheduler if available
+func (a *Agent) GetQLearningScheduler() *QLearningScheduler {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if !a.isEnabled || a.algorithmManager == nil {
+		return nil
+	}
+
+	// Get Q-learning algorithm from algorithm manager
+	alg := a.algorithmManager.GetAlgorithm(AlgorithmQLearning)
+	if alg == nil {
+		return nil
+	}
+
+	// Type assert to QLearningScheduler
+	qlScheduler, ok := alg.(*QLearningScheduler)
+	if !ok {
+		return nil
+	}
+
+	return qlScheduler
+}
+
 // Start starts the agent (placeholder for future background tasks)
 func (a *Agent) Start() error {
 	a.mu.Lock()
@@ -377,21 +401,28 @@ func (a *Agent) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionR
 }
 
 // ProcessTaskCompletionWithNodeStatus processes task completion with node status from completion report
-func (a *Agent) ProcessTaskCompletionWithNodeStatus(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
+// cloudletId is required for experience lookup (no fallback to taskId)
+func (a *Agent) ProcessTaskCompletionWithNodeStatus(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
+	logger.GetLogger().Infof("[AGENT-COMPLETE-ENTRY] ProcessTaskCompletionWithNodeStatus called: cloudletId=%s, taskId=%s, QueueLength=%d", 
+		cloudletId, report.TaskId, queueLength)
+	
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if !a.isEnabled || a.algorithmManager == nil {
-		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] Agent disabled or not initialized: TaskID=%s, Enabled=%t, Manager=%t", 
-			report.TaskId, a.isEnabled, a.algorithmManager != nil)
+		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] Agent disabled or not initialized: cloudletId=%s, Enabled=%t, Manager=%t", 
+			cloudletId, a.isEnabled, a.algorithmManager != nil)
 		return fmt.Errorf("agent is disabled or not initialized")
 	}
 
-	// Delegate to algorithm manager with node status and actual queue length from completion report
-	err := a.algorithmManager.ProcessTaskCompletion(task, report, nodeStatus, queueLength)
+	// Delegate to algorithm manager with node status, actual queue length, and cloudletId from completion report
+	logger.GetLogger().Infof("[AGENT-COMPLETE-DELEGATE] Delegating to algorithmManager: cloudletId=%s", cloudletId)
+	err := a.algorithmManager.ProcessTaskCompletion(task, report, nodeStatus, queueLength, cloudletId)
 	if err != nil {
-		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: TaskID=%s, Error=%v", 
-			report.TaskId, err)
+		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: cloudletId=%s, Error=%v", 
+			cloudletId, err)
+	} else {
+		logger.GetLogger().Infof("[AGENT-COMPLETE-SUCCESS] algorithmManager processed successfully: cloudletId=%s", cloudletId)
 	}
 	return err
 }

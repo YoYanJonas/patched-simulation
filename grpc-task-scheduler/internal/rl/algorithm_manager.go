@@ -316,16 +316,16 @@ func (am *AlgorithmManager) String() string {
 }
 
 // ProcessTaskCompletion processes task completion through RL algorithms
-func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
-	logger.GetLogger().Infof("[ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion: TaskID=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t", 
-		report.TaskId, am.config.RLEnabled, queueLength, nodeStatus != nil)
+func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
+	logger.GetLogger().Infof("[ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion: cloudletId=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t", 
+		cloudletId, am.config.RLEnabled, queueLength, nodeStatus != nil)
 	
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
 	// Only process if we have RL algorithms enabled
 	if !am.config.RLEnabled {
-		logger.GetLogger().Warnf("[ALG-MGR-COMPLETE-SKIP] RL not enabled: TaskID=%s", report.TaskId)
+		logger.GetLogger().Warnf("[ALG-MGR-COMPLETE-SKIP] RL not enabled: cloudletId=%s", cloudletId)
 		return nil // No RL processing needed
 	}
 
@@ -335,22 +335,22 @@ func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.Tas
 	}
 
 	if report == nil {
-		return fmt.Errorf("completion report is nil for task %s", task.GetTaskID())
+		return fmt.Errorf("completion report is nil for task cloudletId=%s", cloudletId)
 	}
 
 	// Find Q-Learning algorithm to handle experience completion
 	if qlearningAlg, exists := am.rlAlgorithms[AlgorithmQLearning]; exists {
 		// Cast to QLearningScheduler to access experience management
 		if qlScheduler, ok := qlearningAlg.(*QLearningScheduler); ok {
-			// Process with comprehensive error handling (pass node status and actual queue length)
-			err := qlScheduler.ProcessTaskCompletion(task, report, nodeStatus, queueLength)
+			// Process with comprehensive error handling (pass node status, actual queue length, and cloudletId)
+			err := qlScheduler.ProcessTaskCompletion(task, report, nodeStatus, queueLength, cloudletId)
 			if err != nil {
 				// Log error but don't fail completely - allows system to continue
-				logger.GetLogger().Errorf("[ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: TaskID=%s, Error=%v", 
-					task.GetTaskID(), err)
+				logger.GetLogger().Errorf("[ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: cloudletId=%s, Error=%v", 
+					cloudletId, err)
 				return fmt.Errorf("task completion processing failed: %w", err)
 			}
-			logger.GetLogger().Infof("[ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: TaskID=%s", report.TaskId)
+			logger.GetLogger().Infof("[ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: cloudletId=%s", cloudletId)
 
 			// Note: RecordPerformance is skipped here because nodeManager is not available
 			// Performance tracking can be done separately if needed, but it's not critical for reward calculation
