@@ -34,6 +34,7 @@ public class ExtendedFogEvents {
     public static final int GRPC_SCHEDULER_TIMEOUT = 1018; // When scheduler gRPC call times out
     public static final int GRPC_ALLOCATOR_TIMEOUT = 1019; // When allocator gRPC call times out
     public static final int GRPC_ALLOCATOR_OUTCOME_TIMEOUT = 1020; // When allocator outcome report times out
+    public static final int SIMULATION_COMPLETION_CHECK = 1021; // For checking if all tasks completed before terminating
 
     /**
      * Get event name for logging/debugging
@@ -80,6 +81,8 @@ public class ExtendedFogEvents {
                 return "GRPC_ALLOCATOR_TIMEOUT";
             case GRPC_ALLOCATOR_OUTCOME_TIMEOUT:
                 return "GRPC_ALLOCATOR_OUTCOME_TIMEOUT";
+            case SIMULATION_COMPLETION_CHECK:
+                return "SIMULATION_COMPLETION_CHECK";
             default:
                 return "UNKNOWN_EVENT";
         }

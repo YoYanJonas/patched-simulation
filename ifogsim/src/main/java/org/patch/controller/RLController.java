@@ -105,12 +105,13 @@ public class RLController extends Controller {
 
         // Schedule STOP_SIMULATION event at SIMULATION_TIME
         // This ensures graceful termination at the correct time
-        // Task generation already stops at SIMULATION_TIME (sensors and external tasks check this)
+        // Task generation already stops at SIMULATION_TIME (sensors and external tasks
+        // check this)
         send(getId(), org.fog.utils.Config.SIMULATION_TIME, FogEvents.STOP_SIMULATION);
-        
+
         logger.info("RLController started: " + getName());
-        logger.info(String.format("STOP_SIMULATION event scheduled at %.2f seconds", 
-            (double) org.fog.utils.Config.SIMULATION_TIME));
+        logger.info(String.format("STOP_SIMULATION event scheduled at %.2f seconds",
+                (double) org.fog.utils.Config.SIMULATION_TIME));
     }
 
     /**
@@ -199,50 +200,30 @@ public class RLController extends Controller {
             case ExtendedFogEvents.TASK_COMPLETE:
                 handleTaskComplete(ev);
                 break;
+            case ExtendedFogEvents.SIMULATION_COMPLETION_CHECK:
+                handleSimulationCompletionCheck(ev);
+                break;
             case FogEvents.STOP_SIMULATION:
-                // Graceful shutdown - stop generating NEW tasks, but allow queued events to
-                // complete up to MAX_SIMULATION_TIME
+                // Graceful shutdown - stop generating NEW tasks, start completion checking
                 double currentTime = CloudSim.clock();
-                double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
 
                 System.out.println(String.format(
-                        "[STOP-SIMULATION] Time: %.2f - Processing STOP_SIMULATION event - Stopping NEW task generation, processing queued events...",
+                        "[STOP-SIMULATION] Time: %.2f - Processing STOP_SIMULATION event - Stopping NEW task generation, starting completion checks...",
                         currentTime));
 
-                // Log task generation status
                 logger.info(String.format(
-                        "[STOP-SIMULATION] Time: %.2f - All task generators should stop generating NEW tasks now (sensors and external tasks check SIMULATION_TIME, MAX_SIMULATION_TIME is hard cap)",
+                        "[STOP-SIMULATION] Time: %.2f - All task generators should stop generating NEW tasks now. Starting periodic completion checks.",
                         currentTime));
 
-                // CRITICAL: If currentTime >= MAX_SIMULATION_TIME, immediately terminate
-                // This prevents the simulation from getting stuck if events are blocked
-                if (currentTime >= maxSimulationTime) {
-                    logger.warning(String.format(
-                            "[STOP-SIMULATION] Time: %.2f >= MAX_SIMULATION_TIME (%.2f) - FORCING IMMEDIATE TERMINATION",
-                            currentTime, maxSimulationTime));
-
-                    // Force stop all streaming observers to prevent blocking gRPC calls
-                    forceStopAllStreamingObservers();
-
-                    // Force close all gRPC channels to stop blocking operations
-                    forceCloseAllGrpcChannels();
-
-                    // Immediately terminate simulation
-                    CloudSim.terminateSimulation();
-                    CloudSim.abruptallyTerminate();
-
-                    logger.warning("[STOP-SIMULATION] Simulation FORCE TERMINATED due to MAX_SIMULATION_TIME reached");
-                    return; // Exit immediately
-                }
-
-                CloudSim.terminateSimulation(maxSimulationTime);
+                // Note: Grace period and cleanup logic is handled in handleSimulationCompletionCheck
+                // This handler just starts the completion checking process
+                // Schedule first completion check immediately (after a small delay to let
+                // current events process)
+                double checkInterval = 5.0; // Check every 5 seconds
+                send(getId(), checkInterval, ExtendedFogEvents.SIMULATION_COMPLETION_CHECK);
                 logger.info(String.format(
-                        "[STOP-SIMULATION] Time: %.2f - Set terminateAt to %.2f - Simulation will stop at MAX_SIMULATION_TIME even if queue is not empty",
-                        currentTime, maxSimulationTime));
-
-                logger.info(String.format(
-                        "[STOP-SIMULATION] Time: %.2f - Marking simulation for graceful shutdown - will process queued events until MAX_SIMULATION_TIME (%.2f)",
-                        currentTime, maxSimulationTime));
+                        "[STOP-SIMULATION] Time: %.2f - Scheduled first completion check at %.2f (interval: %.2f seconds)",
+                        currentTime, currentTime + checkInterval, checkInterval));
                 break;
             default:
                 super.processEvent(ev);
@@ -729,19 +710,22 @@ public class RLController extends Controller {
             Map<String, Object> deviceState = new HashMap<>();
             deviceState.put("deviceId", device.getId());
             deviceState.put("deviceName", device.getName());
-            
+
             // Resource utilization (normalized to percentages [0.0, 1.0] for consistency)
             // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
             double cpuUtilization = device.getHost().getUtilizationOfCpu();
-            
-            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+
+            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to
+            // percentage [0.0, 1.0]
             double ramUsedMb = device.getHost().getUtilizationOfRam();
             int totalRamMb = device.getHost().getRam();
             double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
             // Clamp to valid range
-            if (ramUtilization < 0.0) ramUtilization = 0.0;
-            if (ramUtilization > 1.0) ramUtilization = 1.0;
-            
+            if (ramUtilization < 0.0)
+                ramUtilization = 0.0;
+            if (ramUtilization > 1.0)
+                ramUtilization = 1.0;
+
             deviceState.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
             deviceState.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
             deviceState.put("energyConsumption", device.getEnergyConsumption());
@@ -798,6 +782,134 @@ public class RLController extends Controller {
 
     public boolean isRLConfigured() {
         return rlConfigured;
+    }
+
+    /**
+     * Handle simulation completion check - verifies if all tasks are completed
+     * and terminates gracefully when done
+     */
+    private void handleSimulationCompletionCheck(SimEvent ev) {
+        double currentTime = CloudSim.clock();
+        double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
+        double gracePeriodSeconds = 60.0; // 60 seconds grace period after MAX_SIMULATION_TIME
+        double cleanupTime = maxSimulationTime + gracePeriodSeconds;
+
+        // Check if we've exceeded MAX_SIMULATION_TIME + grace period - then clean up
+        // and terminate
+        if (currentTime >= cleanupTime) {
+            logger.warning(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f >= (MAX_SIMULATION_TIME + grace period) (%.2f) - Cleaning up stuck tasks and FORCING TERMINATION",
+                    currentTime, cleanupTime));
+
+            // Clean up stuck tasks (tasks that are still in activeTasks)
+            // This only happens after grace period expires
+            int stuckTasksRemoved = 0;
+            for (FogDevice device : getFogDevices()) {
+                if (device instanceof RLFogDevice) {
+                    RLFogDevice rlDevice = (RLFogDevice) device;
+                    if (rlDevice.getTaskExecutionEngine() != null) {
+                        // Clean up all remaining active tasks (they're stuck after grace period)
+                        // Use a very large timeout to catch all active tasks
+                        int removed = rlDevice.getTaskExecutionEngine().cleanupStuckTasks(Double.MAX_VALUE);
+                        stuckTasksRemoved += removed;
+                    }
+                }
+            }
+
+            if (stuckTasksRemoved > 0) {
+                logger.warning(String.format(
+                        "[COMPLETION-CHECK] Cleaned up %d stuck tasks before termination",
+                        stuckTasksRemoved));
+            }
+
+            forceStopAllStreamingObservers();
+            forceCloseAllGrpcChannels();
+            CloudSim.terminateSimulation();
+            CloudSim.abruptallyTerminate();
+            return;
+        }
+
+        // If we're in grace period (after MAX_SIMULATION_TIME but before cleanup time),
+        // just wait
+        if (currentTime >= maxSimulationTime && currentTime < cleanupTime) {
+            double remainingGracePeriod = cleanupTime - currentTime;
+            logger.info(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f - In grace period after MAX_SIMULATION_TIME (%.2f). Remaining grace period: %.2f seconds. Waiting for tasks to complete...",
+                    currentTime, maxSimulationTime, remainingGracePeriod));
+
+            // Continue checking - don't clean up yet, just wait
+            // Schedule next check
+            double checkInterval = 5.0; // Check every 5 seconds
+            send(getId(), checkInterval, ExtendedFogEvents.SIMULATION_COMPLETION_CHECK);
+            return;
+        }
+
+        // Check all fog nodes for pending tasks (queues + executing tasks)
+        int totalScheduledQueueSize = 0;
+        int totalUnscheduledQueueSize = 0;
+        int totalActiveTasks = 0;
+        int fogNodesWithTasks = 0;
+
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                int scheduledSize = rlDevice.getScheduledQueueSize();
+                int unscheduledSize = rlDevice.getUnscheduledQueueSize();
+
+                // Check active tasks (tasks currently executing)
+                int activeTasksCount = 0;
+                if (rlDevice.getTaskExecutionEngine() != null) {
+                    activeTasksCount = rlDevice.getTaskExecutionEngine().getActiveTasks().size();
+                }
+
+                totalScheduledQueueSize += scheduledSize;
+                totalUnscheduledQueueSize += unscheduledSize;
+                totalActiveTasks += activeTasksCount;
+
+                if (scheduledSize > 0 || unscheduledSize > 0 || activeTasksCount > 0) {
+                    fogNodesWithTasks++;
+                }
+            }
+        }
+
+        // Check for deferred events (from async gRPC callbacks)
+        int deferredEventCount = org.patch.utils.DeferredEventQueue.getDeferredEventCount();
+
+        // Log current state
+        logger.info(String.format(
+                "[COMPLETION-CHECK] Time: %.2f - ScheduledQueue: %d, UnscheduledQueue: %d, ActiveTasks: %d, DeferredEvents: %d, NodesWithTasks: %d",
+                currentTime, totalScheduledQueueSize, totalUnscheduledQueueSize, totalActiveTasks, deferredEventCount,
+                fogNodesWithTasks));
+
+        // Check if all queues are empty AND no tasks are executing AND no deferred
+        // events
+        if (totalScheduledQueueSize == 0 && totalUnscheduledQueueSize == 0 && totalActiveTasks == 0
+                && deferredEventCount == 0) {
+            // All queues are empty, no active tasks, and no deferred events - safe to
+            // terminate
+            // Note: CloudSim will process any remaining events in its future queue during
+            // termination
+            logger.info(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f - All queues empty, no active tasks, and no deferred events. Terminating simulation gracefully.",
+                    currentTime));
+
+            // Stop streaming observers gracefully
+            stopAllStreamingObservers();
+
+            // Terminate simulation (CloudSim will process any remaining events in
+            // finishSimulation)
+            CloudSim.terminateSimulation();
+            logger.info("[COMPLETION-CHECK] Simulation terminated gracefully - all tasks completed");
+        } else {
+            // Still have tasks in queues, executing, or deferred events - schedule next
+            // check
+            double checkInterval = 5.0; // Check every 5 seconds
+            send(getId(), checkInterval, ExtendedFogEvents.SIMULATION_COMPLETION_CHECK);
+            logger.fine(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f - Tasks/events still pending (queues: %d, executing: %d, deferred: %d). Next check at %.2f",
+                    currentTime, totalScheduledQueueSize + totalUnscheduledQueueSize, totalActiveTasks,
+                    deferredEventCount, currentTime + checkInterval));
+        }
     }
 
     /**

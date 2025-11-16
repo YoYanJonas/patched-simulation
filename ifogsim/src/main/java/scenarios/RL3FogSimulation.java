@@ -92,14 +92,14 @@ public class RL3FogSimulation {
             // Step 2.5: Set SIMULATION_TIME and MAX_SIMULATION_TIME BEFORE creating any
             // entities
             // SIMULATION_TIME: When to stop generating NEW tasks (sensors, external tasks)
-            // MAX_SIMULATION_TIME: Hard termination cap (SIMULATION_TIME + buffer for
-            // queued events)
-            final int PROCESSING_BUFFER = 60; // Buffer time (seconds) to process queued events after SIMULATION_TIME
+            // MAX_SIMULATION_TIME: Safety timeout to prevent infinite simulation (very large value)
             org.fog.utils.Config.SIMULATION_TIME = (int) SIMULATION_TIME;
-            org.fog.utils.Config.MAX_SIMULATION_TIME = (int) SIMULATION_TIME + PROCESSING_BUFFER;
+            // Set MAX_SIMULATION_TIME to a large safety value (1 hour) - actual termination
+            // happens when all tasks complete
+            org.fog.utils.Config.MAX_SIMULATION_TIME = 3600; // 1 hour safety cap
             logger.info(String.format("SIMULATION_TIME set to: %d seconds (stop generating new tasks)",
                     org.fog.utils.Config.SIMULATION_TIME));
-            logger.info(String.format("MAX_SIMULATION_TIME set to: %d seconds (hard termination cap)",
+            logger.info(String.format("MAX_SIMULATION_TIME set to: %d seconds (safety timeout - actual termination when all tasks complete)",
                     org.fog.utils.Config.MAX_SIMULATION_TIME));
 
             // Step 3: Create broker and controller
