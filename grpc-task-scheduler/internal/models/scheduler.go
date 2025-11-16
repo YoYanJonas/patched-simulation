@@ -667,6 +667,12 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 	
 	logger.GetLogger().Infof("Task %s added to queue", task.TaskId)
 
+	// Store experience immediately for RL learning (if agent is enabled)
+	// This ensures experience exists even if task completes before GetSortedQueue() is called
+	if se.agent != nil && se.agent.IsEnabled() {
+		se.storeExperienceForNewTask(taskEntry, cloudletId, queueSizeAfterEnqueue)
+	}
+
 	// Calculate queue position and estimated wait time
 	queuePosition := int64(se.getTaskQueuePosition(task.TaskId))
 	estimatedWait := se.calculateEstimatedWaitTime(queuePosition)
@@ -683,6 +689,85 @@ func (se *SchedulerEngine) AddTaskToQueueWithCache(task *pb.Task, queueContext *
 		task.TaskId, queuePosition, estimatedWait, isCached, se.totalTasksProcessed)
 
 	return queuePosition, estimatedWait, isCached, cacheKey, cacheAction, nil
+}
+
+// storeExperienceForNewTask stores an incomplete experience immediately when a task is added
+// This ensures the experience exists even if the task completes before GetSortedQueue() is called
+func (se *SchedulerEngine) storeExperienceForNewTask(taskEntry *TaskEntry, cloudletId string, queueSize int) {
+	// Get Q-learning scheduler from agent
+	qlScheduler := se.agent.GetQLearningScheduler()
+	if qlScheduler == nil {
+		// Q-learning not available, skip experience storage
+		return
+	}
+
+	// Get experience manager
+	expManager := qlScheduler.GetExperienceManager()
+	if expManager == nil {
+		// Experience manager not available, skip
+		return
+	}
+
+	// Get current queue state (all tasks including the new one)
+	// FIX: Acquire read lock before getting queue state to prevent race condition
+	// This ensures consistent queue state during state extraction, preventing resortQueue()
+	// from clearing the queue between task enqueue and state extraction
+	se.mu.RLock()
+	allTasks := se.queue.GetAll()
+	actualQueueSize := len(allTasks)
+	se.mu.RUnlock()
+	
+	if actualQueueSize == 0 {
+		// Queue is empty (shouldn't happen, but handle gracefully)
+		logger.GetLogger().Warnf("[SCHEDULER-STORE-EXP] Queue is empty during state extraction, skipping experience storage for cloudletId=%s", cloudletId)
+		return
+	}
+
+	// DEBUG CODE: Verify queue size matches expected value
+	if actualQueueSize != queueSize {
+		logger.GetLogger().Warnf("[DEBUG CODE] [SCHEDULER-STORE-EXP-QUEUE-MISMATCH] Queue size mismatch: expected=%d, actual=%d, cloudletId=%s", 
+			queueSize, actualQueueSize, cloudletId)
+	}
+
+	// Convert to TaskEntry slice for state extraction
+	taskEntries := make([]rl.TaskEntry, len(allTasks))
+	for i, task := range allTasks {
+		taskEntries[i] = task
+	}
+
+	// Extract state features using current queue state and node status tracker
+	// metrics.NodeStatusTracker implements rl.NodeStatusTracker interface automatically
+	var tracker rl.NodeStatusTracker = nil
+	if se.nodeStatusTracker != nil {
+		// metrics.NodeStatusTracker implements all methods of rl.NodeStatusTracker interface
+		// Go's interface system allows this direct assignment
+		tracker = se.nodeStatusTracker
+	}
+	state := rl.ExtractStateFeatures(taskEntries, tracker)
+	
+	// DEBUG CODE: Log actual queue length used in state extraction
+	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-STORE-EXP-STATE-QUEUE] State extracted with QueueLength=%d (from %d tasks), StateKey=%s, cloudletId=%s",
+		state.QueueLength, actualQueueSize, state.GetStateKey(), cloudletId)
+
+	// Select action using Q-learning policy
+	action := qlScheduler.SelectAction(state)
+
+	// Get current episode
+	currentEpisode := qlScheduler.GetCurrentEpisode()
+
+	// DEBUG CODE: Track experience storage from task addition
+	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-STORE-EXP-FROM-ADD] About to store experience from task addition: cloudletId=%s, QueueSize=%d, Episode=%d",
+		cloudletId, queueSize, currentEpisode)
+	
+	// Store incomplete experience
+	expManager.StoreIncompleteExperience(cloudletId, state, action, currentEpisode)
+
+	logger.GetLogger().Infof("[SCHEDULER-EXPERIENCE-STORED] Experience stored immediately for task: cloudletId=%s, Action=%s, StateKey=%s, QueueSize=%d, Episode=%d",
+		cloudletId, action.Description, state.GetStateKey(), queueSize, currentEpisode)
+	
+	// DEBUG CODE: Track total experiences stored from task addition
+	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-STORE-EXP-FROM-ADD-COMPLETE] Experience stored from task addition completed: cloudletId=%s",
+		cloudletId)
 }
 
 func (se *SchedulerEngine) GetQueueStatus() map[string]interface{} {
@@ -790,28 +875,24 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	se.mu.Lock()
 	defer se.mu.Unlock()
 
-	// Find the task in scheduled tasks (for delayed rewards)
-	task, exists := se.scheduledTasks[req.TaskId]
+	// Extract cloudletId - REQUIRED, no fallback
+	cloudletIdForCompletion := req.CloudletId
+	logger.GetLogger().Infof("[SCHEDULER-COMPLETION-ENTRY] ProcessTaskCompletion called: cloudletId=%s, taskId=%s", cloudletIdForCompletion, req.TaskId)
+	
+	if cloudletIdForCompletion == "" {
+		// CRITICAL: No fallback to TaskId - cloudletId is required for experience lookup
+		// Log error and return error to prevent incorrect experience completion
+		logger.GetLogger().Errorf("[SCHEDULER-COMPLETION-ERROR] cloudlet_id is missing in completion report. TaskId=%s. Cannot complete experience without cloudletId.", req.TaskId)
+		return fmt.Errorf("cloudlet_id is required for experience completion, but was not provided in completion report (TaskId=%s)", req.TaskId)
+	}
+	
+	logger.GetLogger().Infof("[SCHEDULER-COMPLETION-VALIDATED] cloudletId validated: cloudletId=%s, taskId=%s (taskId used for report matching only)", cloudletIdForCompletion, req.TaskId)
+
+	// Find the task in scheduled tasks using cloudletId (unique identifier)
+	task, exists := se.scheduledTasks[cloudletIdForCompletion]
 	if !exists {
-		// Fallback: Try to find task by cloudletId from stored task metadata
-		found := false
-		for _, storedTask := range se.scheduledTasks {
-			if storedTask.Task.Metadata != nil {
-				if cid, ok := storedTask.Task.Metadata["cloudlet_id"]; ok {
-					if cid == req.TaskId {
-						// Found by cloudletId in metadata
-						task = storedTask
-						exists = true
-						found = true
-						break
-					}
-				}
-			}
-		}
-		if !found {
-			logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-ERROR] Task %s not found in scheduled tasks", req.TaskId)
-			return fmt.Errorf("task %s not found in scheduled tasks", req.TaskId)
-		}
+		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-ERROR] Task with cloudletId %s not found in scheduled tasks", cloudletIdForCompletion)
+		return fmt.Errorf("task with cloudletId %s not found in scheduled tasks", cloudletIdForCompletion)
 	}
 
 	// Derive success from completion report
@@ -821,12 +902,12 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	// Update statistics based on completion report (server doesn't execute tasks, so we don't mark task status)
 	if success {
 		se.totalTasksCompleted++
-		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-SUCCESS] Task %s completion report processed (TotalCompleted=%d)", 
-			req.TaskId, se.totalTasksCompleted)
+		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-SUCCESS] Task cloudletId=%s completion report processed (TotalCompleted=%d)", 
+			cloudletIdForCompletion, se.totalTasksCompleted)
 	} else {
 		se.totalTasksFailed++
-		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-FAILED] Task %s completion report indicates failure: %s (TotalFailed=%d)", 
-			req.TaskId, errorMessage, se.totalTasksFailed)
+		logger.GetLogger().Warnf("[SCHEDULER-COMPLETION-FAILED] Task cloudletId=%s completion report indicates failure: %s (TotalFailed=%d)", 
+			cloudletIdForCompletion, errorMessage, se.totalTasksFailed)
 	}
 
 	// Update execution time if provided
@@ -863,20 +944,28 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 		
 		// Update NodeStatusTracker with node status from completion report
 		se.nodeStatusTracker.UpdateFromCompletionReport(nodeStatus)
-		logger.GetLogger().Infof("Node status received: Task=%s, Node=%s, CPU=%.2f%%, Memory=%.2f%%", 
-			req.TaskId, nodeStatus.NodeId, cpuUsagePercent, memoryPercent)
+		logger.GetLogger().Infof("Node status received: Task cloudletId=%s, Node=%s, CPU=%.2f%%, Memory=%.2f%%", 
+			cloudletIdForCompletion, nodeStatus.NodeId, cpuUsagePercent, memoryPercent)
 	}
 
 	// Get actual current queue length (before task is removed from scheduled tasks)
 	currentQueueLength := se.queue.Size()
 
+	// DEBUG CODE: Track completion report arrival
+	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-COMPLETION-BEFORE-EXP] About to complete experience: cloudletId=%s, HasNodeStatus=%t, QueueLength=%d, ReportTasks=%d",
+		cloudletIdForCompletion, req.NodeStatus != nil, currentQueueLength, len(req.Tasks))
+	
 	// **KEY PART: Delegate to Agent for RL experience handling** (before deleting from map)
 	if se.agent != nil && se.agent.IsEnabled() {
 		// The Agent should handle experience collection through AlgorithmManager
 		// Pass actual queue length for accurate next state calculation
-		if err := se.reportTaskCompletionToAgent(task, req, nodeStatus, currentQueueLength); err != nil {
+		// Pass cloudletId explicitly (required for experience lookup)
+		logger.GetLogger().Infof("[SCHEDULER-COMPLETION-AGENT] Delegating to agent: cloudletId=%s, QueueLength=%d", cloudletIdForCompletion, currentQueueLength)
+		if err := se.reportTaskCompletionToAgent(task, req, nodeStatus, currentQueueLength, cloudletIdForCompletion); err != nil {
 			// Log error but don't fail the whole operation
-			logger.GetLogger().Warnf("Failed to report completion to RL agent: TaskID=%s, Error=%v", req.TaskId, err)
+			logger.GetLogger().Warnf("Failed to report completion to RL agent: cloudletId=%s, Error=%v", cloudletIdForCompletion, err)
+		} else {
+			logger.GetLogger().Infof("[SCHEDULER-COMPLETION-AGENT-SUCCESS] Agent processed completion successfully: cloudletId=%s", cloudletIdForCompletion)
 		}
 	}
 
@@ -889,17 +978,9 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	}
 
 	// **CRITICAL: Remove from scheduled tasks to prevent duplicate scheduling** (after processing rewards)
-	// Note: req.TaskId contains cloudletId (from Java), but we use task.GetCloudletId() to ensure exact key match
-	cloudletIdForScheduledTasksRemoval := task.GetCloudletId()
-	if cloudletIdForScheduledTasksRemoval == "" {
-		// Fallback: use req.TaskId if cloudletId not available (should not happen)
-		cloudletIdForScheduledTasksRemoval = req.TaskId
-	}
-	
-	if _, exists := se.scheduledTasks[cloudletIdForScheduledTasksRemoval]; exists {
-		delete(se.scheduledTasks, cloudletIdForScheduledTasksRemoval)
-	} else if _, existsFallback := se.scheduledTasks[req.TaskId]; existsFallback {
-		delete(se.scheduledTasks, req.TaskId)
+	// Use cloudletIdForCompletion (already extracted and validated above)
+	if _, exists := se.scheduledTasks[cloudletIdForCompletion]; exists {
+		delete(se.scheduledTasks, cloudletIdForCompletion)
 	}
 	
 	// **CRITICAL: Remove from queue to prevent re-sending completed tasks**
@@ -920,9 +1001,15 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 // Helper methods to derive missing fields from the report
 func (se *SchedulerEngine) deriveTaskSuccess(req *pb.TaskCompletionReport) bool {
 	// Check if we have completed tasks info
+	// Match by cloudletId (preferred) or taskId (fallback for matching within report)
 	if len(req.Tasks) > 0 {
-		// Look for the specific task
+		// Look for the specific task - prefer cloudletId match, fallback to taskId
 		for _, completedTask := range req.Tasks {
+			// Match by cloudletId (unique identifier) - preferred
+			if req.CloudletId != "" && completedTask.CloudletId == req.CloudletId {
+				return completedTask.DeadlineMet // Later Feature: always true (deadline-aware disabled)
+			}
+			// Fallback: match by taskId (for backward compatibility within report)
 			if completedTask.TaskId == req.TaskId {
 				return completedTask.DeadlineMet // Later Feature: always true (deadline-aware disabled)
 			}
@@ -946,8 +1033,14 @@ func (se *SchedulerEngine) deriveErrorMessage(req *pb.TaskCompletionReport) stri
 
 func (se *SchedulerEngine) deriveActualExecutionTime(req *pb.TaskCompletionReport) float64 {
 	// Look for the specific task in completed tasks
+	// Match by cloudletId (preferred) or taskId (fallback for matching within report)
 	if len(req.Tasks) > 0 {
 		for _, completedTask := range req.Tasks {
+			// Match by cloudletId (unique identifier) - preferred
+			if req.CloudletId != "" && completedTask.CloudletId == req.CloudletId {
+				return completedTask.ActualExecutionTimeMs
+			}
+			// Fallback: match by taskId (for backward compatibility within report)
 			if completedTask.TaskId == req.TaskId {
 				return completedTask.ActualExecutionTimeMs
 			}
@@ -957,15 +1050,16 @@ func (se *SchedulerEngine) deriveActualExecutionTime(req *pb.TaskCompletionRepor
 }
 
 // reportTaskCompletionToAgent sends completion data to the RL agent
-func (se *SchedulerEngine) reportTaskCompletionToAgent(task *TaskEntry, req *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
+func (se *SchedulerEngine) reportTaskCompletionToAgent(task *TaskEntry, req *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
 	if se.agent == nil || !se.agent.IsEnabled() {
 		return nil // Agent not enabled or initialized
 	}
 
-	// Pass node status and actual queue length from completion report to the agent
-	err := se.agent.ProcessTaskCompletionWithNodeStatus(task, req, nodeStatus, queueLength)
+	// Pass node status, actual queue length, and cloudletId from completion report to the agent
+	// cloudletId is required for experience lookup (no fallback to taskId)
+	err := se.agent.ProcessTaskCompletionWithNodeStatus(task, req, nodeStatus, queueLength, cloudletId)
 	if err != nil {
-		logger.GetLogger().Errorf("Agent.ProcessTaskCompletionWithNodeStatus failed: TaskID=%s, Error=%v", req.TaskId, err)
+		logger.GetLogger().Errorf("Agent.ProcessTaskCompletionWithNodeStatus failed: cloudletId=%s, Error=%v", cloudletId, err)
 	}
 	return err
 }
