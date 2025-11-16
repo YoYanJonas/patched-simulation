@@ -159,6 +159,7 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	// Add task to queue via scheduler engine (with queue context)
 	// IMPORTANT: Task is added to queue BEFORE building response
 	// If timeout occurs after this point, task is already in queue - no task loss
+	logger.GetLogger().Infof("[SCHEDULER-RECEIVE] Received task: taskId=%s", req.Task.TaskId)
 	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task, queueContext)
 	
 	// Check context again after task addition (in case timeout occurred during processing)
@@ -185,7 +186,7 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 			isTransient = true // Transient errors that might succeed on retry
 		}
 		
-		logger.GetLogger().Errorf("Failed to add task to queue: TaskID=%s, Error=%v", req.Task.TaskId, err)
+		logger.GetLogger().Errorf("Failed to add task to queue: taskId=%s, Error=%v", req.Task.TaskId, err)
 		s.metrics.IncrementFailedRequests()
 		
 		// Include error category in response message for client retry logic
@@ -204,7 +205,7 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 	}
 
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Task %s added to queue at position %d", req.Task.TaskId, queuePosition)
+	logger.GetLogger().Infof("[SCHEDULER-SUCCESS] Task added successfully: taskId=%s, queuePosition=%d", req.Task.TaskId, queuePosition)
 	
 	// Extract cloudletId from task metadata (unique instance identifier)
 	cloudletId := ""

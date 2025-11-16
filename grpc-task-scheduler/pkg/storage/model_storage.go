@@ -1088,16 +1088,11 @@ func (ms *ModelStorage) LoadQLearningAgent() (*rl.QLearningScheduler, error) {
 	actionCounts := make(map[rl.ActionType]int)
 	invalidActionCount := 0
 	validActionTypes := map[rl.ActionType]bool{
-		rl.ActionNone:                true,
-		rl.ActionScheduleNext:         true,
-		rl.ActionReorder:              true,
-		rl.ActionDelay:               true,
-		rl.ActionPriorityBoost:        true,
-		rl.ActionPromoteHighPriority:  true,
-		rl.ActionPromoteShortJobs:     true,
-		rl.ActionBalancedScheduling:   true,
-		rl.ActionDeadlineAware:        true,
-		rl.ActionResourceOptimized:   true,
+		rl.ActionSortByPriority:      true,
+		rl.ActionSortByExecutionTime: true,
+		rl.ActionSortByBalanced:      true,
+		rl.ActionSortByResource:      true,
+		rl.ActionSortByUrgency:       true,
 	}
 	
 	for stateKey, actions := range restoredQTable {
@@ -1476,16 +1471,11 @@ func (ms *ModelStorage) convertQTableToStringFormat(qTable map[string]map[rl.Act
 	statesEmptyAfterConversion := 0
 	
 	validActionTypes := map[rl.ActionType]bool{
-		rl.ActionNone:                true,
-		rl.ActionScheduleNext:         true,
-		rl.ActionReorder:              true,
-		rl.ActionDelay:               true,
-		rl.ActionPriorityBoost:        true,
-		rl.ActionPromoteHighPriority:  true,
-		rl.ActionPromoteShortJobs:     true,
-		rl.ActionBalancedScheduling:   true,
-		rl.ActionDeadlineAware:        true,
-		rl.ActionResourceOptimized:   true,
+		rl.ActionSortByPriority:      true,
+		rl.ActionSortByExecutionTime: true,
+		rl.ActionSortByBalanced:      true,
+		rl.ActionSortByResource:      true,
+		rl.ActionSortByUrgency:       true,
 	}
 	
 	logger.GetLogger().Infof("[SCHEDULER-MODEL-SAVE] convertQTableToStringFormat: Valid action types: %v", validActionTypes)
@@ -1587,16 +1577,11 @@ func (ms *ModelStorage) convertQTableFromStringFormat(savedQTable map[string]map
 	actionCounts := make(map[rl.ActionType]int)
 	invalidStringCount := 0
 	validActionTypes := map[rl.ActionType]bool{
-		rl.ActionNone:                true,
-		rl.ActionScheduleNext:         true,
-		rl.ActionReorder:              true,
-		rl.ActionDelay:               true,
-		rl.ActionPriorityBoost:        true,
-		rl.ActionPromoteHighPriority:  true,
-		rl.ActionPromoteShortJobs:     true,
-		rl.ActionBalancedScheduling:   true,
-		rl.ActionDeadlineAware:        true,
-		rl.ActionResourceOptimized:   true,
+		rl.ActionSortByPriority:      true,
+		rl.ActionSortByExecutionTime: true,
+		rl.ActionSortByBalanced:      true,
+		rl.ActionSortByResource:      true,
+		rl.ActionSortByUrgency:       true,
 	}
 
 	for stateKey, actions := range savedQTable {
@@ -1608,10 +1593,10 @@ func (ms *ModelStorage) convertQTableFromStringFormat(savedQTable map[string]map
 			// Validate conversion result
 			if !validActionTypes[actionType] {
 				invalidStringCount++
-				logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Invalid action string in saved Q-table: state=%s, actionStr=%s, qValue=%.3f - converted to ActionNone",
+				logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Invalid action string in saved Q-table: state=%s, actionStr=%s, qValue=%.3f - converted to ActionSortByPriority",
 					stateKey, actionStr, qValue)
-				// Default to ActionNone for invalid strings
-				actionType = rl.ActionNone
+				// Default to ActionSortByPriority for invalid strings
+				actionType = rl.ActionSortByPriority
 			}
 			
 			qTable[stateKey][actionType] = qValue
@@ -1620,7 +1605,7 @@ func (ms *ModelStorage) convertQTableFromStringFormat(savedQTable map[string]map
 	}
 	
 	if invalidStringCount > 0 {
-		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Found %d invalid action strings in saved Q-table - converted to ActionNone", invalidStringCount)
+		logger.GetLogger().Warnf("[SCHEDULER-MODEL-LOAD] Found %d invalid action strings in saved Q-table - converted to ActionSortByPriority", invalidStringCount)
 	}
 	
 	// Log action distribution
@@ -1645,56 +1630,47 @@ func (ms *ModelStorage) convertQTableFromStringFormat(savedQTable map[string]map
 // Helper method to convert ActionType to string
 func (ms *ModelStorage) actionTypeToString(actionType rl.ActionType) string {
 	switch actionType {
-	case rl.ActionNone:
-		return "none"
-	case rl.ActionScheduleNext:
-		return "schedule_next"
-	case rl.ActionReorder:
-		return "reorder"
-	case rl.ActionDelay:
-		return "delay"
-	case rl.ActionPriorityBoost:
-		return "priority_boost"
-	case rl.ActionPromoteHighPriority:
-		return "promote_high_priority"
-	case rl.ActionPromoteShortJobs:
-		return "promote_short_jobs"
-	case rl.ActionBalancedScheduling:
-		return "balanced_scheduling"
-	case rl.ActionDeadlineAware:
-		return "deadline_aware"
-	case rl.ActionResourceOptimized:
-		return "resource_optimized"
+	case rl.ActionSortByPriority:
+		return "sort_by_priority"
+	case rl.ActionSortByExecutionTime:
+		return "sort_by_execution_time"
+	case rl.ActionSortByBalanced:
+		return "sort_by_balanced"
+	case rl.ActionSortByResource:
+		return "sort_by_resource"
+	case rl.ActionSortByUrgency:
+		return "sort_by_urgency"
 	default:
-		return "none"
+		return "sort_by_priority"
 	}
 }
 
 // Helper method to convert string to ActionType
 func (ms *ModelStorage) stringToActionType(actionStr string) rl.ActionType {
 	switch actionStr {
-	case "none":
-		return rl.ActionNone
-	case "schedule_next":
-		return rl.ActionScheduleNext
-	case "reorder":
-		return rl.ActionReorder
-	case "delay":
-		return rl.ActionDelay
-	case "priority_boost":
-		return rl.ActionPriorityBoost
-	case "promote_high_priority":
-		return rl.ActionPromoteHighPriority
+	case "sort_by_priority":
+		return rl.ActionSortByPriority
+	case "sort_by_execution_time":
+		return rl.ActionSortByExecutionTime
+	case "sort_by_balanced":
+		return rl.ActionSortByBalanced
+	case "sort_by_resource":
+		return rl.ActionSortByResource
+	case "sort_by_urgency":
+		return rl.ActionSortByUrgency
+	// Legacy action name mappings for backward compatibility
+	case "schedule_next", "delay", "promote_high_priority":
+		return rl.ActionSortByPriority
 	case "promote_short_jobs":
-		return rl.ActionPromoteShortJobs
-	case "balanced_scheduling":
-		return rl.ActionBalancedScheduling
-	case "deadline_aware":
-		return rl.ActionDeadlineAware
+		return rl.ActionSortByExecutionTime
+	case "reorder", "balanced_scheduling":
+		return rl.ActionSortByBalanced
 	case "resource_optimized":
-		return rl.ActionResourceOptimized
+		return rl.ActionSortByResource
+	case "priority_boost":
+		return rl.ActionSortByUrgency
 	default:
-		return rl.ActionNone
+		return rl.ActionSortByPriority
 	}
 }
 
@@ -2623,16 +2599,11 @@ func (ms *ModelStorage) validateActionSpaceCompatibility() error {
 
 	// Validate we have expected action types
 	expectedActions := []rl.ActionType{
-		rl.ActionNone,
-		rl.ActionScheduleNext,
-		rl.ActionReorder,
-		rl.ActionDelay,
-		rl.ActionPriorityBoost,
-		rl.ActionPromoteHighPriority,
-		rl.ActionPromoteShortJobs,
-		rl.ActionBalancedScheduling,
-		rl.ActionDeadlineAware,
-		rl.ActionResourceOptimized,
+		rl.ActionSortByPriority,
+		rl.ActionSortByExecutionTime,
+		rl.ActionSortByBalanced,
+		rl.ActionSortByResource,
+		rl.ActionSortByUrgency,
 	}
 
 	if actionCount != len(expectedActions) {
