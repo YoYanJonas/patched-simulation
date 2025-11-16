@@ -636,13 +636,18 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 	nodeStatus *pb.FogNode, // NEW: Node status at completion time
 ) (float64, error) {
 
-	taskID := "unknown"
+	// Extract identifier for logging - prefer cloudletId (unique) over taskId (pattern-based)
+	identifier := "unknown"
 	if len(completedTasks) > 0 {
-		taskID = completedTasks[0].TaskId
+		if completedTasks[0].CloudletId != "" {
+			identifier = completedTasks[0].CloudletId
+		} else {
+			identifier = completedTasks[0].TaskId // Fallback to pattern-based taskId
+		}
 	}
 
-	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-ENTRY] CalculateDelayedReward called: TaskID=%s, CompletedTasks=%d, NodeStatus=%t",
-		taskID, len(completedTasks), nodeStatus != nil)
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-ENTRY] CalculateDelayedReward called: cloudletId=%s, CompletedTasks=%d, NodeStatus=%t",
+		identifier, len(completedTasks), nodeStatus != nil)
 
 	// Convert proto metrics to internal SystemPerformanceMetrics (use node status for resource utilization)
 	currentMetrics := morc.calculateMetricsFromReport(completedTasks, systemMetrics, nodeStatus)
@@ -719,8 +724,8 @@ func (morc *MultiObjectiveRewardCalculator) CalculateDelayedReward(
 		morc.adaptWeights(currentEpisode)
 	}
 
-	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-EXIT] CalculateDelayedReward returning: TaskID=%s, Reward=%.3f, Episode=%d",
-		taskID, scalarizedReward, currentEpisode)
+	logger.GetLogger().Infof("[MULTI-OBJ-REWARD-EXIT] CalculateDelayedReward returning: cloudletId=%s, Reward=%.3f, Episode=%d",
+		identifier, scalarizedReward, currentEpisode)
 
 	return scalarizedReward, nil
 }
@@ -733,10 +738,14 @@ func (morc *MultiObjectiveRewardCalculator) calculateMetricsFromReport(
 	nodeStatus *pb.FogNode, // NEW: Node status at completion time
 ) SystemPerformanceMetrics {
 
+	// DEBUG CODE: Track actual latency from completion report vs placeholder values
+	logger.GetLogger().Infof("[DEBUG CODE] [MULTI-OBJ-METRICS-LATENCY] Using actual latency from completion report: AverageLatencyMs=%.2f (NOT using placeholder AvgWaitingTime+AvgExecutionTime)",
+		metrics.AverageLatencyMs)
+	
 	// Convert protobuf metrics to internal format
 	derivedMetrics := SystemPerformanceMetrics{
 		TotalThroughput:     metrics.TotalThroughput,
-		AverageLatencyMs:    metrics.AverageLatencyMs,
+		AverageLatencyMs:    metrics.AverageLatencyMs, // ACTUAL latency from completion report, not placeholder
 		EnergyEfficiency:    metrics.EnergyEfficiency,
 		ResourceUtilization: metrics.ResourceUtilization, // Will be overridden if nodeStatus available
 		DeadlineMisses:      metrics.DeadlineMisses,

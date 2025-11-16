@@ -282,11 +282,11 @@ func (sf *StateFeatures) getFuzzyStateKey() string {
 	loadIdx := cfg.RL.StateDiscretization.SystemLoad.GetCategoryIndex(sf.SystemLoad * 100.0)
 	priorityIdx := cfg.RL.StateDiscretization.TaskPriority.GetCategoryIndex(sf.AvgPriority)
 
-	// Create time bucket (6-hour periods: 0-5, 6-11, 12-17, 18-23)
-	timeBucket := sf.TimeOfDay / 6
+	// REMOVED: Time bucket - simulation runs within single time period, no diversity benefit
+	// timeBucket := sf.TimeOfDay / 6
 
-	return fmt.Sprintf("c%d_m%d_q%d_l%d_p%d_t%d",
-		cpuIdx, memIdx, queueIdx, loadIdx, priorityIdx, timeBucket)
+	return fmt.Sprintf("c%d_m%d_q%d_l%d_p%d",
+		cpuIdx, memIdx, queueIdx, loadIdx, priorityIdx)
 }
 
 // getLegacyStateKey generates state key using legacy hardcoded discretization (for backward compatibility)
@@ -298,8 +298,11 @@ func (sf *StateFeatures) getLegacyStateKey() string {
 	priorityBucket := sf.discretizeValue(sf.AvgPriority, 1, 10, 3)
 	loadBucket := sf.discretizeValue(sf.SystemLoad*100.0, 0, 100, 5) // Convert to percentage
 
-	return fmt.Sprintf("q%d_c%d_m%d_p%d_l%d_t%d",
-		queueBucket, cpuBucket, memoryBucket, priorityBucket, loadBucket, sf.TimeOfDay/6)
+	// REMOVED: Time bucket - simulation runs within single time period, no diversity benefit
+	// timeBucket := sf.TimeOfDay / 6
+
+	return fmt.Sprintf("q%d_c%d_m%d_p%d_l%d",
+		queueBucket, cpuBucket, memoryBucket, priorityBucket, loadBucket)
 }
 
 // discretizeValue converts a continuous value to discrete buckets (legacy method)

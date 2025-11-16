@@ -99,10 +99,15 @@ func (rc *RewardCalculator) calculateMetrics(
 	}
 
 	if state != nil {
-		metrics.Latency = state.AvgWaitingTime + state.AvgExecutionTime
+		// DEBUG CODE: Do not use placeholder values for latency calculation
+		// state.AvgWaitingTime is hardcoded to 1.0 (placeholder)
+		// state.AvgExecutionTime is estimated (not actual)
+		// Latency should come from actual completion reports, not placeholders
+		// For state extraction (before completion), skip latency calculation or use 0
+		metrics.Latency = 0.0 // Will be set from actual completion report data
 		// Use CPU/Memory from state (which should come from NodeStatusTracker if ExtractStateFeatures was used correctly)
 		metrics.ResourceEff = (state.CPUUtilization + state.MemoryUtilization) / 2.0
-		metrics.ResponseTime = state.RecentLatency
+		metrics.ResponseTime = 0.0 // Will be set from actual completion report data
 		
 		// If state has 0.0 for CPU/Memory but tracker has data, use tracker
 		if nodeStatusTracker != nil && nodeStatusTracker.HasData() {
@@ -227,25 +232,21 @@ func (rc *RewardCalculator) calculateActionSpecificReward(
 
 	// Action-specific bonuses/penalties
 	switch action.Type {
-	case ActionReorder:
-		// Small penalty for reordering (computational cost)
-		reward -= 0.05
-		// Bonus if reordering leads to better priority alignment
-		if action.Priority > 0.7 {
-			reward += 0.1
-		}
-	case ActionScheduleNext:
-		// Neutral action
+	case ActionSortByPriority:
+		// Neutral action - priority-based sorting
 		reward += 0.0
-	case ActionDelay:
-		// Small penalty for delays
-		reward -= 0.02
-	case ActionPriorityBoost:
-		// Penalty for priority manipulation unless justified
-		reward -= 0.03
-		if action.Priority > 0.8 {
-			reward += 0.05 // Justified priority boost
-		}
+	case ActionSortByExecutionTime:
+		// Small bonus for execution time optimization
+		reward += 0.01
+	case ActionSortByBalanced:
+		// Bonus for balanced multi-factor sorting
+		reward += 0.02
+	case ActionSortByResource:
+		// Bonus for resource optimization
+		reward += 0.01
+	case ActionSortByUrgency:
+		// Bonus for urgency-based sorting
+		reward += 0.01
 	}
 
 	return reward
