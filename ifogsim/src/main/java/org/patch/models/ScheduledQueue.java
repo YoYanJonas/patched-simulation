@@ -30,16 +30,17 @@ public class ScheduledQueue {
     public void addTask(TaskInfo taskInfo) {
         int queueSizeBefore = tasks.size();
         String taskId = taskInfo.getTaskId();
+        String cloudletId = String.valueOf(taskInfo.getTuple().getCloudletId()); // Extract cloudletId for U.I.
         boolean isCached = taskInfo.isCachedTask();
         String cacheKey = taskInfo.getCacheKey();
         
         double currentTime = org.cloudbus.cloudsim.core.CloudSim.clock();
         System.out.println(String.format(
-                "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-ADD-START] Time: %.2f - Adding task to scheduled queue: TaskID=%s, IsCached=%s, CacheKey=%s (queue size before: %d)",
-                currentTime, taskId, isCached ? "true" : "false", cacheKey != null ? cacheKey : "NONE", queueSizeBefore));
+                "[FLOW-FOG-SCHEDULED-QUEUE-INTERNAL-ADD-START] Time: %.2f - Adding task to scheduled queue: TaskID=%s, CloudletID=%s, IsCached=%s, CacheKey=%s (queue size before: %d)",
+                currentTime, taskId, cloudletId, isCached ? "true" : "false", cacheKey != null ? cacheKey : "NONE", queueSizeBefore));
         
         tasks.add(taskInfo);
-        taskMap.put(taskId, taskInfo);
+        taskMap.put(cloudletId, taskInfo);  // CORRECT: Uses cloudletId as key (U.I.)
         totalTasksAdded++;
         
         int queueSizeAfter = tasks.size();
@@ -82,37 +83,38 @@ public class ScheduledQueue {
         }
 
         TaskInfo taskInfo = tasks.remove(0);
-        taskMap.remove(taskInfo.getTaskId());
+        String cloudletId = String.valueOf(taskInfo.getTuple().getCloudletId());
+        taskMap.remove(cloudletId);  // CORRECT: Uses cloudletId
         totalTasksProcessed++;
 
-        logger.fine("Task " + taskInfo.getTaskId() + " removed from scheduled queue (processed)");
+        logger.fine("Task " + cloudletId + " (taskId=" + taskInfo.getTaskId() + ") removed from scheduled queue (processed)");
         return taskInfo;
     }
 
     /**
      * Remove a specific task from the queue
      * 
-     * @param taskId The task ID to remove
+     * @param cloudletId The cloudlet ID (unique identifier) to remove
      * @return The removed TaskInfo object, or null if not found
      */
-    public TaskInfo removeTask(String taskId) {
-        TaskInfo taskInfo = taskMap.remove(taskId);
+    public TaskInfo removeTask(String cloudletId) {
+        TaskInfo taskInfo = taskMap.remove(cloudletId);
         if (taskInfo != null) {
             tasks.remove(taskInfo);
             totalTasksProcessed++;
-            logger.fine("Task " + taskId + " removed from scheduled queue");
+            logger.fine("Task " + cloudletId + " removed from scheduled queue");
         }
         return taskInfo;
     }
 
     /**
-     * Get a task by ID without removing it
+     * Get a task by cloudlet ID without removing it
      * 
-     * @param taskId The task ID
+     * @param cloudletId The cloudlet ID (unique identifier)
      * @return The TaskInfo object, or null if not found
      */
-    public TaskInfo getTask(String taskId) {
-        return taskMap.get(taskId);
+    public TaskInfo getTask(String cloudletId) {
+        return taskMap.get(cloudletId);
     }
 
     /**

@@ -39,6 +39,7 @@ public class SchedulerIntegration {
     // Repeated task generation support for sensors
     private java.util.Random random = new java.util.Random();
     private java.util.Map<String, String> taskPatternToId = new java.util.HashMap<>(); // Pattern -> TaskId for reuse
+    private int taskIdCounter = 1; // Counter for generating pattern-based taskIds (not cloudletId)
     // Repeated task probability - configurable, default 0.6 (60%) for realistic IoT scenarios
     // IoT sensors typically send similar data repeatedly (temperature, motion, etc.)
     private double repeatedTaskProbability;
@@ -355,9 +356,8 @@ public class SchedulerIntegration {
 
             // Map tuple type to TaskType (if needed, use helper)
             TaskType taskType = mapTupleTypeToTaskType(tuple.getTupleType());
-            // Tuple doesn't have priority - use default (can be enhanced later if priority
-            // is stored elsewhere)
-            int priority = 5; // Default priority
+            // Assign random priority: 1, 2, or 3 (for priority-based actions to work)
+            int priority = random.nextInt(3) + 1; // Random value: 1, 2, or 3
 
             // Create pattern key for task reuse (CPU-Memory pattern)
             String patternKey = String.format("%d-%d", tuple.getCloudletLength(), tuple.getCloudletFileSize());
@@ -369,15 +369,19 @@ public class SchedulerIntegration {
                     taskPatternToId.containsKey(patternKey);
 
             if (shouldReuse) {
-                // Reuse existing task ID for this pattern
+                // Reuse existing task ID for this pattern (pattern-based, not cloudletId)
                 taskId = taskPatternToId.get(patternKey);
                 logger.info(String.format(
-                        "[REPEATED-TASK-SENSOR] Reusing task ID %s for pattern (CPU:%d, Mem:%d) - Original tuple ID: %d",
+                        "[REPEATED-TASK-SENSOR] Reusing task ID %s for pattern (CPU:%d, Mem:%d) - Tuple cloudletId: %d",
                         taskId, tuple.getCloudletLength(), tuple.getCloudletFileSize(), tuple.getCloudletId()));
             } else {
-                // Use tuple's cloudlet ID (unique per tuple instance)
-                taskId = String.valueOf(tuple.getCloudletId());
+                // Generate NEW pattern-based taskId (NOT cloudletId - cloudletId is unique and sent separately in metadata)
+                // taskId is pattern-based and can be reused for similar tasks
+                taskId = String.valueOf(taskIdCounter++);
                 taskPatternToId.put(patternKey, taskId);
+                logger.info(String.format(
+                        "[NEW-TASK-PATTERN] Generated pattern-based taskId=%s for pattern (CPU:%d, Mem:%d) - Tuple cloudletId: %d",
+                        taskId, tuple.getCloudletLength(), tuple.getCloudletFileSize(), tuple.getCloudletId()));
                 if (taskPatternToId.size() > maxUniqueTasks * 2) {
                     // Cleanup: remove oldest entries to prevent memory growth
                     java.util.Iterator<java.util.Map.Entry<String, String>> it = taskPatternToId.entrySet().iterator();
