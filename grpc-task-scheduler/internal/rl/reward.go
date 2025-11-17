@@ -45,15 +45,16 @@ func NewRewardCalculator(weights config.RewardWeights) *RewardCalculator {
 }
 
 // CalculateReward calculates reward based on current metrics and previous state
+// nodeStatusTracker: Optional tracker for real CPU/Memory metrics (can be nil)
 func (rc *RewardCalculator) CalculateReward(
 	beforeState *StateFeatures,
 	afterState *StateFeatures,
 	action Action,
 	tasks []TaskEntry,
-	nodeManager SingleNodeManager) float64 {
+	nodeStatusTracker NodeStatusTracker) float64 {
 
 	// Calculate current metrics
-	currentMetrics := rc.calculateMetrics(afterState, tasks, nodeManager)
+	currentMetrics := rc.calculateMetrics(afterState, tasks, nodeStatusTracker)
 
 	// Store metrics in history
 	rc.addToHistory(currentMetrics)
@@ -87,19 +88,36 @@ func (rc *RewardCalculator) CalculateReward(
 }
 
 // calculateMetrics calculates current system metrics
+// nodeStatusTracker: Optional tracker for real CPU/Memory metrics (can be nil)
 func (rc *RewardCalculator) calculateMetrics(
 	state *StateFeatures,
 	tasks []TaskEntry,
-	nodeManager SingleNodeManager) RewardMetrics {
+	nodeStatusTracker NodeStatusTracker) RewardMetrics {
 
 	metrics := RewardMetrics{
 		Timestamp: time.Now(),
 	}
 
 	if state != nil {
-		metrics.Latency = state.AvgWaitingTime + state.AvgExecutionTime
+		// Do not use placeholder values for latency calculation
+		// state.AvgWaitingTime is hardcoded to 1.0 (placeholder)
+		// state.AvgExecutionTime is estimated (not actual)
+		// Latency should come from actual completion reports, not placeholders
+		// For state extraction (before completion), skip latency calculation or use 0
+		metrics.Latency = 0.0 // Will be set from actual completion report data
+		// Use CPU/Memory from state (which should come from NodeStatusTracker if ExtractStateFeatures was used correctly)
 		metrics.ResourceEff = (state.CPUUtilization + state.MemoryUtilization) / 2.0
-		metrics.ResponseTime = state.RecentLatency
+		metrics.ResponseTime = 0.0 // Will be set from actual completion report data
+		
+		// If state has 0.0 for CPU/Memory but tracker has data, use tracker
+		if nodeStatusTracker != nil && nodeStatusTracker.HasData() {
+			if state.CPUUtilization == 0.0 && state.MemoryUtilization == 0.0 {
+				// State doesn't have real metrics, use tracker
+				cpuUtil := nodeStatusTracker.GetAvgCPUUtilization()
+				memUtil := nodeStatusTracker.GetAvgMemoryUtilization()
+				metrics.ResourceEff = (cpuUtil + memUtil) / 2.0
+			}
+		}
 	}
 
 	if len(tasks) > 0 {
@@ -109,8 +127,15 @@ func (rc *RewardCalculator) calculateMetrics(
 		metrics.QueueStability = rc.calculateQueueStability(state)
 	}
 
-	if nodeManager != nil {
-		metrics.EnergyEfficiency = rc.calculateEnergyEfficiency(nodeManager)
+	// Energy efficiency calculation - use tracker if available, otherwise use state
+	if nodeStatusTracker != nil && nodeStatusTracker.HasData() {
+		// Use system load from tracker as proxy for energy efficiency
+		systemLoad := nodeStatusTracker.GetSystemLoad()
+		// Energy efficiency is inversely related to system load (lower load = higher efficiency)
+		metrics.EnergyEfficiency = 1.0 - systemLoad
+	} else if state != nil {
+		// Fallback: use state metrics if tracker not available
+		metrics.EnergyEfficiency = 1.0 - state.SystemLoad
 	}
 
 	return metrics
@@ -149,9 +174,9 @@ func (rc *RewardCalculator) calculateFairnessReward(fairness float64) float64 {
 	return fairness
 }
 
+// Later Feature: deadline-aware reward disabled
 func (rc *RewardCalculator) calculateDeadlineReward(missRate float64) float64 {
-	// Heavily penalize deadline misses
-	return math.Max(0.0, 1.0-missRate*2.0) // Double penalty for missed deadlines
+	return 1.0 // Maximum reward (deadline-aware disabled)
 }
 
 func (rc *RewardCalculator) calculateEnergyReward(energyEff float64) float64 {
@@ -207,25 +232,21 @@ func (rc *RewardCalculator) calculateActionSpecificReward(
 
 	// Action-specific bonuses/penalties
 	switch action.Type {
-	case ActionReorder:
-		// Small penalty for reordering (computational cost)
-		reward -= 0.05
-		// Bonus if reordering leads to better priority alignment
-		if action.Priority > 0.7 {
-			reward += 0.1
-		}
-	case ActionScheduleNext:
-		// Neutral action
+	case ActionSortByPriority:
+		// Neutral action - priority-based sorting
 		reward += 0.0
-	case ActionDelay:
-		// Small penalty for delays
-		reward -= 0.02
-	case ActionPriorityBoost:
-		// Penalty for priority manipulation unless justified
-		reward -= 0.03
-		if action.Priority > 0.8 {
-			reward += 0.05 // Justified priority boost
-		}
+	case ActionSortByExecutionTime:
+		// Small bonus for execution time optimization
+		reward += 0.01
+	case ActionSortByBalanced:
+		// Bonus for balanced multi-factor sorting
+		reward += 0.02
+	case ActionSortByResource:
+		// Bonus for resource optimization
+		reward += 0.01
+	case ActionSortByUrgency:
+		// Bonus for urgency-based sorting
+		reward += 0.01
 	}
 
 	return reward
@@ -279,26 +300,11 @@ func (rc *RewardCalculator) calculateFairness(tasks []TaskEntry) float64 {
 	return 1.0 / (1.0 + cv)
 }
 
+// Later Feature: deadline-aware miss rate calculation disabled
 func (rc *RewardCalculator) calculateDeadlineMissRate(tasks []TaskEntry) float64 {
-	if len(tasks) == 0 {
-		return 0.0
+	if len(tasks) > 0 {
 	}
-
-	missedDeadlines := 0
-	for _, task := range tasks {
-		// Estimate completion time
-		estimatedCompletion := task.GetArrivalTime().Add(
-			time.Since(task.GetArrivalTime()) +
-				time.Duration(task.GetExecutionTimeMs())*time.Millisecond)
-
-		// Check against deadline
-		deadlineTime := time.Unix(task.GetDeadline(), 0)
-		if estimatedCompletion.After(deadlineTime) {
-			missedDeadlines++
-		}
-	}
-
-	return float64(missedDeadlines) / float64(len(tasks))
+	return 0.0 // No misses (deadline-aware disabled)
 }
 
 func (rc *RewardCalculator) calculateQueueStability(state *StateFeatures) float64 {

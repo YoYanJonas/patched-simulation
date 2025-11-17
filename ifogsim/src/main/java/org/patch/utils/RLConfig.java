@@ -64,12 +64,12 @@ public class RLConfig {
      * Initialize configuration with environment variables and defaults
      */
     public static void initialize() {
-        // Set defaults
-        ServiceRegistry.setConfig(ENABLE_FOG_RL, getBooleanEnv("ENABLE_FOG_RL", false));
-        ServiceRegistry.setConfig(ENABLE_CLOUD_RL, getBooleanEnv("ENABLE_CLOUD_RL", false));
+        // Set defaults - default to true for RL features
+        ServiceRegistry.setConfig(ENABLE_FOG_RL, getBooleanEnv("ENABLE_FOG_RL", true));
+        ServiceRegistry.setConfig(ENABLE_CLOUD_RL, getBooleanEnv("ENABLE_CLOUD_RL", true));
         ServiceRegistry.setConfig(ENABLE_EXTERNAL_TASKS, getBooleanEnv("ENABLE_EXTERNAL_TASKS", false));
-        ServiceRegistry.setConfig(ENABLE_PLACEMENT_RL, getBooleanEnv("ENABLE_PLACEMENT_RL", false)); // Added for
-                                                                                                     // placement RL
+        ServiceRegistry.setConfig(ENABLE_PLACEMENT_RL, getBooleanEnv("ENABLE_PLACEMENT_RL", true)); // Added for
+                                                                                                    // placement RL
 
         // Timing configurations
         ServiceRegistry.setConfig(STATE_REPORT_INTERVAL,
@@ -230,16 +230,59 @@ public class RLConfig {
 
     /**
      * Check if cloud-level RL is enabled
+     * First checks EnhancedConfigurationLoader, then falls back to
+     * ServiceRegistry/env vars
      */
     public static boolean isCloudRLEnabled() {
-        return ServiceRegistry.getConfig(ENABLE_CLOUD_RL, false);
+        try {
+            // First check EnhancedConfigurationLoader (reads from YAML via env vars)
+            org.patch.config.EnhancedConfigurationLoader.initialize();
+            boolean fromConfig = org.patch.config.EnhancedConfigurationLoader
+                    .getRLConfigBoolean("rl.servers.cloud.enabled", true);
+            if (fromConfig) {
+                logger.info("Cloud RL enabled via configuration");
+                return true;
+            }
+        } catch (Exception e) {
+            logger.fine("Could not read RL config from EnhancedConfigurationLoader: " + e.getMessage());
+        }
+
+        // Fallback to ServiceRegistry/env vars - default to true
+        boolean fromServiceRegistry = ServiceRegistry.getConfig(ENABLE_CLOUD_RL, true);
+        if (fromServiceRegistry) {
+            logger.info("Cloud RL enabled via ServiceRegistry/env vars");
+        }
+        return fromServiceRegistry;
     }
 
     /**
      * Check if fog-level RL is enabled
+     * First checks EnhancedConfigurationLoader, then falls back to
+     * ServiceRegistry/env vars
      */
     public static boolean isFogRLEnabled() {
-        return ServiceRegistry.getConfig(ENABLE_FOG_RL, false);
+        try {
+            // First check EnhancedConfigurationLoader (reads from YAML via env vars)
+            org.patch.config.EnhancedConfigurationLoader.initialize();
+            // For fog RL, we check if any fog RL server is enabled
+            // Since fog nodes have individual servers, check for default or any configured
+            // server
+            boolean fromConfig = org.patch.config.EnhancedConfigurationLoader
+                    .getRLConfigBoolean("rl.servers.placement.enabled", true);
+            if (fromConfig) {
+                logger.info("Fog RL enabled via configuration (placement RL)");
+                return true;
+            }
+        } catch (Exception e) {
+            logger.fine("Could not read RL config from EnhancedConfigurationLoader: " + e.getMessage());
+        }
+
+        // Fallback to ServiceRegistry/env vars - default to true
+        boolean fromServiceRegistry = ServiceRegistry.getConfig(ENABLE_FOG_RL, true);
+        if (fromServiceRegistry) {
+            logger.info("Fog RL enabled via ServiceRegistry/env vars");
+        }
+        return fromServiceRegistry;
     }
 
     /**

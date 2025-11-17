@@ -199,11 +199,34 @@ public class GrpcClient implements AutoCloseable {
             structuredLogger.grpcRequestStart("GrpcClient", "connect", connectionFields);
 
             try {
-                // Check channel state first
+                // Trigger connection attempt and wait for READY state
+                // getState(true) triggers connection attempt if channel is IDLE
                 io.grpc.ConnectivityState state = channel.getState(true);
+
+                // Wait for channel to become READY (with timeout)
+                long connectTimeout = config.getConnectTimeout();
+                TimeUnit timeoutUnit = config.getConnectTimeoutUnit();
+                long timeoutMs = TimeUnit.MILLISECONDS.convert(connectTimeout, timeoutUnit);
+                long startWait = System.currentTimeMillis();
+
+                while (state != io.grpc.ConnectivityState.READY &&
+                        (System.currentTimeMillis() - startWait) < timeoutMs) {
+                    try {
+                        // Wait a bit before checking again
+                        Thread.sleep(100); // Check every 100ms
+                        state = channel.getState(true); // Check current state
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
                 if (state == io.grpc.ConnectivityState.READY) {
                     isConnected = true;
                     long duration = System.currentTimeMillis() - startTime;
+
+                    logger.info(String.format("[IFOGSIM-CONN-SUCCESS] Connected to gRPC server: Host=%s, Port=%d, State=%s, Duration=%dms",
+                            config.getHost(), config.getPort(), state.toString(), duration));
 
                     Map<String, Object> successFields = new HashMap<>();
                     successFields.put("state", state.toString());
@@ -219,12 +242,18 @@ public class GrpcClient implements AutoCloseable {
                     return true;
                 } else {
                     long duration = System.currentTimeMillis() - startTime;
+                    logger.warning(String.format("[IFOGSIM-CONN-WAIT] Channel not ready: Host=%s, Port=%d, State=%s, Duration=%dms",
+                            config.getHost(), config.getPort(), state.toString(), duration));
+                    
                     Map<String, Object> errorFields = new HashMap<>();
                     errorFields.put("state", state.toString());
                     errorFields.put("duration_ms", duration);
 
-                    structuredLogger.warning("Channel not ready", errorFields);
+                    structuredLogger.warning("Channel not ready after waiting", errorFields);
                     structuredLogger.grpcRequestComplete("GrpcClient", "connect", duration, false);
+                    // Don't return false immediately - channel might still connect asynchronously
+                    // Set isConnected to false but allow async connection
+                    isConnected = false;
                     return false;
                 }
             } catch (Exception e) {
@@ -444,19 +473,52 @@ public class GrpcClient implements AutoCloseable {
     }
 
     /**
-     * Gracefully shuts down the channel
+     * Gracefully shuts down the channel ()
+     * Uses dedicated shutdown timeout and force shutdown if needed
      */
     public void shutdown() {
         if (channel != null && !channel.isShutdown()) {
             try {
-                channel.shutdown().awaitTermination(
-                        config.getConnectTimeout(),
-                        config.getConnectTimeoutUnit());
+                // Use dedicated shutdown timeout ()
+                long shutdownTimeout = config.getShutdownTimeout();
+                TimeUnit timeoutUnit = config.getShutdownTimeoutUnit();
+                
+                // Graceful shutdown
+                boolean terminated = channel.shutdown().awaitTermination(shutdownTimeout, timeoutUnit);
+                
+                if (!terminated) {
+                    logger.warning("Channel did not terminate gracefully, forcing shutdown");
+                    // Force shutdown - this interrupts all worker threads
+                    channel.shutdownNow();
+                    // Wait longer for force shutdown (worker threads need time to respond to interrupt)
+                    terminated = channel.awaitTermination(15, TimeUnit.SECONDS);
+                    
+                    if (!terminated) {
+                        logger.warning("Channel still not terminated after force shutdown, but continuing cleanup");
+                        // Note: Some threads may still be alive, but they're daemon threads
+                        // and will be terminated when JVM exits via System.exit()
+                    } else {
+                        logger.info("Channel terminated after force shutdown");
+                    }
+                } else {
+                    logger.info("Channel terminated gracefully");
+                }
+                
                 isConnected = false;
                 logger.info("gRPC client shutdown successfully");
             } catch (InterruptedException e) {
                 logger.log(Level.SEVERE, "Channel shutdown interrupted", e);
                 Thread.currentThread().interrupt();
+                // Force shutdown on interruption
+                if (channel != null && !channel.isShutdown()) {
+                    channel.shutdownNow();
+                    try {
+                        // Give it a moment to terminate
+                        channel.awaitTermination(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
             }
         }
     }
@@ -478,7 +540,33 @@ public class GrpcClient implements AutoCloseable {
     }
 
     public boolean isConnected() {
-        return isConnected && !channel.isShutdown();
+        // Check both the flag and actual channel state
+        if (channel.isShutdown()) {
+            isConnected = false;
+            return false;
+        }
+
+        // If flag says connected, verify with actual channel state
+        if (isConnected) {
+            io.grpc.ConnectivityState state = channel.getState(false);
+            if (state == io.grpc.ConnectivityState.READY) {
+                return true;
+            } else {
+                // Channel state changed, update flag
+                isConnected = false;
+                return false;
+            }
+        }
+
+        // Flag says not connected, but check if channel might be READY anyway
+        // (could happen if channel connected asynchronously)
+        io.grpc.ConnectivityState state = channel.getState(true); // Trigger connection if IDLE
+        if (state == io.grpc.ConnectivityState.READY) {
+            isConnected = true;
+            return true;
+        }
+
+        return false;
     }
 
     public GrpcClientConfig getConfig() {

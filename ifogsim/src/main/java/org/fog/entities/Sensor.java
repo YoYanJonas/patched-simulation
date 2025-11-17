@@ -77,16 +77,53 @@ public class Sensor extends SimEntity{
 	}
 	
 	public void transmit(){
+		// [DEBUG] Log sensor transmission start
+		double currentTime = org.cloudbus.cloudsim.core.CloudSim.clock();
+		System.out.println(String.format(
+				"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - Starting transmit() - AppId:%s, GatewayDeviceId:%d",
+				currentTime, getName(), getId(), getAppId(), getGatewayDeviceId()));
+		
 		AppEdge _edge = null;
+		if (getApp() == null) {
+			System.err.println(String.format(
+					"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - ERROR: Application is NULL, cannot transmit!",
+					currentTime, getName(), getId()));
+			return;
+		}
+		
 		for(AppEdge edge : getApp().getEdges()){
 			if(edge.getSource().equals(getTupleType()))
 				_edge = edge;
 		}
-		long cpuLength = (long) _edge.getTupleCpuLength();
-		long nwLength = (long) _edge.getTupleNwLength();
 		
-		Tuple tuple = new Tuple(getAppId(), FogUtils.generateTupleId(), Tuple.UP, cpuLength, 1, nwLength, outputSize, 
-				new UtilizationModelFull(), new UtilizationModelFull(), new UtilizationModelFull());
+		if (_edge == null) {
+			System.err.println(String.format(
+					"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - ERROR: No AppEdge found for tupleType '%s'",
+					currentTime, getName(), getId(), getTupleType()));
+			return;
+		}
+		
+		// Get CPU from options (if configured) or fall back to AppEdge value
+		long cpuLength = getRandomCpuFromConfig();
+		if (cpuLength == 0) {
+			cpuLength = (long) _edge.getTupleCpuLength();  // Fallback to AppEdge
+		}
+
+		// Get Memory from options (if configured) or use AppEdge network length as fallback
+		long memorySize = getRandomMemoryFromConfig();
+		if (memorySize == 0) {
+			memorySize = (long) _edge.getTupleNwLength();  // Fallback to current behavior (nwLength)
+		}
+
+		long nwLength = (long) _edge.getTupleNwLength();  // Keep network length separate
+		
+		// Create Tuple: (appId, cloudletId, direction, cloudletLength, pesNumber, cloudletFileSize, cloudletOutputSize, ...)
+		Tuple tuple = new Tuple(getAppId(), FogUtils.generateTupleId(), Tuple.UP, 
+			cpuLength,      // CloudletLength = CPU (MIPS)
+			1,              // pesNumber = 1
+			memorySize,     // CloudletFileSize = Memory (bytes) - NOW FROM RANDOM OPTIONS
+			outputSize,     // CloudletOutputSize = output size (bytes) - keep from current behavior
+			new UtilizationModelFull(), new UtilizationModelFull(), new UtilizationModelFull());
 		tuple.setUserId(getUserId());
 		tuple.setTupleType(getTupleType());
 		
@@ -99,7 +136,44 @@ public class Sensor extends SimEntity{
 		int actualTupleId = updateTimings(getSensorName(), tuple.getDestModuleName());
 		tuple.setActualTupleId(actualTupleId);
 		
+		// [DEBUG] Log before sending
+		System.out.println(String.format(
+				"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - Sending tuple %d to GatewayDevice %d (DestModule:%s, CPU:%d, Mem:%d, NW:%d, Latency:%.2f)",
+				currentTime, getName(), getId(), tuple.getCloudletId(), gatewayDeviceId, 
+				tuple.getDestModuleName(), cpuLength, memorySize, nwLength, getLatency()));
+		
 		send(gatewayDeviceId, getLatency(), FogEvents.TUPLE_ARRIVAL,tuple);
+		
+		// [DEBUG] Log after sending
+		System.out.println(String.format(
+				"[FLOW-SENSOR-TRANSMIT] Time: %.2f - Sensor %s (ID:%d) - Tuple %d SENT successfully to device %d",
+				currentTime, getName(), getId(), tuple.getCloudletId(), gatewayDeviceId));
+	}
+
+	/**
+	 * Get random CPU value from configuration options
+	 * @return Random CPU value from options, or 0 if not configured
+	 */
+	private long getRandomCpuFromConfig() {
+		java.util.List<Long> cpuOptions = org.patch.config.EnhancedConfigurationLoader.getSensorConfigList("sensors.parameters.cpu.options");
+		if (cpuOptions != null && !cpuOptions.isEmpty()) {
+			java.util.Random random = new java.util.Random();
+			return cpuOptions.get(random.nextInt(cpuOptions.size()));
+		}
+		return 0; // Indicate not configured
+	}
+
+	/**
+	 * Get random Memory value from configuration options
+	 * @return Random Memory value from options, or 0 if not configured
+	 */
+	private long getRandomMemoryFromConfig() {
+		java.util.List<Long> memoryOptions = org.patch.config.EnhancedConfigurationLoader.getSensorConfigList("sensors.parameters.memory.options");
+		if (memoryOptions != null && !memoryOptions.isEmpty()) {
+			java.util.Random random = new java.util.Random();
+			return memoryOptions.get(random.nextInt(memoryOptions.size()));
+		}
+		return 0; // Indicate not configured
 	}
 	
 	protected int updateTimings(String src, String dest){
@@ -120,8 +194,32 @@ public class Sensor extends SimEntity{
 	
 	@Override
 	public void startEntity() {
-		send(gatewayDeviceId, CloudSim.getMinTimeBetweenEvents(), FogEvents.SENSOR_JOINED, geoLocation);
-		send(getId(), getTransmitDistribution().getNextValue() + transmissionStartDelay, FogEvents.EMIT_TUPLE);
+		// Send SENSOR_JOINED event to gateway device
+		if (geoLocation != null) {
+			send(gatewayDeviceId, CloudSim.getMinTimeBetweenEvents(), FogEvents.SENSOR_JOINED, geoLocation);
+			System.out.println(String.format(
+					"[FLOW-SENSOR-START] Time: %.2f - Sensor %s (ID:%d) started - Gateway:%d, AppId:%s, App:%s",
+					CloudSim.clock(), getName(), getId(), gatewayDeviceId, getAppId(),
+					getApp() != null ? "SET" : "NULL"));
+		} else {
+			System.err.println(String.format(
+					"[FLOW-SENSOR-START] Time: %.2f - Sensor %s (ID:%d) - ERROR: GeoLocation is NULL!",
+					CloudSim.clock(), getName(), getId()));
+		}
+		
+		// Schedule first EMIT_TUPLE event, but only if we have an application reference
+		// If app is null, we'll schedule it later when app is set
+		if (getApp() != null) {
+			double nextTransmitTime = getTransmitDistribution().getNextValue() + transmissionStartDelay;
+			send(getId(), nextTransmitTime, FogEvents.EMIT_TUPLE);
+			System.out.println(String.format(
+					"[FLOW-SENSOR-START] Time: %.2f - Sensor %s (ID:%d) scheduled first EMIT_TUPLE at time %.2f",
+					CloudSim.clock(), getName(), getId(), CloudSim.clock() + nextTransmitTime));
+		} else {
+			System.out.println(String.format(
+					"[FLOW-SENSOR-START] Time: %.2f - Sensor %s (ID:%d) - Application not yet set, will schedule EMIT_TUPLE when app is available",
+					CloudSim.clock(), getName(), getId()));
+		}
 	}
 
 	@Override
@@ -131,8 +229,43 @@ public class Sensor extends SimEntity{
 			//transmit(transmitDistribution.getNextValue());
 			break;
 		case FogEvents.EMIT_TUPLE:
+			double currentTime = CloudSim.clock();
+			double simulationTime = org.fog.utils.Config.SIMULATION_TIME;
+			double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
+			
+			// Stop generating NEW tuples once we've reached SIMULATION_TIME
+			// MAX_SIMULATION_TIME is a hard cap (should not reach here if working correctly)
+			if (currentTime >= simulationTime) {
+				System.out.println(String.format(
+						"[FLOW-SENSOR-STOP] Time: %.2f - Sensor %s (ID:%d) stopping tuple generation - Current time >= SIMULATION_TIME %.2f",
+						currentTime, getName(), getId(), simulationTime));
+				return; // Don't transmit or schedule next
+			}
+			
+			// Safety check: Also stop if we somehow exceeded MAX_SIMULATION_TIME
+			if (currentTime >= maxSimulationTime) {
+				System.out.println(String.format(
+						"[FLOW-SENSOR-STOP] Time: %.2f - Sensor %s (ID:%d) HARD STOP - Current time >= MAX_SIMULATION_TIME %.2f",
+						currentTime, getName(), getId(), maxSimulationTime));
+				return;
+			}
+			
+			// Transmit current tuple
 			transmit();
-			send(getId(), getTransmitDistribution().getNextValue(), FogEvents.EMIT_TUPLE);
+			
+			// Schedule next transmission only if it would occur before SIMULATION_TIME
+			if (getTransmitDistribution() != null) {
+				double nextTransmitTime = getTransmitDistribution().getNextValue();
+				double nextEventTime = currentTime + nextTransmitTime;
+				
+				if (nextEventTime < simulationTime) {
+					send(getId(), nextTransmitTime, FogEvents.EMIT_TUPLE);
+				} else {
+					System.out.println(String.format(
+							"[FLOW-SENSOR-STOP] Time: %.2f - Sensor %s (ID:%d) stopping tuple scheduling - Next event time %.2f >= SIMULATION_TIME %.2f",
+							currentTime, getName(), getId(), nextEventTime, simulationTime));
+				}
+			}
 			break;
 		}
 			
@@ -221,6 +354,22 @@ public class Sensor extends SimEntity{
 
 	public void setApp(Application app) {
 		this.app = app;
+		double currentTime = CloudSim.clock();
+		
+		// [DEBUG] Log when app is set
+		System.out.println(String.format(
+				"[FLOW-SENSOR-APP-SET] Time: %.2f - Sensor %s (ID:%d) - Application reference SET (AppId:%s)",
+				currentTime, getName(), getId(), getAppId()));
+		
+		// If sensor has started but hasn't scheduled first EMIT_TUPLE yet (because app was null),
+		// schedule it now
+		if (app != null && getTransmitDistribution() != null) {
+			double nextTransmitTime = getTransmitDistribution().getNextValue() + transmissionStartDelay;
+			send(getId(), nextTransmitTime, FogEvents.EMIT_TUPLE);
+			System.out.println(String.format(
+					"[FLOW-SENSOR-APP-SET] Time: %.2f - Sensor %s (ID:%d) scheduled first EMIT_TUPLE at time %.2f (after app was set)",
+					currentTime, getName(), getId(), currentTime + nextTransmitTime));
+		}
 	}
 
 	public Double getLatency() {

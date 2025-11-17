@@ -32,6 +32,7 @@ out/
 target/
 bin/
 jars/
+build/
 
 # ============================================================
 # ⚙️ Go Projects
@@ -54,6 +55,8 @@ go-grpc-server/go.work
 go-grpc-server/go.work.sum
 # Env
 go-grpc-server/.env
+# Model files (generated during training)
+go-grpc-server/models/*.json
 # Temporary build / runtime dirs
 go-grpc-server/tmp
 go-grpc-server/cmd/server/tmp
@@ -134,3 +137,21 @@ config/**/production.yaml
 config/**/local.yaml
 config/**/secrets.yaml
 
+# Development documentation
+dev-mds/
+
+# Reports directory (generated per run)
+reports/*
+!reports/.gitkeep
+
+# Model files (generated during training)
+models/**/*.json
+models/**/*.hybrid
+models/**/*.pb
+models/**/*.h5
+models/**/*.pkl
+!models/.gitkeep
+!models/*/.gitkeep
+
+grpc-task-scheduler/server
+grpc-task-scheduler/main

@@ -7,6 +7,7 @@ import (
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // AlgorithmType represents different algorithm types
@@ -139,6 +140,23 @@ func (am *AlgorithmManager) UpdateRewardWeights(weights config.RewardWeights) er
 	return nil
 }
 
+// UpdateActiveProfile updates the active profile in multi-objective calculators
+func (am *AlgorithmManager) UpdateActiveProfile(profileName string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	// Update active profile in all multi-objective calculators
+	for algType, calc := range am.multiObjectiveCalculators {
+		if calc != nil {
+			if err := calc.SetActiveProfile(profileName); err != nil {
+				return fmt.Errorf("failed to update active profile for %s algorithm: %w", algType, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // Rest of the methods remain the same...
 func (am *AlgorithmManager) GetAlgorithm(algType AlgorithmType) SchedulingAlgorithm {
 	am.mu.RLock()
@@ -162,8 +180,11 @@ func (am *AlgorithmManager) GetCurrentAlgorithm() SchedulingAlgorithm {
 }
 
 func (am *AlgorithmManager) SelectAlgorithm(tasks []TaskEntry, nodeManager SingleNodeManager) SchedulingAlgorithm {
+	
 	am.mu.RLock()
-	defer am.mu.RUnlock()
+	defer func() {
+		am.mu.RUnlock()
+	}()
 
 	selectedAlg := am.GetAlgorithm(AlgorithmType(am.config.DefaultAlgorithm))
 	if selectedAlg != nil {
@@ -175,7 +196,8 @@ func (am *AlgorithmManager) SelectAlgorithm(tasks []TaskEntry, nodeManager Singl
 		return fallbackAlgorithm
 	}
 
-	return am.traditionAlgorithms[AlgorithmFCFS]
+	result := am.traditionAlgorithms[AlgorithmFCFS]
+	return result
 }
 
 func (am *AlgorithmManager) setCurrentAlgorithm(algType AlgorithmType) {
@@ -294,12 +316,16 @@ func (am *AlgorithmManager) String() string {
 }
 
 // ProcessTaskCompletion processes task completion through RL algorithms
-func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeManager SingleNodeManager) error {
+func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
+	logger.GetLogger().Infof("[ALG-MGR-COMPLETE-ENTRY] ProcessTaskCompletion: cloudletId=%s, RLEnabled=%t, QueueLength=%d, HasNodeStatus=%t", 
+		cloudletId, am.config.RLEnabled, queueLength, nodeStatus != nil)
+	
 	am.mu.Lock()
 	defer am.mu.Unlock()
 
 	// Only process if we have RL algorithms enabled
 	if !am.config.RLEnabled {
+		logger.GetLogger().Warnf("[ALG-MGR-COMPLETE-SKIP] RL not enabled: cloudletId=%s", cloudletId)
 		return nil // No RL processing needed
 	}
 
@@ -309,34 +335,27 @@ func (am *AlgorithmManager) ProcessTaskCompletion(task TaskEntry, report *pb.Tas
 	}
 
 	if report == nil {
-		return fmt.Errorf("completion report is nil for task %s", task.GetTaskID())
+		return fmt.Errorf("completion report is nil for task cloudletId=%s", cloudletId)
 	}
 
 	// Find Q-Learning algorithm to handle experience completion
 	if qlearningAlg, exists := am.rlAlgorithms[AlgorithmQLearning]; exists {
 		// Cast to QLearningScheduler to access experience management
 		if qlScheduler, ok := qlearningAlg.(*QLearningScheduler); ok {
-			// Process with comprehensive error handling
-			err := qlScheduler.ProcessTaskCompletion(task, report)
+			// Process with comprehensive error handling (pass node status, actual queue length, and cloudletId)
+			err := qlScheduler.ProcessTaskCompletion(task, report, nodeStatus, queueLength, cloudletId)
 			if err != nil {
-				// Log error but record performance anyway for tracking
-				fmt.Printf("Error processing task completion for %s: %v\n", task.GetTaskID(), err)
-
-				// Still record performance metrics for analysis if nodeManager provided
-				if nodeManager != nil {
-					am.RecordPerformance(AlgorithmQLearning, nodeManager, []TaskEntry{task})
-				}
-
+				// Log error but don't fail completely - allows system to continue
+				logger.GetLogger().Errorf("[ALG-MGR-COMPLETE-QLEARNING-ERROR] qlScheduler.ProcessTaskCompletion failed: cloudletId=%s, Error=%v", 
+					cloudletId, err)
 				return fmt.Errorf("task completion processing failed: %w", err)
 			}
+			logger.GetLogger().Infof("[ALG-MGR-COMPLETE-QLEARNING-SUCCESS] qlScheduler.ProcessTaskCompletion succeeded: cloudletId=%s", cloudletId)
 
-			// Record performance metrics for episode-aware tracking
-			if nodeManager != nil {
-				am.RecordPerformance(AlgorithmQLearning, nodeManager, []TaskEntry{task})
-			}
+			// Note: RecordPerformance is skipped here because nodeManager is not available
+			// Performance tracking can be done separately if needed, but it's not critical for reward calculation
 
 			// Experience completed and Q-table updated
-			fmt.Printf("Task completion processed successfully for %s (RL experience updated)\n", task.GetTaskID())
 			return nil
 		}
 	}
@@ -423,7 +442,6 @@ func (am *AlgorithmManager) ValidateIntegration() []string {
 	}
 
 	if len(issues) == 0 {
-		fmt.Println("All integrations validated successfully")
 	}
 
 	return issues

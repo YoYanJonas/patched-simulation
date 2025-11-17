@@ -15,6 +15,7 @@ import org.patch.broker.RLFogBroker;
 import org.patch.client.AllocationClient;
 import org.patch.client.SchedulerClient;
 import org.patch.devices.RLFogDevice;
+import org.patch.integration.StreamingQueueObserver;
 import org.patch.application.RLApplication;
 import org.patch.placement.RLModulePlacement;
 import org.patch.placement.RLAwarePlacementAdapter;
@@ -102,7 +103,40 @@ public class RLController extends Controller {
             enableRL();
         }
 
+        // Schedule STOP_SIMULATION event at SIMULATION_TIME
+        // This ensures graceful termination at the correct time
+        // Task generation already stops at SIMULATION_TIME (sensors and external tasks
+        // check this)
+        send(getId(), org.fog.utils.Config.SIMULATION_TIME, FogEvents.STOP_SIMULATION);
+
         logger.info("RLController started: " + getName());
+        logger.info(String.format("STOP_SIMULATION event scheduled at %.2f seconds",
+                (double) org.fog.utils.Config.SIMULATION_TIME));
+    }
+
+    /**
+     * Override submitApplication to immediately trigger module deployment
+     * This ensures LAUNCH_MODULE events are sent to fog devices
+     */
+    @Override
+    public void submitApplication(Application application, ModulePlacement modulePlacement) {
+        // Call parent to store application and setup sensors/actuators
+        super.submitApplication(application, modulePlacement);
+
+        // Immediately trigger module deployment
+        // Since RL is disabled for controller, use processAppSubmitInternal
+        if (rlEnabled) {
+            // Use RL placement logic
+            ModulePlacement placement = getAppModulePlacementPolicy().get(application.getAppId());
+            if (placement instanceof RLModulePlacement) {
+                processRLModulePlacement(application, (RLModulePlacement) placement);
+            } else {
+                processAppSubmitInternal(application);
+            }
+        } else {
+            // Use standard placement (calls parent Controller.processAppSubmit)
+            processAppSubmitInternal(application);
+        }
     }
 
     @Override
@@ -165,6 +199,27 @@ public class RLController extends Controller {
                 break;
             case ExtendedFogEvents.TASK_COMPLETE:
                 handleTaskComplete(ev);
+                break;
+            case ExtendedFogEvents.SIMULATION_COMPLETION_CHECK:
+                handleSimulationCompletionCheck(ev);
+                break;
+            case FogEvents.STOP_SIMULATION:
+                // Graceful shutdown - stop generating NEW tasks, start completion checking
+                double currentTime = CloudSim.clock();
+
+                logger.info(String.format(
+                        "[STOP-SIMULATION] Time: %.2f - All task generators should stop generating NEW tasks now. Starting periodic completion checks.",
+                        currentTime));
+
+                // Note: Grace period and cleanup logic is handled in handleSimulationCompletionCheck
+                // This handler just starts the completion checking process
+                // Schedule first completion check immediately (after a small delay to let
+                // current events process)
+                double checkInterval = 5.0; // Check every 5 seconds
+                send(getId(), checkInterval, ExtendedFogEvents.SIMULATION_COMPLETION_CHECK);
+                logger.info(String.format(
+                        "[STOP-SIMULATION] Time: %.2f - Scheduled first completion check at %.2f (interval: %.2f seconds)",
+                        currentTime, currentTime + checkInterval, checkInterval));
                 break;
             default:
                 super.processEvent(ev);
@@ -274,6 +329,28 @@ public class RLController extends Controller {
      */
     private void processRLModulePlacement(Application application, RLModulePlacement rlPlacement) {
         logger.info("Processing RL module placement for application: " + application.getAppId());
+
+        // IMPORTANT: Set application reference for sensors so they can transmit tuples
+        int sensorsSet = 0;
+        for (Sensor sensor : getSensors()) {
+            if (sensor.getAppId() != null && sensor.getAppId().equals(application.getAppId())) {
+                sensor.setApp(application);
+                sensorsSet++;
+                logger.info(String.format(
+                        "[SENSOR-APP-SET] Set application reference for sensor: %s (ID:%d), AppId:%s",
+                        sensor.getName(), sensor.getId(), application.getAppId()));
+            }
+        }
+        logger.info(String.format(
+                "[SENSOR-APP-SET] Set application reference for %d sensors (total sensors: %d) in processRLModulePlacement",
+                sensorsSet, getSensors().size()));
+
+        // Set application reference for actuators
+        for (Actuator actuator : getActuators()) {
+            if (actuator.getAppId() != null && actuator.getAppId().equals(application.getAppId())) {
+                actuator.setApp(application);
+            }
+        }
 
         // Include energy and cost in placement decisions
         includeEnergyInPlacementRequests(application);
@@ -544,6 +621,28 @@ public class RLController extends Controller {
         FogUtils.appIdToGeoCoverageMap.put(application.getAppId(), application.getGeoCoverage());
         getApplications().put(application.getAppId(), application);
 
+        // IMPORTANT: Set application reference for sensors so they can transmit tuples
+        int sensorsSet = 0;
+        for (Sensor sensor : getSensors()) {
+            if (sensor.getAppId() != null && sensor.getAppId().equals(application.getAppId())) {
+                sensor.setApp(application);
+                sensorsSet++;
+                logger.info(String.format(
+                        "[SENSOR-APP-SET] Set application reference for sensor: %s (ID:%d), AppId:%s",
+                        sensor.getName(), sensor.getId(), application.getAppId()));
+            }
+        }
+        logger.info(String.format(
+                "[SENSOR-APP-SET] Set application reference for %d sensors (total sensors: %d) in processAppSubmitInternal",
+                sensorsSet, getSensors().size()));
+
+        // Set application reference for actuators
+        for (Actuator actuator : getActuators()) {
+            if (actuator.getAppId() != null && actuator.getAppId().equals(application.getAppId())) {
+                actuator.setApp(application);
+            }
+        }
+
         ModulePlacement modulePlacement = getAppModulePlacementPolicy().get(application.getAppId());
         for (FogDevice fogDevice : getFogDevices()) {
             sendNow(fogDevice.getId(), FogEvents.ACTIVE_APP_UPDATE, application);
@@ -607,8 +706,24 @@ public class RLController extends Controller {
             Map<String, Object> deviceState = new HashMap<>();
             deviceState.put("deviceId", device.getId());
             deviceState.put("deviceName", device.getName());
-            deviceState.put("cpuUtilization", device.getHost().getUtilizationOfCpu());
-            deviceState.put("ramUtilization", device.getHost().getUtilizationOfRam());
+
+            // Resource utilization (normalized to percentages [0.0, 1.0] for consistency)
+            // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
+            double cpuUtilization = device.getHost().getUtilizationOfCpu();
+
+            // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to
+            // percentage [0.0, 1.0]
+            double ramUsedMb = device.getHost().getUtilizationOfRam();
+            int totalRamMb = device.getHost().getRam();
+            double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+            // Clamp to valid range
+            if (ramUtilization < 0.0)
+                ramUtilization = 0.0;
+            if (ramUtilization > 1.0)
+                ramUtilization = 1.0;
+
+            deviceState.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
+            deviceState.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
             deviceState.put("energyConsumption", device.getEnergyConsumption());
             deviceState.put("totalCost", device.getTotalCost());
             deviceStates.add(deviceState);
@@ -663,5 +778,243 @@ public class RLController extends Controller {
 
     public boolean isRLConfigured() {
         return rlConfigured;
+    }
+
+    /**
+     * Handle simulation completion check - verifies if all tasks are completed
+     * and terminates gracefully when done
+     */
+    private void handleSimulationCompletionCheck(SimEvent ev) {
+        double currentTime = CloudSim.clock();
+        double maxSimulationTime = org.fog.utils.Config.MAX_SIMULATION_TIME;
+        double gracePeriodSeconds = 60.0; // 60 seconds grace period after MAX_SIMULATION_TIME
+        double cleanupTime = maxSimulationTime + gracePeriodSeconds;
+
+        // Check if we've exceeded MAX_SIMULATION_TIME + grace period - then clean up
+        // and terminate
+        if (currentTime >= cleanupTime) {
+            logger.warning(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f >= (MAX_SIMULATION_TIME + grace period) (%.2f) - Cleaning up stuck tasks and FORCING TERMINATION",
+                    currentTime, cleanupTime));
+
+            // Clean up stuck tasks (tasks that are still in activeTasks)
+            // This only happens after grace period expires
+            int stuckTasksRemoved = 0;
+            for (FogDevice device : getFogDevices()) {
+                if (device instanceof RLFogDevice) {
+                    RLFogDevice rlDevice = (RLFogDevice) device;
+                    if (rlDevice.getTaskExecutionEngine() != null) {
+                        // Clean up all remaining active tasks (they're stuck after grace period)
+                        // Use a very large timeout to catch all active tasks
+                        int removed = rlDevice.getTaskExecutionEngine().cleanupStuckTasks(Double.MAX_VALUE);
+                        stuckTasksRemoved += removed;
+                    }
+                }
+            }
+
+            if (stuckTasksRemoved > 0) {
+                logger.warning(String.format(
+                        "[COMPLETION-CHECK] Cleaned up %d stuck tasks before termination",
+                        stuckTasksRemoved));
+            }
+
+            forceStopAllStreamingObservers();
+            forceCloseAllGrpcChannels();
+            CloudSim.terminateSimulation();
+            CloudSim.abruptallyTerminate();
+            return;
+        }
+
+        // If we're in grace period (after MAX_SIMULATION_TIME but before cleanup time),
+        // just wait
+        if (currentTime >= maxSimulationTime && currentTime < cleanupTime) {
+            double remainingGracePeriod = cleanupTime - currentTime;
+            logger.info(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f - In grace period after MAX_SIMULATION_TIME (%.2f). Remaining grace period: %.2f seconds. Waiting for tasks to complete...",
+                    currentTime, maxSimulationTime, remainingGracePeriod));
+
+            // Continue checking - don't clean up yet, just wait
+            // Schedule next check
+            double checkInterval = 5.0; // Check every 5 seconds
+            send(getId(), checkInterval, ExtendedFogEvents.SIMULATION_COMPLETION_CHECK);
+            return;
+        }
+
+        // Check all fog nodes for pending tasks (queues + executing tasks)
+        int totalScheduledQueueSize = 0;
+        int totalUnscheduledQueueSize = 0;
+        int totalActiveTasks = 0;
+        int fogNodesWithTasks = 0;
+
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                int scheduledSize = rlDevice.getScheduledQueueSize();
+                int unscheduledSize = rlDevice.getUnscheduledQueueSize();
+
+                // Check active tasks (tasks currently executing)
+                int activeTasksCount = 0;
+                if (rlDevice.getTaskExecutionEngine() != null) {
+                    activeTasksCount = rlDevice.getTaskExecutionEngine().getActiveTasks().size();
+                }
+
+                totalScheduledQueueSize += scheduledSize;
+                totalUnscheduledQueueSize += unscheduledSize;
+                totalActiveTasks += activeTasksCount;
+
+                if (scheduledSize > 0 || unscheduledSize > 0 || activeTasksCount > 0) {
+                    fogNodesWithTasks++;
+                }
+            }
+        }
+
+        // Check for deferred events (from async gRPC callbacks)
+        int deferredEventCount = org.patch.utils.DeferredEventQueue.getDeferredEventCount();
+
+        // Log current state
+        logger.info(String.format(
+                "[COMPLETION-CHECK] Time: %.2f - ScheduledQueue: %d, UnscheduledQueue: %d, ActiveTasks: %d, DeferredEvents: %d, NodesWithTasks: %d",
+                currentTime, totalScheduledQueueSize, totalUnscheduledQueueSize, totalActiveTasks, deferredEventCount,
+                fogNodesWithTasks));
+
+        // Check if all queues are empty AND no tasks are executing AND no deferred
+        // events
+        if (totalScheduledQueueSize == 0 && totalUnscheduledQueueSize == 0 && totalActiveTasks == 0
+                && deferredEventCount == 0) {
+            // All queues are empty, no active tasks, and no deferred events - safe to
+            // terminate
+            // Note: CloudSim will process any remaining events in its future queue during
+            // termination
+            logger.info(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f - All queues empty, no active tasks, and no deferred events. Terminating simulation gracefully.",
+                    currentTime));
+
+            // Stop streaming observers gracefully
+            stopAllStreamingObservers();
+
+            // Terminate simulation (CloudSim will process any remaining events in
+            // finishSimulation)
+            CloudSim.terminateSimulation();
+            logger.info("[COMPLETION-CHECK] Simulation terminated gracefully - all tasks completed");
+        } else {
+            // Still have tasks in queues, executing, or deferred events - schedule next
+            // check
+            double checkInterval = 5.0; // Check every 5 seconds
+            send(getId(), checkInterval, ExtendedFogEvents.SIMULATION_COMPLETION_CHECK);
+            logger.fine(String.format(
+                    "[COMPLETION-CHECK] Time: %.2f - Tasks/events still pending (queues: %d, executing: %d, deferred: %d). Next check at %.2f",
+                    currentTime, totalScheduledQueueSize + totalUnscheduledQueueSize, totalActiveTasks,
+                    deferredEventCount, currentTime + checkInterval));
+        }
+    }
+
+    /**
+     * Force stop all streaming observers immediately
+     * Called during shutdown to prevent blocking gRPC calls
+     * Made public for cleanup from simulation main
+     */
+    public void forceStopAllStreamingObservers() {
+        logger.warning("[SHUTDOWN] Force stopping all streaming observers...");
+        int stoppedCount = 0;
+
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                StreamingQueueObserver observer = rlDevice.getStreamingObserver();
+                if (observer != null) {
+                    try {
+                        observer.stopStreaming();
+                        observer.cleanup(); // Force cleanup
+                        stoppedCount++;
+                        logger.info(String.format("[SHUTDOWN] Stopped streaming observer for device %d (%s)",
+                                device.getId(), device.getName()));
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING,
+                                String.format("Error stopping streaming observer for device %d", device.getId()), e);
+                    }
+                }
+            }
+        }
+
+        logger.info(String.format("[SHUTDOWN] Force stopped %d streaming observers", stoppedCount));
+    }
+
+    /**
+     * Stop all streaming observers gracefully
+     * Called during normal shutdown to prevent new blocking calls
+     */
+    private void stopAllStreamingObservers() {
+        logger.info("[SHUTDOWN] Stopping all streaming observers gracefully...");
+        int stoppedCount = 0;
+
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                StreamingQueueObserver observer = rlDevice.getStreamingObserver();
+                if (observer != null) {
+                    try {
+                        observer.stopStreaming();
+                        stoppedCount++;
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING,
+                                String.format("Error stopping streaming observer for device %d", device.getId()), e);
+                    }
+                }
+            }
+        }
+
+        logger.info(String.format("[SHUTDOWN] Stopped %d streaming observers", stoppedCount));
+    }
+
+    /**
+     * Force close all gRPC channels immediately
+     * Called during shutdown to stop blocking operations
+     * Made public for cleanup from simulation main
+     */
+    public void forceCloseAllGrpcChannels() {
+        logger.warning("[SHUTDOWN] Force closing all gRPC channels...");
+        int closedCount = 0;
+
+        // Close scheduler clients
+        if (schedulerClients != null) {
+            for (SchedulerClient client : schedulerClients.values()) {
+                if (client != null) {
+                    try {
+                        client.close();
+                        closedCount++;
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING, "Error closing scheduler client", e);
+                    }
+                }
+            }
+        }
+
+        // Close allocation client
+        if (allocationClient != null) {
+            try {
+                allocationClient.close();
+                closedCount++;
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Error closing allocation client", e);
+            }
+        }
+
+        // Close gRPC clients in fog devices
+        for (FogDevice device : getFogDevices()) {
+            if (device instanceof RLFogDevice) {
+                RLFogDevice rlDevice = (RLFogDevice) device;
+                if (rlDevice.getSchedulerClient() != null) {
+                    try {
+                        rlDevice.getSchedulerClient().close();
+                        closedCount++;
+                    } catch (Exception e) {
+                        logger.log(Level.WARNING,
+                                String.format("Error closing scheduler client for device %d", device.getId()), e);
+                    }
+                }
+            }
+        }
+
+        logger.info(String.format("[SHUTDOWN] Force closed %d gRPC channels", closedCount));
     }
 }

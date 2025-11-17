@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -40,7 +41,6 @@ func NewSchedulerService(metrics *metrics.InMemoryMetrics, cfg *config.Config) *
 	}
 
 	engine := models.NewSchedulerEngine(cfg.SingleNode.NodeID, algorithm, cfg)
-	engine.SetMaxConcurrentTasks(cfg.SingleNode.MaxConcurrentTasks)
 
 	// Initialize enhanced RL configuration components
 	if cfg.RL.Enabled {
@@ -76,6 +76,7 @@ func NewSchedulerService(metrics *metrics.InMemoryMetrics, cfg *config.Config) *
 
 func (s *SchedulerService) Start(ctx context.Context) {
 	s.schedulerEngine.Start(ctx)
+	
 	// Initialize episode management lifecycle
 	if s.config.RL.Enabled && s.config.RL.EpisodeConfig.Type != "" {
 		logger.GetLogger().Infof("Episode management lifecycle started with type: %s", s.config.RL.EpisodeConfig.Type)
@@ -132,22 +133,91 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		}, nil
 	}
 
-	// Add task to queue via scheduler engine
-	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task)
-	if err != nil {
+	// Extract QueueContext from request (if provided)
+	var queueContext *pb.QueueContext
+	if req.QueueContext != nil {
+		queueContext = req.QueueContext
+	} else {
+		queueContext = &pb.QueueContext{
+			TotalQueueSize: 0,
+		}
+	}
+
+	
+	// Check if context is already done (timeout) before processing
+	select {
+	case <-ctx.Done():
 		s.metrics.IncrementFailedRequests()
 		return &pb.AddTaskToQueueResponse{
 			TaskId:  req.Task.TaskId,
 			Success: false,
-			Message: err.Error(),
+			Message: fmt.Sprintf("request timeout before processing: %v", ctx.Err()),
+		}, ctx.Err()
+	default:
+	}
+
+	// Add task to queue via scheduler engine (with queue context)
+	// IMPORTANT: Task is added to queue BEFORE building response
+	// If timeout occurs after this point, task is already in queue - no task loss
+	logger.GetLogger().Infof("[SCHEDULER-RECEIVE] Received task: taskId=%s", req.Task.TaskId)
+	queuePosition, estimatedWait, isCached, cacheKey, cacheAction, err := s.schedulerEngine.AddTaskToQueueWithCache(req.Task, queueContext)
+	
+	// Check context again after task addition (in case timeout occurred during processing)
+	if ctx.Err() != nil {
+		// Task is already in queue (added before timeout), but response cannot be sent
+		// This is acceptable - task is not lost, just client won't get confirmation
+		// Task is already in queue, so return success even if context timed out
+		// The client will retry if needed, but task is safe in queue
+	} else {
+	}
+	
+	if err != nil {
+		errorMessage := err.Error()
+		isTransient := false // Default to non-transient
+		
+		// Categorize errors: transient errors can be retried, permanent errors should not
+		if strings.Contains(errorMessage, "queue capacity exceeded") || 
+		   strings.Contains(errorMessage, "already scheduled") ||
+		   strings.Contains(errorMessage, "validation failed") {
+			isTransient = false // Permanent errors
+		} else if strings.Contains(errorMessage, "timeout") ||
+		          strings.Contains(errorMessage, "connection") ||
+		          strings.Contains(errorMessage, "unavailable") {
+			isTransient = true // Transient errors that might succeed on retry
+		}
+		
+		logger.GetLogger().Errorf("Failed to add task to queue: taskId=%s, Error=%v", req.Task.TaskId, err)
+		s.metrics.IncrementFailedRequests()
+		
+		// Include error category in response message for client retry logic
+		responseMessage := errorMessage
+		if isTransient {
+			responseMessage = fmt.Sprintf("TRANSIENT_ERROR: %s (may succeed on retry)", errorMessage)
+		} else {
+			responseMessage = fmt.Sprintf("PERMANENT_ERROR: %s (do not retry)", errorMessage)
+		}
+		
+		return &pb.AddTaskToQueueResponse{
+			TaskId:  req.Task.TaskId,
+			Success: false,
+			Message: responseMessage,
 		}, nil
 	}
 
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Task %s added to queue at position %d", req.Task.TaskId, queuePosition)
-
-	return &pb.AddTaskToQueueResponse{
+	logger.GetLogger().Infof("[SCHEDULER-SUCCESS] Task added successfully: taskId=%s, queuePosition=%d", req.Task.TaskId, queuePosition)
+	
+	// Extract cloudletId from task metadata (unique instance identifier)
+	cloudletId := ""
+	if req.Task.Metadata != nil {
+		if cid, ok := req.Task.Metadata["cloudlet_id"]; ok && cid != "" {
+			cloudletId = cid
+		}
+	}
+	
+	response := &pb.AddTaskToQueueResponse{
 		TaskId:              req.Task.TaskId,
+		CloudletId:          cloudletId,
 		Success:             true,
 		Message:             "task added to queue successfully",
 		QueuePosition:       queuePosition,
@@ -155,7 +225,9 @@ func (s *SchedulerService) AddTaskToQueue(ctx context.Context, req *pb.AddTaskTo
 		IsCachedTask:        isCached,
 		CacheKey:            cacheKey,
 		CacheAction:         cacheAction,
-	}, nil
+	}
+	
+	return response, nil
 }
 
 // NEW: ReportTaskCompletion - delegates to SchedulerEngine
@@ -181,7 +253,7 @@ func (s *SchedulerService) ReportTaskCompletion(ctx context.Context, req *pb.Tas
 	}
 
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Task completion processed: %s", req.TaskId)
+	logger.GetLogger().Infof("[SERVICE-COMPLETE-SUCCESS] Task completion processed: %s", req.TaskId)
 
 	return &pb.TaskCompletionAck{
 		Success: true,
@@ -251,10 +323,7 @@ func (s *SchedulerService) GetSystemMetrics(ctx context.Context, req *pb.GetSyst
 
 	// Log enhanced configuration status periodically
 	if s.config.RL.Enabled {
-		logger.GetLogger().Debugf("RL System Status: StateDiscretization=%t, MemoryMgmt=%t, MultiObjective=%t",
-			s.config.RL.StateDiscretization.Enabled,
-			s.config.RL.MemoryManagement.Enabled,
-			s.config.RL.MultiObjective.Enabled)
+		// RL is enabled
 	}
 
 	return response, nil
@@ -378,6 +447,14 @@ func (s *SchedulerService) GetAgent() *rl.Agent {
 	return s.schedulerEngine.GetAgent()
 }
 
+// GetCacheAgent returns the cache RL agent from the scheduler engine
+func (s *SchedulerService) GetCacheAgent() *rl.CacheAgent {
+	if s.schedulerEngine == nil {
+		return nil
+	}
+	return s.schedulerEngine.GetCacheAgent()
+}
+
 // GetSortedQueue returns the current sorted queue
 func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSortedQueueRequest) (*pb.GetSortedQueueResponse, error) {
 	s.metrics.IncrementRequests()
@@ -393,12 +470,51 @@ func (s *SchedulerService) GetSortedQueue(ctx context.Context, req *pb.GetSorted
 		}, fmt.Errorf("scheduler engine not initialized")
 	}
 
+	// Check if context is already done (timeout) before processing
+	select {
+	case <-ctx.Done():
+		s.metrics.IncrementFailedRequests()
+		return &pb.GetSortedQueueResponse{
+			SortedTasks:   []*pb.Task{},
+			AlgorithmUsed: "unknown",
+			QueueSize:     0,
+			Timestamp:     time.Now().Unix(),
+			NodeId:       "unknown",
+		}, ctx.Err()
+	default:
+	}
+	
 	// Get sorted queue from scheduler engine
 	response := s.schedulerEngine.GetSortedQueue(req.IncludeMetadata)
+	
+	// Check context again after processing (in case timeout occurred during processing)
+	if ctx.Err() != nil {
+		// Context cancelled - response may not be sent
+	}
+	
+	logger.GetLogger().Infof("GetSortedQueue response: QueueSize=%d, Algorithm=%s", response.QueueSize, response.AlgorithmUsed)
+	
+	// Log task details if queue has tasks (first 10)
+	if len(response.SortedTasks) > 0 {
+		taskDetails := ""
+		maxTasks := len(response.SortedTasks)
+		if maxTasks > 10 {
+			maxTasks = 10
+		}
+		for i := 0; i < maxTasks; i++ {
+			task := response.SortedTasks[i]
+			if i > 0 {
+				taskDetails += "|"
+			}
+			taskDetails += fmt.Sprintf("ID=%s,CPU=%d,Mem=%d", task.TaskId, task.CpuRequirement, task.MemoryRequirement)
+		}
+		if len(response.SortedTasks) > 10 {
+			taskDetails += fmt.Sprintf("... (+%d more)", len(response.SortedTasks)-10)
+		}
+	} else {
+	}
 
 	s.metrics.IncrementSuccessfulRequests()
-	logger.GetLogger().Infof("Sorted queue requested: %d tasks", len(response.SortedTasks))
-
 	return response, nil
 }
 

@@ -68,13 +68,22 @@ public class StateCollector {
         state.put("deviceName", device.getName());
         state.put("simulationTime", CloudSim.clock());
 
-        // Current resource utilization
+        // Current resource utilization (normalized to percentages [0.0, 1.0] for consistency)
+        // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
         double cpuUtilization = device.getHost().getUtilizationOfCpu();
-        double ramUtilization = device.getHost().getUtilizationOfRam();
+        
+        // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+        double ramUsedMb = device.getHost().getUtilizationOfRam();
+        int totalRamMb = device.getHost().getRam();
+        double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+        // Clamp to valid range
+        if (ramUtilization < 0.0) ramUtilization = 0.0;
+        if (ramUtilization > 1.0) ramUtilization = 1.0;
+        
         double bwUtilization = device.getHost().getUtilizationOfBw();
 
-        state.put("cpuUtilization", cpuUtilization);
-        state.put("ramUtilization", ramUtilization);
+        state.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
+        state.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
         state.put("bwUtilization", bwUtilization);
 
         // Update history

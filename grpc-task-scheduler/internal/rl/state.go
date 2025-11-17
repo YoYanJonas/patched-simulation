@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
 )
 
@@ -45,10 +46,6 @@ type StateFeatures struct {
 	LoadCategory     string `json:"load_category"`
 	PriorityCategory string `json:"priority_category"`
 
-	// Cache-related features
-	RepeatedTaskRatio float64 `json:"repeated_task_ratio"`
-	CacheCategory     string  `json:"cache_category"`
-
 	// Performance optimization: cached state key
 	cachedStateKey string
 	keyDirty       bool
@@ -57,8 +54,21 @@ type StateFeatures struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// NodeStatusTracker interface for extracting node status metrics
+// This interface allows ExtractStateFeatures to use accumulated node status from completion reports
+type NodeStatusTracker interface {
+	GetAvgCPUUtilization() float64
+	GetAvgMemoryUtilization() float64
+	GetSystemLoad() float64
+	GetResourcePressure() float64
+	HasData() bool
+}
+
 // ExtractStateFeatures extracts state features from current tasks and node status
-func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager, cacheManager interface{}) *StateFeatures {
+// Note: Cache-related features are excluded from scheduling state (cache has its own agent)
+// nodeStatusTracker: Tracks accumulated node status from completion reports (provides real CPU/Memory metrics)
+func ExtractStateFeatures(tasks []TaskEntry, nodeStatusTracker NodeStatusTracker) *StateFeatures {
+	
 	state := &StateFeatures{
 		Timestamp: time.Now(),
 	}
@@ -76,20 +86,22 @@ func ExtractStateFeatures(tasks []TaskEntry, nodeManager SingleNodeManager, cach
 		state.calculateTaskDistribution(tasks)
 	}
 
-	// Resource utilization from node manager
-	if nodeManager != nil {
-		state.CPUUtilization = nodeManager.GetCPUUtilization()
-		state.MemoryUtilization = nodeManager.GetMemoryUtilization()
-		state.SystemLoad = (state.CPUUtilization + state.MemoryUtilization) / 2.0
-		state.ResourcePressure = math.Max(state.CPUUtilization, state.MemoryUtilization)
+	// Use accumulated node status from completion reports (real CPU/Memory metrics)
+	if nodeStatusTracker != nil {
+		state.CPUUtilization = nodeStatusTracker.GetAvgCPUUtilization()
+		state.MemoryUtilization = nodeStatusTracker.GetAvgMemoryUtilization()
+		state.SystemLoad = nodeStatusTracker.GetSystemLoad()
+		state.ResourcePressure = nodeStatusTracker.GetResourcePressure()
 
 		// Performance indicators (placeholder - would be calculated from historical data)
 		state.RecentThroughput = float64(state.QueueLength) / 10.0 // Simplified
 		state.RecentLatency = state.AvgWaitingTime + state.AvgExecutionTime
+	} else {
+		state.CPUUtilization = 0.0
+		state.MemoryUtilization = 0.0
+		state.SystemLoad = 0.0
+		state.ResourcePressure = 0.0
 	}
-
-	// Calculate cache-related features
-	state.calculateCacheFeatures(cacheManager)
 
 	// Apply fuzzy categorization if enabled
 	state.applyFuzzyCategories()
@@ -149,14 +161,14 @@ func (sf *StateFeatures) calculateTaskDistribution(tasks []TaskEntry) {
 			shortTaskCount++
 		}
 
-		// Urgent tasks (deadline within next hour)
-		if task.GetDeadline() > 0 {
-			deadlineTime := time.Unix(task.GetDeadline(), 0)
-			timeToDeadline := time.Until(deadlineTime).Hours()
-			if timeToDeadline <= 1.0 && timeToDeadline > 0 {
-				urgentTaskCount++
-			}
-		}
+		// Later Feature: deadline-aware urgency detection disabled
+		// if task.GetDeadline() > 0 {
+		//     deadlineTime := time.Unix(task.GetDeadline(), 0)
+		//     timeToDeadline := time.Until(deadlineTime).Hours()
+		//     if timeToDeadline <= 1.0 && timeToDeadline > 0 {
+		//         urgentTaskCount++
+		//     }
+		// }
 	}
 
 	count := float64(len(tasks))
@@ -164,23 +176,6 @@ func (sf *StateFeatures) calculateTaskDistribution(tasks []TaskEntry) {
 		sf.HighPriorityRatio = float64(highPriorityCount) / count
 		sf.ShortTaskRatio = float64(shortTaskCount) / count
 		sf.UrgentTaskRatio = float64(urgentTaskCount) / count
-	}
-}
-
-// calculateCacheFeatures calculates cache-related state features
-func (sf *StateFeatures) calculateCacheFeatures(cacheManager interface{}) {
-	// Default values
-	sf.RepeatedTaskRatio = 0.0
-	sf.CacheCategory = "none"
-
-	// Check if cache manager is available and has the right interface
-	if cacheManager != nil {
-		// Use type assertion to get cache statistics
-		if cm, ok := cacheManager.(interface {
-			GetRepeatedTaskRatio() float64
-		}); ok {
-			sf.RepeatedTaskRatio = cm.GetRepeatedTaskRatio()
-		}
 	}
 }
 
@@ -205,25 +200,8 @@ func (sf *StateFeatures) applyFuzzyCategories() {
 	sf.LoadCategory = cfg.RL.StateDiscretization.SystemLoad.GetCategoryName(loadPercent)
 	sf.PriorityCategory = cfg.RL.StateDiscretization.TaskPriority.GetCategoryName(sf.AvgPriority)
 
-	// Cache categorization
-	sf.CacheCategory = sf.categorizeCacheRatio(sf.RepeatedTaskRatio)
 	// Mark state key as dirty since categories changed
 	sf.keyDirty = true
-}
-
-// categorizeCacheRatio categorizes the repeated task ratio
-func (sf *StateFeatures) categorizeCacheRatio(ratio float64) string {
-	if ratio == 0.0 {
-		return "none"
-	} else if ratio <= 0.2 {
-		return "low"
-	} else if ratio <= 0.5 {
-		return "medium"
-	} else if ratio <= 0.8 {
-		return "high"
-	} else {
-		return "very_high"
-	}
 }
 
 // DiscretizeFeature discretizes a continuous feature using configurable categories
@@ -304,32 +282,11 @@ func (sf *StateFeatures) getFuzzyStateKey() string {
 	loadIdx := cfg.RL.StateDiscretization.SystemLoad.GetCategoryIndex(sf.SystemLoad * 100.0)
 	priorityIdx := cfg.RL.StateDiscretization.TaskPriority.GetCategoryIndex(sf.AvgPriority)
 
-	// Create time bucket (6-hour periods: 0-5, 6-11, 12-17, 18-23)
-	timeBucket := sf.TimeOfDay / 6
+	// REMOVED: Time bucket - simulation runs within single time period, no diversity benefit
+	// timeBucket := sf.TimeOfDay / 6
 
-	// Get cache category index (simple mapping)
-	cacheIdx := sf.getCacheCategoryIndex()
-
-	return fmt.Sprintf("c%d_m%d_q%d_l%d_p%d_t%d_ch%d",
-		cpuIdx, memIdx, queueIdx, loadIdx, priorityIdx, timeBucket, cacheIdx)
-}
-
-// getCacheCategoryIndex returns a simple index for cache category
-func (sf *StateFeatures) getCacheCategoryIndex() int {
-	switch sf.CacheCategory {
-	case "none":
-		return 0
-	case "low":
-		return 1
-	case "medium":
-		return 2
-	case "high":
-		return 3
-	case "very_high":
-		return 4
-	default:
-		return 0
-	}
+	return fmt.Sprintf("c%d_m%d_q%d_l%d_p%d",
+		cpuIdx, memIdx, queueIdx, loadIdx, priorityIdx)
 }
 
 // getLegacyStateKey generates state key using legacy hardcoded discretization (for backward compatibility)
@@ -341,8 +298,11 @@ func (sf *StateFeatures) getLegacyStateKey() string {
 	priorityBucket := sf.discretizeValue(sf.AvgPriority, 1, 10, 3)
 	loadBucket := sf.discretizeValue(sf.SystemLoad*100.0, 0, 100, 5) // Convert to percentage
 
-	return fmt.Sprintf("q%d_c%d_m%d_p%d_l%d_t%d",
-		queueBucket, cpuBucket, memoryBucket, priorityBucket, loadBucket, sf.TimeOfDay/6)
+	// REMOVED: Time bucket - simulation runs within single time period, no diversity benefit
+	// timeBucket := sf.TimeOfDay / 6
+
+	return fmt.Sprintf("q%d_c%d_m%d_p%d_l%d",
+		queueBucket, cpuBucket, memoryBucket, priorityBucket, loadBucket)
 }
 
 // discretizeValue converts a continuous value to discrete buckets (legacy method)
@@ -464,7 +424,6 @@ func (sf *StateFeatures) GetNormalizedFeatures() []float64 {
 		sf.normalizeDay(float64(sf.DayOfWeek)),
 		sf.normalizeThroughput(sf.RecentThroughput),
 		sf.normalizeLatency(sf.RecentLatency),
-		sf.RepeatedTaskRatio, // Already normalized [0,1]
 	}
 
 	return features
@@ -506,8 +465,8 @@ func (sf *StateFeatures) normalizeLatency(latency float64) float64 {
 
 // GetStateSize returns the number of features in the state vector
 func GetStateSize() int {
-	// Count of features in GetNormalizedFeatures
-	return 16
+	// Count of features in GetNormalizedFeatures (cache features removed)
+	return 15
 }
 
 // StateComparator compares two states for similarity
@@ -553,8 +512,6 @@ func (sf *StateFeatures) Clone() *StateFeatures {
 		QueueCategory:     sf.QueueCategory,
 		LoadCategory:      sf.LoadCategory,
 		PriorityCategory:  sf.PriorityCategory,
-		RepeatedTaskRatio: sf.RepeatedTaskRatio,
-		CacheCategory:     sf.CacheCategory,
 		Timestamp:         sf.Timestamp,
 	}
 }
@@ -606,4 +563,79 @@ func ValidateStateDiscretization() error {
 	}
 
 	return nil
+}
+
+// ExtractStateFeaturesFromNodeStatus creates state features from node status at completion time
+// This is used for delayed reward calculation when we have node status from completion report
+// UNIFIED: Now uses the same full logic as ExtractStateFeatures for consistency
+func ExtractStateFeaturesFromNodeStatus(
+	tasks []TaskEntry,
+	nodeStatus *pb.FogNode,
+	queueLength int,
+) *StateFeatures {
+	// Create a temporary NodeStatusTracker wrapper for the nodeStatus
+	// This allows us to reuse ExtractStateFeatures logic
+	tracker := newNodeStatusWrapper(nodeStatus)
+	
+	// Use the unified ExtractStateFeatures function, but override queue length
+	// since we have the actual queue length at completion time
+	state := ExtractStateFeatures(tasks, tracker)
+	state.QueueLength = queueLength // Override with actual queue length
+	
+	// Re-apply fuzzy categorization with updated queue length
+	state.applyFuzzyCategories()
+	
+	return state
+}
+
+// nodeStatusWrapper wraps a *pb.FogNode to implement NodeStatusTracker interface
+// This allows ExtractStateFeatures to extract metrics from a completion report node status
+type nodeStatusWrapper struct {
+	nodeStatus *pb.FogNode
+}
+
+func newNodeStatusWrapper(nodeStatus *pb.FogNode) NodeStatusTracker {
+	return &nodeStatusWrapper{nodeStatus: nodeStatus}
+}
+
+func (w *nodeStatusWrapper) GetAvgCPUUtilization() float64 {
+	if w.nodeStatus != nil && w.nodeStatus.CurrentUsage != nil {
+		// CPU utilization (already percentage 0-100, convert to 0.0-1.0)
+		return float64(w.nodeStatus.CurrentUsage.CpuUsage) / 100.0
+	}
+	return 0.0
+}
+
+func (w *nodeStatusWrapper) GetAvgMemoryUtilization() float64 {
+	if w.nodeStatus != nil && w.nodeStatus.CurrentUsage != nil && w.nodeStatus.Capacity != nil {
+		if w.nodeStatus.Capacity.MemoryMb > 0 {
+			// Calculate percentage: actual MB used / total MB capacity
+			util := float64(w.nodeStatus.CurrentUsage.MemoryUsageMb) / float64(w.nodeStatus.Capacity.MemoryMb)
+			// Clamp to [0.0, 1.0]
+			if util < 0.0 {
+				return 0.0
+			}
+			if util > 1.0 {
+				return 1.0
+			}
+			return util
+		}
+	}
+	return 0.0
+}
+
+func (w *nodeStatusWrapper) GetSystemLoad() float64 {
+	cpu := w.GetAvgCPUUtilization()
+	mem := w.GetAvgMemoryUtilization()
+	return (cpu + mem) / 2.0
+}
+
+func (w *nodeStatusWrapper) GetResourcePressure() float64 {
+	cpu := w.GetAvgCPUUtilization()
+	mem := w.GetAvgMemoryUtilization()
+	return math.Max(cpu, mem)
+}
+
+func (w *nodeStatusWrapper) HasData() bool {
+	return w.nodeStatus != nil && w.nodeStatus.CurrentUsage != nil
 }

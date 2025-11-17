@@ -2,8 +2,12 @@ package scenarios;
 
 import org.cloudbus.cloudsim.core.CloudSim;
 import org.cloudbus.cloudsim.power.models.PowerModelLinear;
+import org.cloudbus.cloudsim.Vm;
 import org.fog.application.AppEdge;
-import org.fog.application.Application;
+import org.fog.application.AppModule;
+import org.patch.application.RLApplication;
+import org.patch.application.RLAppModule;
+import org.patch.application.RLAppEdge;
 import org.fog.entities.FogDevice;
 import org.fog.entities.Sensor;
 import org.fog.entities.Tuple;
@@ -85,6 +89,19 @@ public class RL3FogSimulation {
             // Step 2: Initialize CloudSim
             initializeCloudSim();
 
+            // Step 2.5: Set SIMULATION_TIME and MAX_SIMULATION_TIME BEFORE creating any
+            // entities
+            // SIMULATION_TIME: When to stop generating NEW tasks (sensors, external tasks)
+            // MAX_SIMULATION_TIME: Safety timeout to prevent infinite simulation (very large value)
+            org.fog.utils.Config.SIMULATION_TIME = (int) SIMULATION_TIME;
+            // Set MAX_SIMULATION_TIME to a large safety value (1 hour) - actual termination
+            // happens when all tasks complete
+            org.fog.utils.Config.MAX_SIMULATION_TIME = 3600; // 1 hour safety cap
+            logger.info(String.format("SIMULATION_TIME set to: %d seconds (stop generating new tasks)",
+                    org.fog.utils.Config.SIMULATION_TIME));
+            logger.info(String.format("MAX_SIMULATION_TIME set to: %d seconds (safety timeout - actual termination when all tasks complete)",
+                    org.fog.utils.Config.MAX_SIMULATION_TIME));
+
             // Step 3: Create broker and controller
             createBrokerAndController();
 
@@ -113,10 +130,77 @@ public class RL3FogSimulation {
             logger.info("Simulation completed successfully");
             logger.info("================================================================================");
 
+            // Step 11: Cleanup gRPC clients and force JVM shutdown to prevent thread
+            // cleanup warnings
+            cleanupAndExit(0);
+
         } catch (Exception e) {
             logger.severe("Simulation failed: " + e.getMessage());
             e.printStackTrace();
-            System.exit(1);
+            cleanupAndExit(1);
+        }
+    }
+
+    /**
+     * Cleanup all gRPC clients and force JVM shutdown to prevent thread cleanup
+     * warnings
+     * This ensures gRPC worker threads are terminated before Maven tries to destroy
+     * thread group
+     */
+    private static void cleanupAndExit(int exitCode) {
+        try {
+            logger.info("[DEBUG-CLEANUP] Starting cleanup of gRPC clients and resources...");
+
+            // Close all gRPC clients through controller if available
+            if (controller != null) {
+                try {
+                    logger.info("[DEBUG-CLEANUP] Force closing all gRPC channels...");
+                    // Force close all gRPC channels
+                    controller.forceCloseAllGrpcChannels();
+                    logger.info("[DEBUG-CLEANUP] Force stopping all streaming observers...");
+                    // Stop all streaming observers
+                    controller.forceStopAllStreamingObservers();
+                    logger.info("[DEBUG-CLEANUP] All gRPC clients closed successfully");
+                } catch (Exception e) {
+                    logger.warning(String.format("[DEBUG-CLEANUP] Error during gRPC cleanup: %s", e.getMessage()));
+                    e.printStackTrace();
+                }
+            } else {
+                logger.warning("[DEBUG-CLEANUP] Controller is null, skipping gRPC cleanup");
+            }
+
+            // Process any remaining deferred events before shutdown
+            if (org.patch.utils.DeferredEventQueue.hasDeferredEvents()) {
+                logger.warning("[DEBUG-CLEANUP] Processing remaining deferred events before shutdown");
+                org.patch.utils.DeferredEventQueue.processDeferredEvents();
+            }
+            
+            // Clear deferred queue
+            org.patch.utils.DeferredEventQueue.clear();
+            
+            // Give threads a moment to terminate (gRPC worker threads are daemon threads)
+            // They should terminate quickly after channels are closed
+            logger.info("[DEBUG-CLEANUP] Waiting 500ms for gRPC worker threads to terminate...");
+            try {
+                Thread.sleep(500); // 500ms should be enough for daemon threads
+                logger.info("[DEBUG-CLEANUP] Wait complete, threads should have terminated");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warning("[DEBUG-CLEANUP] Wait interrupted");
+            }
+
+            logger.info("[DEBUG-CLEANUP] Cleanup complete, exiting JVM to prevent thread cleanup warnings");
+
+        } catch (Exception e) {
+            logger.warning(String.format("[DEBUG-CLEANUP] Error during cleanup: %s", e.getMessage()));
+            e.printStackTrace();
+        } finally {
+            // Force JVM shutdown to prevent Maven exec plugin from trying to destroy thread
+            // group
+            // This prevents IllegalThreadStateException when gRPC worker threads are still
+            // alive
+            logger.info(String.format("[DEBUG-CLEANUP] Calling System.exit(%d)", exitCode));
+            System.exit(exitCode);
         }
     }
 
@@ -126,11 +210,12 @@ public class RL3FogSimulation {
     private static void loadConfiguration() {
         logger.info("Loading configuration from application.yml...");
 
-        // Verify gRPC configuration
-        String allocHost = EnhancedConfigurationLoader.getGrpcConfig("grpc.allocation.host", "localhost");
-        int allocPort = EnhancedConfigurationLoader.getGrpcConfigInt("grpc.allocation.port", 50051);
+        // Verify gRPC configuration - unified allocator server config
+        // Use consistent naming: allocationHost and allocationPort
+        String allocationHost = EnhancedConfigurationLoader.getGrpcConfig("grpc.allocation.host", "localhost");
+        int allocationPort = EnhancedConfigurationLoader.getGrpcConfigInt("grpc.allocation.port", 50051);
 
-        logger.info(String.format("Allocation Server: %s:%d", allocHost, allocPort));
+        logger.info(String.format("Allocation Server: %s:%d", allocationHost, allocationPort));
 
         // Verify scheduler configuration
         String schedHost = EnhancedConfigurationLoader.getGrpcConfig("grpc.scheduler.host", "localhost");
@@ -139,11 +224,44 @@ public class RL3FogSimulation {
         logger.info(String.format("Scheduler Servers: %s:%d-%d", schedHost, schedBasePort,
                 schedBasePort + NUM_FOG_NODES - 1));
 
-        // Verify RL configuration
+        // Verify RL configuration - force check after EnhancedConfigurationLoader
+        // initialization
+        EnhancedConfigurationLoader.initialize(); // Ensure config is loaded
+
+        // Check RL enabled flags from both config and direct checks
         boolean fogRLEnabled = RLConfig.isFogRLEnabled();
         boolean cloudRLEnabled = RLConfig.isCloudRLEnabled();
+        boolean allocatorRLEnabled = EnhancedConfigurationLoader
+                .getAllocationConfigBoolean("allocation.rl-agent.enabled", true);
+        boolean cloudRLFromConfig = EnhancedConfigurationLoader
+                .getRLConfigBoolean("rl.servers.cloud.enabled", true);
+        boolean placementRLFromConfig = EnhancedConfigurationLoader
+                .getRLConfigBoolean("rl.servers.placement.enabled", true);
 
-        logger.info(String.format("RL Enabled - Fog: %b, Cloud: %b", fogRLEnabled, cloudRLEnabled));
+        logger.info(String.format("RL Enabled - Fog: %b, Cloud: %b, Allocator RL: %b",
+                fogRLEnabled, cloudRLEnabled, allocatorRLEnabled));
+        logger.info(String.format("RL Config - Cloud from YAML: %b, Placement from YAML: %b",
+                cloudRLFromConfig, placementRLFromConfig));
+
+        // If config says enabled but RLConfig doesn't have it, enable it
+        if (cloudRLFromConfig && !cloudRLEnabled) {
+            String cloudHost = EnhancedConfigurationLoader.getRLConfig("rl.servers.cloud.host", "localhost");
+            int cloudPort = EnhancedConfigurationLoader.getRLConfigInt("rl.servers.cloud.port", 50051);
+            RLConfig.enableCloudRL(cloudHost, cloudPort);
+            logger.info(String.format("Enabled Cloud RL from config at %s:%d", cloudHost, cloudPort));
+            cloudRLEnabled = true;
+        }
+
+        if (placementRLFromConfig && !fogRLEnabled) {
+            String placementHost = EnhancedConfigurationLoader.getRLConfig("rl.servers.placement.host", "localhost");
+            int placementPort = EnhancedConfigurationLoader.getRLConfigInt("rl.servers.placement.port", 50051);
+            RLConfig.enablePlacementRL(placementHost, placementPort);
+            org.patch.utils.ServiceRegistry.setConfig(RLConfig.ENABLE_FOG_RL, true);
+            logger.info(String.format("Enabled Fog RL from config at %s:%d", placementHost, placementPort));
+            fogRLEnabled = true;
+        }
+
+        logger.info(String.format("Final RL Status - Fog: %b, Cloud: %b", fogRLEnabled, cloudRLEnabled));
 
         // Verify external task configuration
         boolean externalTasksEnabled = EnhancedConfigurationLoader
@@ -201,9 +319,9 @@ public class RL3FogSimulation {
         // Power model
         PowerModelLinear powerModel = new PowerModelLinear(107.339, 83.4333);
 
-        // Allocation server connection
-        String allocHost = EnhancedConfigurationLoader.getGrpcConfig("grpc.allocation.host", "localhost");
-        int allocPort = EnhancedConfigurationLoader.getGrpcConfigInt("grpc.allocation.port", 50051);
+        // Allocation server connection - unified naming
+        String allocationHost = EnhancedConfigurationLoader.getGrpcConfig("grpc.allocation.host", "localhost");
+        int allocationPort = EnhancedConfigurationLoader.getGrpcConfigInt("grpc.allocation.port", 50051);
 
         // Create cloud device
         cloud = new RLCloudDevice(
@@ -214,8 +332,8 @@ public class RL3FogSimulation {
                 downlinkBandwidth,
                 ratePerMips,
                 powerModel,
-                allocHost,
-                allocPort);
+                allocationHost,
+                allocationPort);
 
         cloudId = cloud.getId();
         cloud.setParentId(-1); // No parent
@@ -297,12 +415,15 @@ public class RL3FogSimulation {
                         "SENSOR_DATA", // Tuple type
                         broker.getId(),
                         appId,
-                        new DeterministicDistribution(5000) // Send every 5 seconds
+                        new DeterministicDistribution(5.0) // Send every 5 seconds
                 );
 
                 // Connect sensor to fog device
                 sensor.setGatewayDeviceId(fogDevice.getId());
                 sensor.setLatency(10.0); // 10ms latency to fog
+
+                // Set GeoLocation (required for Sensor.startEntity())
+                sensor.setGeoLocation(new org.fog.utils.GeoLocation(fogIdx * 10.0, fogIdx * 10.0));
 
                 sensors.add(sensor);
                 sensorIds.add(sensor.getId());
@@ -337,18 +458,36 @@ public class RL3FogSimulation {
     private static void createApplication() throws Exception {
         logger.info("Creating application...");
 
-        // Create application using standard Application class
-        Application application = Application.createApplication(appId, broker.getId());
+        // Create application using RLApplication for RL-enhanced features
+        RLApplication application = new RLApplication(appId, broker.getId());
 
-        // Add application modules
-        application.addAppModule("processing_module", 10); // name, mips
-        application.addAppModule("aggregation_module", 10);
+        // Add RL application modules with energy and cost characteristics
+        // Using default energy/cost values (can be configured later)
+        double defaultEnergyConsumption = 1.0; // J per execution
+        double defaultCostPerExecution = 0.1; // $ per execution
 
-        // Add application edges (data flow)
-        application.addAppEdge("SENSOR_DATA", "processing_module", 1000, 500, "PROCESSED_DATA", Tuple.UP,
-                AppEdge.SENSOR);
-        application.addAppEdge("processing_module", "aggregation_module", 2000, 500, "AGGREGATED_DATA", Tuple.UP,
-                AppEdge.MODULE);
+        // Note: addRLAppModule takes (moduleName, ram, energyConsumption,
+        // costPerExecution)
+        // For now, use RAM=10 (will be used for module sizing), and default RL
+        // characteristics
+        application.addRLAppModule("processing_module", 10, defaultEnergyConsumption, defaultCostPerExecution);
+        application.addRLAppModule("aggregation_module", 10, defaultEnergyConsumption, defaultCostPerExecution);
+
+        // Enable RL for the application
+        application.enableRL();
+
+        // Add RL application edges (data flow) with energy and cost characteristics
+        // Using default energy/cost values for data transfer
+        double defaultEnergyCost = 0.001; // J per data transfer
+        double defaultNetworkCost = 0.0001; // $ per data transfer
+
+        // Add RL edges: addRLAppEdge(source, destination, tupleCpuLength,
+        // tupleNwLength,
+        // tupleType, direction, edgeType, energyCost, networkCost)
+        application.addRLAppEdge("SENSOR_DATA", "processing_module", 1000, 500, "PROCESSED_DATA",
+                Tuple.UP, AppEdge.SENSOR, defaultEnergyCost, defaultNetworkCost);
+        application.addRLAppEdge("processing_module", "aggregation_module", 2000, 500, "AGGREGATED_DATA",
+                Tuple.UP, AppEdge.MODULE, defaultEnergyCost, defaultNetworkCost);
 
         // Add tuple mapping (for processing)
         // Note: FractionalSelectivity is used for tuple processing efficiency
@@ -371,8 +510,62 @@ public class RL3FogSimulation {
                 new ArrayList<>(), // No actuators
                 application);
 
+        // [DEBUG] Log application edges before submission
+        logger.info("[APP-DEBUG] Application edges:");
+        for (AppEdge edge : application.getEdges()) {
+            if (edge instanceof RLAppEdge) {
+                RLAppEdge rlEdge = (RLAppEdge) edge;
+                logger.info(String.format(
+                        "[APP-DEBUG]   RL Edge: %s -> %s (Type:%s, CPU:%.0f, NW:%.0f, Energy:%.4f J, Cost:$%.6f)",
+                        rlEdge.getSource(), rlEdge.getDestination(),
+                        rlEdge.getEdgeType() == AppEdge.SENSOR ? "SENSOR" : "MODULE",
+                        rlEdge.getTupleCpuLength(), rlEdge.getTupleNwLength(),
+                        rlEdge.getEnergyCost(), rlEdge.getNetworkCost()));
+            } else {
+                logger.info(String.format("[APP-DEBUG]   Edge: %s -> %s (Type:%s, CPU:%.0f, NW:%.0f)",
+                        edge.getSource(), edge.getDestination(),
+                        edge.getEdgeType() == AppEdge.SENSOR ? "SENSOR" : "MODULE",
+                        edge.getTupleCpuLength(), edge.getTupleNwLength()));
+            }
+        }
+
+        logger.info("[APP-DEBUG] Application modules:");
+        for (AppModule module : application.getModules()) {
+            if (module instanceof RLAppModule) {
+                RLAppModule rlModule = (RLAppModule) module;
+                logger.info(String.format("[APP-DEBUG]   RL Module: %s (MIPS:%.0f, Energy:%.2f J, Cost:$%.4f)",
+                        rlModule.getName(), rlModule.getMips(),
+                        rlModule.getEnergyConsumption(), rlModule.getCostPerExecution()));
+            } else {
+                logger.info(String.format("[APP-DEBUG]   Module: %s (MIPS:%.0f)", module.getName(), module.getMips()));
+            }
+        }
+
         // Submit application to controller
         controller.submitApplication(application, placement);
+
+        // [DEBUG] Log module placement after submission
+        logger.info("[APP-DEBUG] Module placement after submission:");
+        for (FogDevice device : allDevices) {
+            List<String> modulesOnDevice = new ArrayList<>();
+            List<String> rlModulesOnDevice = new ArrayList<>();
+            for (Vm vm : device.getHost().getVmList()) {
+                if (vm instanceof RLAppModule) {
+                    RLAppModule rlModule = (RLAppModule) vm;
+                    modulesOnDevice.add(rlModule.getName());
+                    rlModulesOnDevice.add(rlModule.getName() + "(RL)");
+                } else if (vm instanceof AppModule) {
+                    modulesOnDevice.add(((AppModule) vm).getName());
+                }
+            }
+            if (!modulesOnDevice.isEmpty()) {
+                logger.info(String.format("[APP-DEBUG]   Device %s (ID:%d) has modules: %s (RL modules: %s)",
+                        device.getName(), device.getId(), modulesOnDevice, rlModulesOnDevice));
+            } else {
+                logger.info(String.format("[APP-DEBUG]   Device %s (ID:%d) has NO modules",
+                        device.getName(), device.getId()));
+            }
+        }
 
         logger.info("Application created and deployed successfully");
     }
@@ -414,13 +607,48 @@ public class RL3FogSimulation {
     private static void startSimulation() {
         logger.info("Starting simulation...");
         logger.info(String.format("Simulation time: %.2f seconds", SIMULATION_TIME));
+        logger.info(String.format("SIMULATION_TIME (stop generation): %d seconds",
+                org.fog.utils.Config.SIMULATION_TIME));
+        logger.info(String.format("MAX_SIMULATION_TIME (hard termination): %d seconds",
+                org.fog.utils.Config.MAX_SIMULATION_TIME));
 
-        // Set simulation termination time
-        CloudSim.startSimulation();
-        CloudSim.stopSimulation();
+        // Verify values are set correctly
+        if (org.fog.utils.Config.SIMULATION_TIME != (int) SIMULATION_TIME) {
+            logger.warning(String.format(
+                    "SIMULATION_TIME mismatch! Expected: %d, Actual: %d. Setting to correct value.",
+                    (int) SIMULATION_TIME, org.fog.utils.Config.SIMULATION_TIME));
+            org.fog.utils.Config.SIMULATION_TIME = (int) SIMULATION_TIME;
+        }
+        if (org.fog.utils.Config.MAX_SIMULATION_TIME <= org.fog.utils.Config.SIMULATION_TIME) {
+            logger.warning(String.format(
+                    "MAX_SIMULATION_TIME (%d) should be > SIMULATION_TIME (%d). Adding buffer.",
+                    org.fog.utils.Config.MAX_SIMULATION_TIME, org.fog.utils.Config.SIMULATION_TIME));
+            org.fog.utils.Config.MAX_SIMULATION_TIME = org.fog.utils.Config.SIMULATION_TIME + 60;
+        }
+
+        // Start simulation - startSimulation() returns the final clock value BEFORE
+        // reset
+        logger.info("[DEBUG-SIMULATION] Starting CloudSim simulation...");
+        double finalSimulationTime = CloudSim.startSimulation();
+        logger.info(String.format(
+                "[DEBUG-SIMULATION] CloudSim.startSimulation() returned: %.2f seconds (captured from return value)",
+                finalSimulationTime));
+
+        // Note: stopSimulation() is already called internally by startSimulation()
+        // Don't call it again - it would be redundant
+        logger.info("[DEBUG-SIMULATION] Simulation stopped internally by CloudSim.startSimulation()");
+
+        // Store simulation time for report generation
+        simulationEndTime = finalSimulationTime;
+        logger.info(String.format(
+                "[DEBUG-SIMULATION] Stored simulation end time: %.2f seconds",
+                simulationEndTime));
 
         logger.info("Simulation completed");
     }
+
+    // Store simulation end time for report generation
+    private static double simulationEndTime = 0.0;
 
     /**
      * Print simulation results and generate report files
@@ -474,7 +702,13 @@ public class RL3FogSimulation {
             List<Map<String, Object>> fogData = collectFogDevicesData();
 
             // Generate reports with collected data
-            reportGenerator.generateReports(cloudData, fogData, CloudSim.clock());
+            // Use captured simulation time (CloudSim.clock() may be 0.0 after stop)
+            double reportTime = simulationEndTime > 0.0 ? simulationEndTime : CloudSim.clock();
+            logger.info(String.format(
+                    "[DEBUG-REPORT] Generating reports with simulation time: %.2f seconds (captured: %.2f, CloudSim.clock(): %.2f)",
+                    reportTime, simulationEndTime, CloudSim.clock()));
+            reportGenerator.generateReports(cloudData, fogData, reportTime);
+            logger.info("[DEBUG-REPORT] Reports generated successfully");
 
         } catch (Exception e) {
             logger.severe("Error generating report files: " + e.getMessage());
@@ -686,6 +920,22 @@ public class RL3FogSimulation {
             logger.info(String.format("  Cache Misses: %s", cacheStats.get("cacheMissCount")));
             logger.info(String.format("  Cache Hit Rate: %.2f%%",
                     ((Double) cacheStats.get("cacheHitRate")) * 100));
+            
+            // New metrics
+            Object uniqueTasks = cacheStats.get("uniqueTasks");
+            Object repeatRate = cacheStats.get("repeatRate");
+            Object uniqueHitRate = cacheStats.get("uniqueHitRate");
+            if (uniqueTasks != null) {
+                logger.info(String.format("  Unique Tasks: %s", uniqueTasks));
+            }
+            if (repeatRate != null) {
+                logger.info(String.format("  Repeat Rate: %.2f%% (%% of unique tasks repeated)",
+                        ((Double) repeatRate) * 100));
+            }
+            if (uniqueHitRate != null) {
+                logger.info(String.format("  Unique Hit Rate: %.2f%% (hits per unique task)",
+                        ((Double) uniqueHitRate) * 100));
+            }
         }
     }
 }

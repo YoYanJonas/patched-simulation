@@ -274,8 +274,21 @@ public class RLFogBroker extends FogBroker {
         Map<String, Object> state = new HashMap<>();
         state.put("deviceId", device.getId());
         state.put("deviceName", device.getName());
-        state.put("cpuUtilization", device.getHost().getUtilizationOfCpu());
-        state.put("ramUtilization", device.getHost().getUtilizationOfRam());
+        
+        // Resource utilization (normalized to percentages [0.0, 1.0] for consistency)
+        // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
+        double cpuUtilization = device.getHost().getUtilizationOfCpu();
+        
+        // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+        double ramUsedMb = device.getHost().getUtilizationOfRam();
+        int totalRamMb = device.getHost().getRam();
+        double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+        // Clamp to valid range
+        if (ramUtilization < 0.0) ramUtilization = 0.0;
+        if (ramUtilization > 1.0) ramUtilization = 1.0;
+        
+        state.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
+        state.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
         state.put("bwUtilization", device.getHost().getUtilizationOfBw());
         state.put("energyConsumption", device.getEnergyConsumption());
         state.put("totalCost", device.getTotalCost());
@@ -289,8 +302,21 @@ public class RLFogBroker extends FogBroker {
         Map<String, Object> state = new HashMap<>();
         state.put("deviceId", device.getId());
         state.put("deviceName", device.getName());
-        state.put("cpuUtilization", device.getHost().getUtilizationOfCpu());
-        state.put("ramUtilization", device.getHost().getUtilizationOfRam());
+        
+        // Resource utilization (normalized to percentages [0.0, 1.0] for consistency)
+        // CPU: getUtilizationOfCpu() returns percentage [0.0, 1.0] - use directly
+        double cpuUtilization = device.getHost().getUtilizationOfCpu();
+        
+        // Memory: getUtilizationOfRam() returns MB USED (not percentage!), convert to percentage [0.0, 1.0]
+        double ramUsedMb = device.getHost().getUtilizationOfRam();
+        int totalRamMb = device.getHost().getRam();
+        double ramUtilization = (totalRamMb > 0) ? (ramUsedMb / totalRamMb) : 0.0;
+        // Clamp to valid range
+        if (ramUtilization < 0.0) ramUtilization = 0.0;
+        if (ramUtilization > 1.0) ramUtilization = 1.0;
+        
+        state.put("cpuUtilization", cpuUtilization); // Percentage [0.0, 1.0]
+        state.put("ramUtilization", ramUtilization); // Percentage [0.0, 1.0]
         state.put("bwUtilization", device.getHost().getUtilizationOfBw());
         state.put("energyConsumption", device.getEnergyConsumption());
         state.put("totalCost", device.getTotalCost());

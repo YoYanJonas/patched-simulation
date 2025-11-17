@@ -4,6 +4,8 @@ import io.grpc.ManagedChannelBuilder;
 import java.util.concurrent.TimeUnit;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.List;
+import java.util.ArrayList;
 import java.io.Serializable;
 
 /**
@@ -19,6 +21,8 @@ public class GrpcClientConfig implements Serializable {
     private final boolean usePlaintext;
     private final long connectTimeout;
     private final TimeUnit connectTimeoutUnit;
+    private final long shutdownTimeout; // 
+    private final TimeUnit shutdownTimeoutUnit; // 
 
     // Retry mechanism settings
     private final int maxRetries;
@@ -56,6 +60,8 @@ public class GrpcClientConfig implements Serializable {
         this.keepAliveTimeout = builder.keepAliveTimeout;
         this.keepAliveWithoutCalls = builder.keepAliveWithoutCalls;
         this.loadBalancingConfig = builder.loadBalancingConfig;
+        this.shutdownTimeout = builder.shutdownTimeout; // 
+        this.shutdownTimeoutUnit = builder.shutdownTimeoutUnit; // 
     }
 
     /**
@@ -71,6 +77,8 @@ public class GrpcClientConfig implements Serializable {
         private boolean usePlaintext = false;
         private long connectTimeout = 10;
         private TimeUnit connectTimeoutUnit = TimeUnit.SECONDS;
+        private long shutdownTimeout = 20; // Increased from 10 to 20 seconds for better thread cleanup
+        private TimeUnit shutdownTimeoutUnit = TimeUnit.SECONDS; // 
         private int maxRetries = 3;
         private long retryDelay = 1000;
         private long maxRetryDelay = 30000;
@@ -79,7 +87,7 @@ public class GrpcClientConfig implements Serializable {
         private boolean enableKeepAlive = true;
         private long keepAliveTime = 30;
         private long keepAliveTimeout = 10;
-        private boolean keepAliveWithoutCalls = true;
+        private boolean keepAliveWithoutCalls = false;
         private Map<String, Object> loadBalancingConfig = new HashMap<>();
 
         public Builder(String host, int port) {
@@ -150,15 +158,19 @@ public class GrpcClientConfig implements Serializable {
 
     /**
      * Creates service configuration map including retry and load balancing settings
+     * Note: gRPC requires methodConfig to be an array/list of method configs
      */
     private Map<String, Object> createServiceConfig() {
         Map<String, Object> serviceConfig = new HashMap<>();
 
         // Add retry configuration if enabled
+        // methodConfig must be a list/array, not a single object
         if (enableRetry) {
+            List<Map<String, Object>> methodConfigList = new ArrayList<>();
             Map<String, Object> methodConfig = new HashMap<>();
             methodConfig.put("retryPolicy", createRetryPolicy());
-            serviceConfig.put("methodConfig", methodConfig);
+            methodConfigList.add(methodConfig);
+            serviceConfig.put("methodConfig", methodConfigList);
         }
 
         // Add load balancing configuration if specified
@@ -171,13 +183,40 @@ public class GrpcClientConfig implements Serializable {
 
     /**
      * Creates retry policy configuration
+     * Note: gRPC requires all service config values to be strings
+     * Duration format must be in seconds (s) - gRPC expects format like "1s", "0.1s", "30s"
+     * NOT "1000ms" or "1000m" (which would be interpreted as minutes)
+     * retryableStatusCodes is REQUIRED in gRPC retry policy
      */
     private Map<String, Object> createRetryPolicy() {
         Map<String, Object> retryPolicy = new HashMap<>();
-        retryPolicy.put("maxAttempts", maxRetries);
-        retryPolicy.put("initialBackoff", retryDelay + "ms");
-        retryPolicy.put("maxBackoff", maxRetryDelay + "ms");
-        retryPolicy.put("backoffMultiplier", 2.0);
+        // Convert all numeric values to strings as required by gRPC
+        retryPolicy.put("maxAttempts", String.valueOf(maxRetries));
+
+        // Convert milliseconds to seconds for gRPC duration format
+        // Use integer format when whole seconds, otherwise decimal format
+        double initialBackoffSeconds = retryDelay / 1000.0;
+        double maxBackoffSeconds = maxRetryDelay / 1000.0;
+        
+        // Format as integer seconds if whole number, otherwise use decimal
+        String initialBackoffStr = (initialBackoffSeconds == (long) initialBackoffSeconds) 
+            ? String.format("%ds", (long) initialBackoffSeconds)
+            : String.format("%.1fs", initialBackoffSeconds);
+        String maxBackoffStr = (maxBackoffSeconds == (long) maxBackoffSeconds)
+            ? String.format("%ds", (long) maxBackoffSeconds)
+            : String.format("%.1fs", maxBackoffSeconds);
+            
+        retryPolicy.put("initialBackoff", initialBackoffStr);
+        retryPolicy.put("maxBackoff", maxBackoffStr);
+        retryPolicy.put("backoffMultiplier", String.valueOf(2.0));
+        
+        // REQUIRED: retryableStatusCodes - list of gRPC status codes that should trigger retry
+        List<String> retryableStatusCodes = new ArrayList<>();
+        retryableStatusCodes.add("UNAVAILABLE");      // Server unavailable
+        retryableStatusCodes.add("DEADLINE_EXCEEDED"); // Request deadline exceeded
+        retryableStatusCodes.add("RESOURCE_EXHAUSTED"); // Resource exhausted (can retry)
+        retryPolicy.put("retryableStatusCodes", retryableStatusCodes);
+        
         return retryPolicy;
     }
 
@@ -210,5 +249,14 @@ public class GrpcClientConfig implements Serializable {
 
     public TimeUnit getConnectTimeoutUnit() {
         return connectTimeoutUnit;
+    }
+    
+    // 
+    public long getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+    
+    public TimeUnit getShutdownTimeoutUnit() {
+        return shutdownTimeoutUnit;
     }
 }

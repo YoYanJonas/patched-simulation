@@ -5,6 +5,15 @@ import (
 	"os"
 )
 
+// Check if output is a terminal (TTY)
+func isTerminal(file *os.File) bool {
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
+}
+
 const (
 	Reset = "\033[0m"  // Reset to default color
 	Red   = "\033[31m" // Red for errors
@@ -14,12 +23,36 @@ const (
 type Logger struct {
 	errorLogger *log.Logger
 	infoLogger  *log.Logger
+	useColors   bool
 }
 
 func NewLogger() *Logger {
+	// Check if REPORT_PATH is set (writing to file in this case)
+	// Also check if output is actually a terminal
+	reportPath := os.Getenv("REPORT_PATH")
+	useColors := false
+	
+	if reportPath == "" {
+		// Not writing to report directory - check if output is terminal
+		useColors = isTerminal(os.Stderr) && isTerminal(os.Stdout)
+	} else {
+		// REPORT_PATH is set - definitely writing to file, disable colors
+		useColors = false
+	}
+	
+	var errorPrefix, infoPrefix string
+	if useColors {
+		errorPrefix = Red + "ERROR: " + Reset
+		infoPrefix = Blue + "INFO: " + Reset
+	} else {
+		errorPrefix = "ERROR: "
+		infoPrefix = "INFO: "
+	}
+	
 	return &Logger{
-		errorLogger: log.New(os.Stderr, Red+"ERROR: "+Reset, log.Ldate|log.Ltime|log.Lshortfile),
-		infoLogger:  log.New(os.Stdout, Blue+"INFO: "+Reset, log.Ldate|log.Ltime),
+		errorLogger: log.New(os.Stderr, errorPrefix, log.Ldate|log.Ltime|log.Lshortfile),
+		infoLogger:  log.New(os.Stdout, infoPrefix, log.Ldate|log.Ltime),
+		useColors:   useColors,
 	}
 }
 

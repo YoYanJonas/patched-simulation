@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 	"time"
 )
 
@@ -33,8 +34,11 @@ type QLearningScheduler struct {
 	frequentStates map[string]time.Time // Track frequently accessed states
 	cacheCleanup   time.Time            // Last cache cleanup time
 
-	// Cache manager for state features
-	taskCacheManager interface{} // Generic interface to avoid circular imports
+	// Model persistence callback (lightweight - just marks dirty flag)
+	onDirty func() // Callback to mark model as dirty when Q-table updates
+
+	// Node status tracker for real CPU/Memory metrics (from completion reports)
+	nodeStatusTracker NodeStatusTracker // Optional: can be nil if not set
 }
 
 // Experience represents a learning experience
@@ -50,7 +54,7 @@ type Experience struct {
 // NewQLearningScheduler creates a new Q-learning scheduler
 func NewQLearningScheduler(cfg config.RLConfig, weights config.RewardWeights) *QLearningScheduler {
 	now := time.Now()
-	return &QLearningScheduler{
+	q := &QLearningScheduler{
 		config:        cfg,
 		rewardWeights: weights,
 		qTable:        make(map[string]map[ActionType]float64),
@@ -68,11 +72,14 @@ func NewQLearningScheduler(cfg config.RLConfig, weights config.RewardWeights) *Q
 		frequentStates: make(map[string]time.Time),
 		cacheCleanup:   now,
 	}
-}
 
-// SetCacheManager sets the cache manager for state feature extraction
-func (q *QLearningScheduler) SetCacheManager(cacheManager interface{}) {
-	q.taskCacheManager = cacheManager
+	logger.GetLogger().Infof("[Q-LEARNING-INIT] Q-learning scheduler initialized: LearningRate=%.3f, ExplorationRate=%.3f, DiscountFactor=%.3f",
+		cfg.LearningRate, cfg.ExplorationRate, cfg.DiscountFactor)
+	logger.GetLogger().Infof("[Q-LEARNING-INIT] Initial Q-table size: %d (empty)", len(q.qTable))
+	logger.GetLogger().Infof("[EPISODE-CONFIG] Episode config: Type=%s, TasksPerEpisode=%d, TimePerEpisodeMinutes=%d, ResetOnEnd=%t",
+		cfg.EpisodeConfig.Type, cfg.EpisodeConfig.TasksPerEpisode, cfg.EpisodeConfig.TimePerEpisodeMinutes, cfg.EpisodeConfig.ResetOnEpisodeEnd)
+
+	return q
 }
 
 // Name returns the algorithm name
@@ -82,42 +89,95 @@ func (q *QLearningScheduler) Name() string {
 
 // Schedule schedules tasks using Q-learning
 func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
+	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE] Schedule called: Tasks=%d, Episode=%d, TaskCount=%d, QTableSize=%d, IsLearning=%t",
+		len(tasks), q.currentEpisode, q.episodeTaskCount, len(q.qTable), q.isLearning)
+	
 	if len(tasks) <= 1 {
 		return tasks
 	}
 
-	state := ExtractStateFeatures(tasks, nodeManager, q.taskCacheManager)
+	// Extract state features using NodeStatusTracker (if available)
+	// Use tracker for real CPU/Memory metrics, fallback to nil if not set
+	var tracker NodeStatusTracker = q.nodeStatusTracker
+	if tracker == nil {
+	}
+	state := ExtractStateFeatures(tasks, tracker)
+	stateKey := state.GetStateKey()
+	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-STATE] State extracted: QueueLength=%d, CPUUtil=%.2f, MemUtil=%.2f, Load=%.2f, StateKey=%s",
+		state.QueueLength, state.CPUUtilization, state.MemoryUtilization, state.SystemLoad, stateKey)
 
 	// Select action using Q-learning policy
 	action := q.SelectAction(state)
+	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-ACTION] Action selected: Type=%d, Description=%s, Episode=%d",
+		action.Type, action.Description, q.currentEpisode)
 
 	// Apply the selected action
 	reorderedTasks := ApplyAction(action, tasks)
+	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-APPLY] Action applied: Tasks=%d->%d",
+		len(tasks), len(reorderedTasks))
+	
+	// CRITICAL VALIDATION: Ensure no tasks are lost during action application
+	if len(reorderedTasks) != len(tasks) {
+		logger.GetLogger().Errorf("[Q-LEARNING-SCHEDULE-ERROR] Task count mismatch: input=%d, output=%d", 
+			len(tasks), len(reorderedTasks))
+		return tasks
+	}
 
 	// Store experience for each task if learning is enabled
 	if q.isLearning && q.experienceManager != nil {
 		for _, task := range reorderedTasks {
-			q.experienceManager.StoreIncompleteExperience(task.GetTaskID(), state, action)
+			// Extract taskId (pattern-based) and cloudletId (unique identifier) separately
+			taskId := task.GetTaskID() // Pattern-based taskId (for cache, not for experience lookup)
+			
+			// CRITICAL: Extract cloudletId from TaskEntry (unique identifier for experience lookup)
+			// NO FALLBACK to taskId - cloudletId is required for experience storage
+			cloudletId := ""
+			if taskEntry, ok := task.(interface{ GetCloudletId() string }); ok {
+				cloudletId = taskEntry.GetCloudletId()
+				if cloudletId == "" {
+					logger.GetLogger().Errorf("[Q-LEARNING-SCHEDULE-ERROR] cloudletId is empty for taskId=%s. Cannot store experience without cloudletId.", taskId)
+					continue // Skip this task - cannot store experience without cloudletId
+				}
+			} else {
+				logger.GetLogger().Errorf("[Q-LEARNING-SCHEDULE-ERROR] Cannot extract cloudletId for taskId=%s. TaskEntry does not implement GetCloudletId().", taskId)
+				continue // Skip this task - cannot get cloudletId
+			}
+			
+			// Use cloudletId for experience storage (unique identifier)
+			// taskId is NOT used for experience lookup - only cloudletId
+			q.experienceManager.StoreIncompleteExperience(cloudletId, state, action, q.currentEpisode)
 		}
+		logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-EXPERIENCE] Experiences stored: Count=%d", len(reorderedTasks))
+	}
 
-		// Update episode task count
-		q.episodeTaskCount += len(tasks)
+	// Update episode task count
+	oldTaskCount := q.episodeTaskCount
+	q.episodeTaskCount += len(tasks)
+	logger.GetLogger().Infof("[EPISODE-COUNT] Task count update: Episode=%d, Count=%d->%d (+%d tasks), TasksPerEpisode=%d, Progress=%.1f%%",
+		q.currentEpisode, oldTaskCount, q.episodeTaskCount, len(tasks), q.config.EpisodeConfig.TasksPerEpisode,
+		float64(q.episodeTaskCount)/float64(q.config.EpisodeConfig.TasksPerEpisode)*100.0)
 
+	if q.isLearning && q.experienceManager != nil {
 		// Check for episode completion
 		q.checkEpisodeCompletion()
 	}
 
+	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE-EXIT] Schedule returning: Tasks=%d, Episode=%d, TaskCount=%d",
+		len(reorderedTasks), q.currentEpisode, q.episodeTaskCount)
 	return reorderedTasks
 }
 
 // checkEpisodeCompletion checks if current episode should end and handles completion
 func (q *QLearningScheduler) checkEpisodeCompletion() {
+	
 	episodeComplete := false
 
 	switch q.config.EpisodeConfig.Type {
 	case "task_based":
 		if q.episodeTaskCount >= q.config.EpisodeConfig.TasksPerEpisode {
 			episodeComplete = true
+			logger.GetLogger().Infof("[EPISODE-CHECK] Episode completion triggered: Episode=%d, TaskCount=%d >= Threshold=%d",
+				q.currentEpisode, q.episodeTaskCount, q.config.EpisodeConfig.TasksPerEpisode)
 		}
 	case "time_based":
 		episodeDuration := time.Since(q.episodeStartTime)
@@ -125,6 +185,7 @@ func (q *QLearningScheduler) checkEpisodeCompletion() {
 		if episodeDuration >= maxDuration {
 			episodeComplete = true
 		}
+	default:
 	}
 
 	if episodeComplete {
@@ -134,28 +195,54 @@ func (q *QLearningScheduler) checkEpisodeCompletion() {
 
 // handleEpisodeCompletion handles the completion of an episode
 func (q *QLearningScheduler) handleEpisodeCompletion() {
+	episode := q.currentEpisode
+	
+	// Diagnostic logging: Q-table state at episode end
+	qTableSize := len(q.qTable)
+	taskCount := q.episodeTaskCount
+	episodeDuration := time.Since(q.episodeStartTime)
+
+	logger.GetLogger().Infof("[EPISODE-COMPLETE] Episode %d completed: TaskCount=%d, QTableSize=%d, Duration=%.2fs, ExplorationRate=%.3f",
+		episode, taskCount, qTableSize, episodeDuration.Seconds(), q.config.ExplorationRate)
+
+	if qTableSize == 0 {
+		logger.GetLogger().Warnf("[WARN-QTABLE-EMPTY] Episode %d ended with empty Q-table! No learning occurred. Episode=%d, TaskCount=%d, IsLearning=%t",
+			episode, episode, taskCount, q.isLearning)
+	}
+	
 	// Trigger weight adaptation if multi-objective is enabled
 	if q.multiObjectiveCalculator != nil {
 		cfg := config.GetConfig()
 		if cfg.RL.MultiObjective.Enabled && cfg.RL.MultiObjective.AdaptationEnabled {
+			logger.GetLogger().Infof("[EPISODE-COMPLETE-MULTIOBJ] Multi-objective adaptation triggered: Episode=%d, Enabled=%t",
+				q.currentEpisode, cfg.RL.MultiObjective.AdaptationEnabled)
 			if err := q.adaptWeights(); err != nil {
-				fmt.Printf("Warning: Failed to adapt weights at episode %d: %v\n", q.currentEpisode, err)
+				logger.GetLogger().Errorf("[ERROR-MULTIOBJ] Weight adaptation failed: Episode=%d, Error=%v", q.currentEpisode, err)
+			} else {
+				logger.GetLogger().Infof("[EPISODE-COMPLETE-MULTIOBJ] Weight adaptation completed: Episode=%d", q.currentEpisode)
 			}
 		}
+	} else {
 	}
 
 	// Mark episode as complete in experience manager
 	if q.experienceManager != nil {
-		fmt.Printf("Episode %d completed with %d tasks\n", q.currentEpisode, q.episodeTaskCount)
+		logger.GetLogger().Infof("[EPISODE-COMPLETE-EXPMGR] Experience manager notified: Episode=%d, TaskCount=%d",
+			q.currentEpisode, q.episodeTaskCount)
 		q.experienceManager.MarkEpisodeComplete(q.currentEpisode)
+		logger.GetLogger().Infof("[EPISODE-COMPLETE-EXPMGR] Episode marked complete in experience manager: Episode=%d", q.currentEpisode)
+	} else {
+		logger.GetLogger().Warnf("[WARN-EPISODE] Experience manager not available for episode %d", q.currentEpisode)
 	}
 
-	// Reset episode if configured
-	if q.config.EpisodeConfig.ResetOnEpisodeEnd {
-		q.resetEpisode()
-	} else {
-		q.advanceEpisode()
-	}
+	// Each simulation run = 1 episode (episode number stays at 1, no increment)
+	// Just reset task count and start time, but keep episode at 1
+	logger.GetLogger().Infof("[EPISODE-COMPLETE] Episode %d completed, resetting task count (episode stays at %d for continuous learning)",
+		q.currentEpisode, q.currentEpisode)
+	q.episodeTaskCount = 0
+	q.episodeStartTime = time.Now()
+	logger.GetLogger().Infof("[EPISODE-COMPLETE] Task count reset, episode remains at %d", q.currentEpisode)
+	
 }
 
 // adaptWeights adapts reward weights based on recent performance
@@ -181,7 +268,6 @@ func (q *QLearningScheduler) adaptWeights() error {
 	// when CalculateMultiObjectiveReward is called with sufficient history
 	// So we don't need to manually adapt weights here - it's handled automatically
 
-	fmt.Printf("Episode %d: Weight adaptation triggered (handled by MultiObjectiveRewardCalculator)\n", q.currentEpisode)
 
 	return nil
 }
@@ -196,23 +282,27 @@ func (q *QLearningScheduler) resetEpisode() {
 	// Reset exploration rate to initial value for fresh exploration
 	cfg := config.GetConfig()
 	q.config.ExplorationRate = cfg.RL.ExplorationRate
-
-	fmt.Printf("Episode %d reset: Fresh start with exploration rate %.3f\n",
-		q.currentEpisode, q.config.ExplorationRate)
 }
 
 // advanceEpisode advances to the next episode without resetting learning
 func (q *QLearningScheduler) advanceEpisode() {
+	// Advance episode
 	q.currentEpisode++
 	q.episodeTaskCount = 0
 	q.episodeStartTime = time.Now()
-
-	fmt.Printf("Advanced to episode %d (continuous learning)\n", q.currentEpisode)
 }
 
 // SelectAction selects an action with optimized Q-table access and caching
 func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
+	
 	stateKey := state.GetStateKey()
+
+	// Diagnostic logging: Q-table state before selection (CHANGED TO INFO LEVEL)
+	qTableSize := len(q.qTable)
+	stateExists := q.qTable[stateKey] != nil
+
+	logger.GetLogger().Infof("[Q-LEARNING-SELECT] Selecting action: State=%s, QTableSize=%d, StateExists=%v, Episode=%d, TaskCount=%d, ExplorationRate=%.3f",
+		stateKey, qTableSize, stateExists, q.currentEpisode, q.episodeTaskCount, q.config.ExplorationRate)
 
 	// Track frequently accessed states for optimization
 	q.frequentStates[stateKey] = time.Now()
@@ -225,22 +315,59 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 	// Initialize Q-values for this state if not exists
 	if _, exists := q.qTable[stateKey]; !exists {
 		q.initializeStateQValues(stateKey)
+	} else {
 	}
 
 	// Epsilon-greedy action selection
-	if q.isLearning && q.rng.Float64() < q.config.ExplorationRate {
+	explorationRate := q.config.ExplorationRate
+	randomValue := q.rng.Float64()
+	isExploring := randomValue < explorationRate
+	logger.GetLogger().Infof("[Q-LEARNING-SELECT-EPSILON] Epsilon-greedy: ExplorationRate=%.3f, Random=%.3f, Explore=%t, Episode=%d",
+		explorationRate, randomValue, isExploring, q.currentEpisode)
+	
+	if q.isLearning && randomValue < explorationRate {
 		// Explore: choose random action with pre-allocated actions slice
-		return q.getRandomAction()
+		result := q.getRandomAction()
+		logger.GetLogger().Infof("[Q-LEARNING-SELECT-EXPLORE] Exploring: Random action selected, Type=%d, Description=%s, Episode=%d",
+			result.Type, result.Description, q.currentEpisode)
+		return result
 	}
 
 	// Exploit: choose best action with optimized lookup and caching
-	return q.getBestActionOptimized(stateKey)
+	result := q.getBestActionOptimized(stateKey)
+	
+	// Get best Q-value and log ALL Q-values for this state
+	bestQValue := math.Inf(-1)
+	allQValues := make(map[int]float64)
+	if stateActions, exists := q.qTable[stateKey]; exists {
+		for actionType, qVal := range stateActions {
+			allQValues[int(actionType)] = qVal
+			if actionType == result.Type {
+				bestQValue = qVal
+			}
+		}
+	}
+	logger.GetLogger().Infof("[Q-LEARNING-SELECT-EXPLOIT] Exploiting: Best action selected, Type=%d, Description=%s, QValue=%.3f, Episode=%d",
+		result.Type, result.Description, bestQValue, q.currentEpisode)
+	
+
+	// Diagnostic logging: Q-table state after selection (CHANGED TO INFO LEVEL)
+	finalQTableSize := len(q.qTable)
+
+	logger.GetLogger().Infof("[Q-LEARNING-SELECT] Action selected: %s, QTableSize=%d (after selection), Episode=%d",
+		result.Description, finalQTableSize, q.currentEpisode)
+
+	return result
 }
 
 // getRandomAction returns a random action with optimized access
 func (q *QLearningScheduler) getRandomAction() Action {
-	// Pre-allocate actions slice for better performance
+	// Get all actions
 	actions := GetAllActions()
+	if len(actions) == 0 {
+		// Fallback to first action if no actions available
+		return Action{Type: ActionSortByPriority, Description: "Sort by priority", Priority: 0.6}
+	}
 	return actions[q.rng.Intn(len(actions))]
 }
 
@@ -249,7 +376,7 @@ func (q *QLearningScheduler) getBestActionOptimized(stateKey string) Action {
 	stateActions := q.qTable[stateKey]
 	
 	// Pre-allocate for better performance
-	bestAction := ActionNone
+	bestAction := ActionSortByPriority
 	bestValue := math.Inf(-1)
 
 	// Optimized iteration with early exit for common cases
@@ -276,6 +403,11 @@ func (q *QLearningScheduler) getActionByType(actionType ActionType) Action {
 	return actions[0] // Fallback
 }
 
+// getAvailableActions returns all available actions
+func (q *QLearningScheduler) getAvailableActions() []Action {
+	return GetAllActions()
+}
+
 // cleanupFrequentStatesCache removes old entries from frequent states cache
 func (q *QLearningScheduler) cleanupFrequentStatesCache() {
 	cutoff := time.Now().Add(-5 * time.Minute)
@@ -296,6 +428,12 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 	currentStateKey := experience.State.GetStateKey()
 	nextStateKey := experience.NextState.GetStateKey()
 
+	logger.GetLogger().Infof("[Q-LEARNING-UPDATE] UpdatePolicy called: State=%s, NextState=%s, Action=%s, Reward=%.3f, Done=%t, Episode=%d",
+		currentStateKey, nextStateKey, experience.Action.Description, experience.Reward, experience.Done, q.currentEpisode)
+
+	// Track Q-table updates
+	oldSize := len(q.qTable)
+
 	// Initialize Q-values if not exists
 	q.initializeStateQValues(currentStateKey)
 	q.initializeStateQValues(nextStateKey)
@@ -315,6 +453,9 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 		maxNextQ = 0.0
 	}
 
+	logger.GetLogger().Infof("[Q-LEARNING-UPDATE-QVALUES] Q-values: CurrentQ=%.3f, MaxNextQ=%.3f, Reward=%.3f, LearningRate=%.3f, DiscountFactor=%.3f",
+		currentQ, maxNextQ, experience.Reward, q.config.LearningRate, q.config.DiscountFactor)
+
 	// Q-learning update rule: Q(s,a) = Q(s,a) + α[r + γ*max(Q(s',a')) - Q(s,a)]
 	var targetQ float64
 	if experience.Done {
@@ -325,6 +466,23 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 
 	newQ := currentQ + q.config.LearningRate*(targetQ-currentQ)
 	q.qTable[currentStateKey][experience.Action.Type] = newQ
+	
+	// Mark model as dirty (lightweight - no I/O, just sets flag)
+	if q.onDirty != nil {
+		q.onDirty()
+	}
+
+	newSize := len(q.qTable)
+
+	// Log Q-table update (CHANGED TO INFO LEVEL)
+	logger.GetLogger().Infof("[Q-LEARNING-UPDATE] Q-table updated: State=%s, Action=%s, Reward=%.3f, QTableSize=%d->%d, CurrentQ=%.3f, NewQ=%.3f, Episode=%d",
+		currentStateKey, q.getActionDescription(experience.Action.Type), experience.Reward, oldSize, newSize, currentQ, newQ, q.currentEpisode)
+
+	// Log if this is first update (Q-table was empty)
+	if oldSize == 0 && newSize > 0 {
+		logger.GetLogger().Infof("[Q-LEARNING-UPDATE] First Q-table entry created! State=%s, Action=%s, Reward=%.3f, Episode=%d",
+			currentStateKey, q.getActionDescription(experience.Action.Type), experience.Reward, q.currentEpisode)
+	}
 
 	// Decay exploration rate
 	if q.config.ExplorationRate > q.config.MinExploration {
@@ -334,11 +492,23 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 	return nil
 }
 
+// getActionDescription returns action description for logging
+func (q *QLearningScheduler) getActionDescription(actionType ActionType) string {
+	actions := GetAllActions()
+	for _, action := range actions {
+		if action.Type == actionType {
+			return action.Description
+		}
+	}
+	return fmt.Sprintf("ActionType(%d)", actionType)
+}
+
 // initializeStateQValues initializes Q-values for a state
 func (q *QLearningScheduler) initializeStateQValues(stateKey string) {
 	if _, exists := q.qTable[stateKey]; !exists {
 		q.qTable[stateKey] = make(map[ActionType]float64)
-		actions := GetAllActions()
+		// Use getAvailableActions to get all actions
+		actions := q.getAvailableActions()
 		for _, action := range actions {
 			q.qTable[stateKey][action.Type] = 0.0
 		}
@@ -353,6 +523,18 @@ func (q *QLearningScheduler) IsLearning() bool {
 // SetLearningMode sets the learning mode
 func (q *QLearningScheduler) SetLearningMode(enabled bool) {
 	q.isLearning = enabled
+}
+
+// SetDirtyCallback sets the callback to mark model as dirty when Q-table updates
+// This is a lightweight callback (no I/O) - just sets a flag in ModelStorage
+func (q *QLearningScheduler) SetDirtyCallback(callback func()) {
+	q.onDirty = callback
+}
+
+// SetNodeStatusTracker sets the node status tracker for real CPU/Memory metrics
+func (q *QLearningScheduler) SetNodeStatusTracker(tracker NodeStatusTracker) {
+	q.nodeStatusTracker = tracker
+	logger.GetLogger().Infof("[Q-LEARNING] NodeStatusTracker set: HasTracker=%t", tracker != nil)
 }
 
 // UpdateRewardWeights updates the reward calculator weights
@@ -425,6 +607,24 @@ func (q *QLearningScheduler) Configure(params map[string]interface{}) error {
 
 // GetQTable returns a copy of the Q-table for inspection
 func (q *QLearningScheduler) GetQTable() map[string]map[ActionType]float64 {
+	// CRITICAL DIAGNOSTIC: Log original Q-table before copying
+	originalSize := len(q.qTable)
+	logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] GetQTable called: Original q.qTable size = %d", originalSize)
+	
+	if originalSize > 0 {
+		logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] Listing ALL states in original q.qTable:")
+		stateIndex := 0
+		for stateKey, actions := range q.qTable {
+			stateIndex++
+			logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE]   State[%d]: Key='%s', Actions=%d", stateIndex, stateKey, len(actions))
+			for actionType, qValue := range actions {
+				logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE]     -> ActionType=%d, QValue=%.6f", actionType, qValue)
+			}
+		}
+	} else {
+		logger.GetLogger().Errorf("[Q-LEARNING-GET-QTABLE] ERROR: Original q.qTable is EMPTY (0 states)!")
+	}
+	
 	qTableCopy := make(map[string]map[ActionType]float64)
 	for state, actions := range q.qTable {
 		qTableCopy[state] = make(map[ActionType]float64)
@@ -432,6 +632,13 @@ func (q *QLearningScheduler) GetQTable() map[string]map[ActionType]float64 {
 			qTableCopy[state][action] = value
 		}
 	}
+	
+	copySize := len(qTableCopy)
+	logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] GetQTable returning: Copy size = %d (original was %d)", copySize, originalSize)
+	if originalSize != copySize {
+		logger.GetLogger().Errorf("[Q-LEARNING-GET-QTABLE] CRITICAL MISMATCH: Original size (%d) != Copy size (%d)!", originalSize, copySize)
+	}
+	
 	return qTableCopy
 }
 
@@ -500,31 +707,45 @@ func (q *QLearningScheduler) SetMultiObjectiveCalculator(calc *MultiObjectiveRew
 }
 
 // ProcessTaskCompletion handles task completion for experience collection
-func (q *QLearningScheduler) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport) error {
+func (q *QLearningScheduler) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
+	logger.GetLogger().Infof("[QLEARNING-COMPLETE-ENTRY] ProcessTaskCompletion: cloudletId=%s, QueueLength=%d, HasNodeStatus=%t, HasExpMgr=%t", 
+		cloudletId, queueLength, nodeStatus != nil, q.experienceManager != nil)
+	
 	if q.experienceManager == nil {
+		logger.GetLogger().Errorf("[QLEARNING-COMPLETE-ERROR] Experience manager not initialized: cloudletId=%s", cloudletId)
 		return fmt.Errorf("experience manager not initialized")
 	}
 
 	// Validate task completion report
 	if report == nil {
-		return fmt.Errorf("task completion report is nil for task %s", task.GetTaskID())
+		return fmt.Errorf("task completion report is nil for task cloudletId=%s", cloudletId)
 	}
 
 	if report.Metrics == nil {
-		return fmt.Errorf("system metrics missing in completion report for task %s", task.GetTaskID())
+		return fmt.Errorf("system metrics missing in completion report for task cloudletId=%s", cloudletId)
 	}
 
-	// Complete the experience with comprehensive error handling
-	err := q.experienceManager.CompleteExperience(task.GetTaskID(), report)
+	// CRITICAL: Use cloudletId parameter (explicitly passed, no fallback to taskId)
+	// cloudletId is the unique identifier for experience lookup
+	// taskId (from report.TaskId) is pattern-based and used for cache operations, NOT for experience lookup
+	// Both cloudletId and taskId are sent separately from iFogSim - we do NOT assume taskId contains cloudletId
+	
+	// CRITICAL: Use cloudletId parameter for experience lookup (required, no fallback)
+	// Note: taskId is NOT used for experience lookup - only cloudletId
+	logger.GetLogger().Infof("[Q-LEARNING-COMPLETE-CALL] Calling CompleteExperience with cloudletId=%s (NOT taskId=%s)", cloudletId, report.TaskId)
+	err := q.experienceManager.CompleteExperience(cloudletId, report, nodeStatus, queueLength)
+	
 	if err != nil {
 		// Log but don't fail completely - allows system to continue
-		fmt.Printf("Warning: Failed to complete experience for task %s: %v\n", task.GetTaskID(), err)
+		logger.GetLogger().Errorf("[QLEARNING-COMPLETE-ERROR] experienceManager.CompleteExperience failed: cloudletId=%s, Error=%v", 
+			cloudletId, err)
 		return fmt.Errorf("experience completion failed for task %s: %w", task.GetTaskID(), err)
 	}
 
 	// Immediate Q-table update confirmation
 	if q.isLearning {
-		fmt.Printf("Q-table updated for task %s (Episode %d)\n", task.GetTaskID(), q.currentEpisode)
+		logger.GetLogger().Infof("[QLEARNING-COMPLETE-SUCCESS] Q-table updated for task %s (Episode %d, QTableSize=%d)", 
+			task.GetTaskID(), q.currentEpisode, len(q.qTable))
 	}
 
 	return nil

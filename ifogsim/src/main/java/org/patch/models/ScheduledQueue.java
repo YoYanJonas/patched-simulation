@@ -1,6 +1,7 @@
 package org.patch.models;
 
 import org.fog.entities.Tuple;
+import org.patch.proto.IfogsimCommon.CacheAction;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
@@ -27,11 +28,18 @@ public class ScheduledQueue {
      * @param taskInfo The task information from scheduler
      */
     public void addTask(TaskInfo taskInfo) {
+        int queueSizeBefore = tasks.size();
+        String taskId = taskInfo.getTaskId();
+        String cloudletId = String.valueOf(taskInfo.getTuple().getCloudletId()); // Extract cloudletId for U.I.
+        boolean isCached = taskInfo.isCachedTask();
+        String cacheKey = taskInfo.getCacheKey();
+        
         tasks.add(taskInfo);
-        taskMap.put(taskInfo.getTaskId(), taskInfo);
+        taskMap.put(cloudletId, taskInfo);  // CORRECT: Uses cloudletId as key (U.I.)
         totalTasksAdded++;
-
-        logger.fine("Task " + taskInfo.getTaskId() + " added to scheduled queue (total: " + tasks.size() + ")");
+        
+        int queueSizeAfter = tasks.size();
+        logger.fine("Task " + taskId + " added to scheduled queue (total: " + queueSizeAfter + ")");
     }
 
     /**
@@ -57,37 +65,38 @@ public class ScheduledQueue {
         }
 
         TaskInfo taskInfo = tasks.remove(0);
-        taskMap.remove(taskInfo.getTaskId());
+        String cloudletId = String.valueOf(taskInfo.getTuple().getCloudletId());
+        taskMap.remove(cloudletId);  // CORRECT: Uses cloudletId
         totalTasksProcessed++;
 
-        logger.fine("Task " + taskInfo.getTaskId() + " removed from scheduled queue (processed)");
+        logger.fine("Task " + cloudletId + " (taskId=" + taskInfo.getTaskId() + ") removed from scheduled queue (processed)");
         return taskInfo;
     }
 
     /**
      * Remove a specific task from the queue
      * 
-     * @param taskId The task ID to remove
+     * @param cloudletId The cloudlet ID (unique identifier) to remove
      * @return The removed TaskInfo object, or null if not found
      */
-    public TaskInfo removeTask(String taskId) {
-        TaskInfo taskInfo = taskMap.remove(taskId);
+    public TaskInfo removeTask(String cloudletId) {
+        TaskInfo taskInfo = taskMap.remove(cloudletId);
         if (taskInfo != null) {
             tasks.remove(taskInfo);
             totalTasksProcessed++;
-            logger.fine("Task " + taskId + " removed from scheduled queue");
+            logger.fine("Task " + cloudletId + " removed from scheduled queue");
         }
         return taskInfo;
     }
 
     /**
-     * Get a task by ID without removing it
+     * Get a task by cloudlet ID without removing it
      * 
-     * @param taskId The task ID
+     * @param cloudletId The cloudlet ID (unique identifier)
      * @return The TaskInfo object, or null if not found
      */
-    public TaskInfo getTask(String taskId) {
-        return taskMap.get(taskId);
+    public TaskInfo getTask(String cloudletId) {
+        return taskMap.get(cloudletId);
     }
 
     /**
@@ -162,33 +171,36 @@ public class ScheduledQueue {
         private final long estimatedCompletionTime;
         private final boolean isCachedTask;
         private final String cacheKey;
+        private final CacheAction cacheAction;  // NEW: Cache action from scheduler
 
         public TaskInfo(Tuple tuple, int moduleId, String assignedNodeId,
                 long estimatedStartTime, long estimatedCompletionTime,
-                boolean isCachedTask, String cacheKey) {
+                boolean isCachedTask, String cacheKey, String taskId, CacheAction cacheAction) {  // ✅ NEW: cacheAction parameter
             this.tuple = tuple;
             this.moduleId = moduleId;
             this.entryTime = System.currentTimeMillis();
-            this.taskId = String.valueOf(tuple.getCloudletId());
+            this.taskId = taskId;  // ✅ Use provided taskId (scheduler-assigned, can be reused)
             this.assignedNodeId = assignedNodeId;
             this.estimatedStartTime = estimatedStartTime;
             this.estimatedCompletionTime = estimatedCompletionTime;
             this.isCachedTask = isCachedTask;
             this.cacheKey = cacheKey;
+            this.cacheAction = cacheAction != null ? cacheAction : CacheAction.CACHE_ACTION_NONE;  // Default to NONE if null
         }
 
         public TaskInfo(Tuple tuple, int moduleId, double simulationTime, String assignedNodeId,
                 long estimatedStartTime, long estimatedCompletionTime,
-                boolean isCachedTask, String cacheKey) {
+                boolean isCachedTask, String cacheKey, String taskId, CacheAction cacheAction) {  // ✅ NEW: cacheAction parameter
             this.tuple = tuple;
             this.moduleId = moduleId;
             this.entryTime = simulationTime;
-            this.taskId = String.valueOf(tuple.getCloudletId());
+            this.taskId = taskId;  // ✅ Use provided taskId (scheduler-assigned, can be reused)
             this.assignedNodeId = assignedNodeId;
             this.estimatedStartTime = estimatedStartTime;
             this.estimatedCompletionTime = estimatedCompletionTime;
             this.isCachedTask = isCachedTask;
             this.cacheKey = cacheKey;
+            this.cacheAction = cacheAction != null ? cacheAction : CacheAction.CACHE_ACTION_NONE;  // Default to NONE if null
         }
 
         public Tuple getTuple() {
@@ -225,6 +237,10 @@ public class ScheduledQueue {
 
         public String getCacheKey() {
             return cacheKey;
+        }
+
+        public CacheAction getCacheAction() {
+            return cacheAction;
         }
     }
 }

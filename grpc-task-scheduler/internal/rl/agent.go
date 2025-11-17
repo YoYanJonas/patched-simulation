@@ -3,12 +3,12 @@ package rl
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
+	"scheduler-grpc-server/pkg/logger"
 )
 
 // Interface definitions to avoid circular imports
@@ -46,6 +46,7 @@ type Agent struct {
 	mu               sync.RWMutex
 	ctx              context.Context
 	cancel           context.CancelFunc
+	nodeStatusTracker NodeStatusTracker // Optional: can be set to provide real CPU/Memory metrics
 }
 
 // AgentStats holds agent performance statistics
@@ -83,7 +84,6 @@ func NewAgent(cfg AgentConfig) *Agent {
 		agent.algorithmManager = NewAlgorithmManager(
 			cfg.AlgorithmManagerConfig,
 		)
-		log.Printf("RL Agent initialized with algorithm manager")
 	}
 
 	return agent
@@ -106,7 +106,6 @@ func (a *Agent) Enable() error {
 	}
 
 	a.isEnabled = true
-	log.Printf("RL Agent enabled")
 	return nil
 }
 
@@ -116,18 +115,21 @@ func (a *Agent) Disable() {
 	defer a.mu.Unlock()
 
 	a.isEnabled = false
-	log.Printf("RL Agent disabled")
 }
 
 // Schedule is the main entry point that matches what scheduler.go expects
 func (a *Agent) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
-	return a.ScheduleTasks(tasks, nodeManager)
+	result := a.ScheduleTasks(tasks, nodeManager)
+	return result
 }
 
 // ScheduleTasks schedules tasks using the selected algorithm
 func (a *Agent) ScheduleTasks(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
+	
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	defer func() {
+		a.mu.Unlock()
+	}()
 
 	if !a.isEnabled || a.algorithmManager == nil {
 		// Agent is disabled or not properly initialized
@@ -142,12 +144,22 @@ func (a *Agent) ScheduleTasks(tasks []TaskEntry, nodeManager SingleNodeManager) 
 	algorithm := a.algorithmManager.SelectAlgorithm(tasks, nodeManager)
 	if algorithm == nil {
 		a.stats.FailedRuns++
-		log.Printf("No algorithm available for scheduling")
 		return tasks
 	}
 
-	// Schedule tasks
+	// Before scheduling, ensure NodeStatusTracker is set on Q-learning scheduler
+	if qlAlg, ok := algorithm.(*QLearningScheduler); ok && a.nodeStatusTracker != nil {
+		qlAlg.SetNodeStatusTracker(a.nodeStatusTracker)
+	}
+	
 	scheduledTasks := algorithm.Schedule(tasks, nodeManager)
+	
+	// CRITICAL VALIDATION: Ensure no tasks are lost during algorithm scheduling
+	if len(scheduledTasks) != len(tasks) {
+		logger.GetLogger().Errorf("[AGENT-SCHEDULE-ERROR] Task count mismatch: input=%d, output=%d, lost=%d", 
+			len(tasks), len(scheduledTasks), len(tasks)-len(scheduledTasks))
+		return tasks
+	}
 
 	// Record performance
 	algType := a.getAlgorithmType(algorithm)
@@ -194,8 +206,47 @@ func (a *Agent) UpdateRewardWeights(weights config.RewardWeights) error {
 		return fmt.Errorf("failed to update reward weights: %w", err)
 	}
 
-	log.Printf("Agent reward weights updated successfully")
 	return nil
+}
+
+// UpdateActiveProfile updates the active profile in the multi-objective calculator
+func (a *Agent) UpdateActiveProfile(profileName string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.isEnabled {
+		return fmt.Errorf("agent is disabled")
+	}
+
+	if a.algorithmManager == nil {
+		return fmt.Errorf("algorithm manager not initialized")
+	}
+
+	// Update active profile in algorithm manager
+	if err := a.algorithmManager.UpdateActiveProfile(profileName); err != nil {
+		return fmt.Errorf("failed to update active profile: %w", err)
+	}
+
+	return nil
+}
+
+// SetNodeStatusTracker sets the node status tracker for Q-learning scheduler
+func (a *Agent) SetNodeStatusTracker(tracker NodeStatusTracker) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	
+	a.nodeStatusTracker = tracker
+	
+	// Also set it on the Q-learning scheduler if it exists
+	if a.algorithmManager != nil {
+		currentAlg := a.algorithmManager.GetCurrentAlgorithm()
+		if qlAlg, ok := currentAlg.(*QLearningScheduler); ok {
+			qlAlg.SetNodeStatusTracker(tracker)
+			logger.GetLogger().Infof("[AGENT] NodeStatusTracker set on Q-learning scheduler")
+		}
+	}
+	
+	logger.GetLogger().Infof("[AGENT] NodeStatusTracker set: HasTracker=%t", tracker != nil)
 }
 
 // GetCurrentAlgorithm returns information about the current algorithm
@@ -274,7 +325,6 @@ func (a *Agent) SetLearningMode(enabled bool) error {
 	a.algorithmManager.SetLearningMode(enabled)
 	a.stats.IsLearning = enabled
 
-	log.Printf("Agent learning mode set to: %v", enabled)
 	return nil
 }
 
@@ -290,6 +340,30 @@ func (a *Agent) GetAvailableAlgorithms() []string {
 	return a.algorithmManager.GetAvailableAlgorithms()
 }
 
+// GetQLearningScheduler returns the Q-learning scheduler if available
+func (a *Agent) GetQLearningScheduler() *QLearningScheduler {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if !a.isEnabled || a.algorithmManager == nil {
+		return nil
+	}
+
+	// Get Q-learning algorithm from algorithm manager
+	alg := a.algorithmManager.GetAlgorithm(AlgorithmQLearning)
+	if alg == nil {
+		return nil
+	}
+
+	// Type assert to QLearningScheduler
+	qlScheduler, ok := alg.(*QLearningScheduler)
+	if !ok {
+		return nil
+	}
+
+	return qlScheduler
+}
+
 // Start starts the agent (placeholder for future background tasks)
 func (a *Agent) Start() error {
 	a.mu.Lock()
@@ -299,7 +373,6 @@ func (a *Agent) Start() error {
 		return fmt.Errorf("agent is disabled")
 	}
 
-	log.Printf("RL Agent started")
 	return nil
 }
 
@@ -318,27 +391,40 @@ func (a *Agent) Stop() {
 	}
 
 	a.isEnabled = false
-	log.Printf("RL Agent stopped gracefully")
 }
 
 // ProcessTaskCompletion processes task completion for RL experience collection
-// NOTE: This method should not be used directly - use ProcessTaskCompletionWithNodeManager instead
-// This method exists for interface compatibility but will fail without real node manager
+// NOTE: This method should not be used directly - use ProcessTaskCompletionWithNodeStatus instead
+// This method exists for interface compatibility but will fail without real node status
 func (a *Agent) ProcessTaskCompletion(task TaskEntry, report *pb.TaskCompletionReport) error {
-	return fmt.Errorf("ProcessTaskCompletion requires real node manager - use ProcessTaskCompletionWithNodeManager instead")
+	return fmt.Errorf("ProcessTaskCompletion requires real node status - use ProcessTaskCompletionWithNodeStatus instead")
 }
 
-// ProcessTaskCompletionWithNodeManager processes task completion with node manager context
-func (a *Agent) ProcessTaskCompletionWithNodeManager(task TaskEntry, report *pb.TaskCompletionReport, nodeManager SingleNodeManager) error {
+// ProcessTaskCompletionWithNodeStatus processes task completion with node status from completion report
+// cloudletId is required for experience lookup (no fallback to taskId)
+func (a *Agent) ProcessTaskCompletionWithNodeStatus(task TaskEntry, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int, cloudletId string) error {
+	logger.GetLogger().Infof("[AGENT-COMPLETE-ENTRY] ProcessTaskCompletionWithNodeStatus called: cloudletId=%s, taskId=%s, QueueLength=%d", 
+		cloudletId, report.TaskId, queueLength)
+	
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if !a.isEnabled || a.algorithmManager == nil {
+		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] Agent disabled or not initialized: cloudletId=%s, Enabled=%t, Manager=%t", 
+			cloudletId, a.isEnabled, a.algorithmManager != nil)
 		return fmt.Errorf("agent is disabled or not initialized")
 	}
 
-	// Delegate to algorithm manager with proper nodeManager reference
-	return a.algorithmManager.ProcessTaskCompletion(task, report, nodeManager)
+	// Delegate to algorithm manager with node status, actual queue length, and cloudletId from completion report
+	logger.GetLogger().Infof("[AGENT-COMPLETE-DELEGATE] Delegating to algorithmManager: cloudletId=%s", cloudletId)
+	err := a.algorithmManager.ProcessTaskCompletion(task, report, nodeStatus, queueLength, cloudletId)
+	if err != nil {
+		logger.GetLogger().Errorf("[AGENT-COMPLETE-ERROR] algorithmManager.ProcessTaskCompletion failed: cloudletId=%s, Error=%v", 
+			cloudletId, err)
+	} else {
+		logger.GetLogger().Infof("[AGENT-COMPLETE-SUCCESS] algorithmManager processed successfully: cloudletId=%s", cloudletId)
+	}
+	return err
 }
 
 // GetAlgorithmManager returns the algorithm manager for model persistence

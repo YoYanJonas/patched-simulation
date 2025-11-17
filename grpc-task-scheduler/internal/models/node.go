@@ -62,72 +62,6 @@ func (nm *SingleNodeManager) GetNodeInfo() *pb.FogNode {
 	}
 }
 
-// HasCapacityForTask checks if node can handle the given task
-func (nm *SingleNodeManager) HasCapacityForTask(task *pb.Task) bool {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	if nm.Status != pb.NodeStatus_NODE_STATUS_ACTIVE {
-		return false
-	}
-
-	// Check CPU capacity
-	cpuUsagePercent := float64(nm.CurrentUsage.CpuUsage)
-	availableCPU := float64(nm.Capacity.CpuCores) * (100 - cpuUsagePercent) / 100
-	if availableCPU < float64(task.CpuRequirement) {
-		return false
-	}
-
-	// Check memory capacity
-	availableMemory := nm.Capacity.MemoryMb - nm.CurrentUsage.MemoryUsageMb
-	if availableMemory < task.MemoryRequirement {
-		return false
-	}
-
-	return true
-}
-
-// AllocateResources allocates resources for a task
-func (nm *SingleNodeManager) AllocateResources(task *pb.Task) error {
-	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
-	if !nm.hasCapacityForTaskUnsafe(task) {
-		return ErrInsufficientResources
-	}
-
-	// Allocate CPU (convert task CPU requirement to usage percentage)
-	cpuPercentage := (float64(task.CpuRequirement) / float64(nm.Capacity.CpuCores)) * 100
-	nm.CurrentUsage.CpuUsage += int64(cpuPercentage)
-
-	// Allocate memory
-	nm.CurrentUsage.MemoryUsageMb += task.MemoryRequirement
-
-	nm.LastUpdated = time.Now()
-	return nil
-}
-
-// ReleaseResources releases resources after task completion
-func (nm *SingleNodeManager) ReleaseResources(task *pb.Task) {
-	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
-	// Release CPU
-	cpuPercentage := (float64(task.CpuRequirement) / float64(nm.Capacity.CpuCores)) * 100
-	nm.CurrentUsage.CpuUsage -= int64(cpuPercentage)
-	if nm.CurrentUsage.CpuUsage < 0 {
-		nm.CurrentUsage.CpuUsage = 0
-	}
-
-	// Release memory
-	nm.CurrentUsage.MemoryUsageMb -= task.MemoryRequirement
-	if nm.CurrentUsage.MemoryUsageMb < 0 {
-		nm.CurrentUsage.MemoryUsageMb = 0
-	}
-
-	nm.LastUpdated = time.Now()
-}
-
 // UpdateTaskStats updates task processing statistics
 func (nm *SingleNodeManager) UpdateTaskStats(completed bool) {
 	nm.mu.Lock()
@@ -155,6 +89,7 @@ func (nm *SingleNodeManager) UpdateTaskStats(completed bool) {
 func (nm *SingleNodeManager) GetCurrentLoad() float64 {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
+	
 	return nm.getCurrentLoadUnsafe()
 }
 
@@ -178,28 +113,6 @@ func (nm *SingleNodeManager) GetStats() map[string]interface{} {
 	}
 }
 
-// Private helper methods
-func (nm *SingleNodeManager) hasCapacityForTaskUnsafe(task *pb.Task) bool {
-	if nm.Status != pb.NodeStatus_NODE_STATUS_ACTIVE {
-		return false
-	}
-
-	// Check CPU capacity
-	cpuUsagePercent := float64(nm.CurrentUsage.CpuUsage)
-	availableCPU := float64(nm.Capacity.CpuCores) * (100 - cpuUsagePercent) / 100
-	if availableCPU < float64(task.CpuRequirement) {
-		return false
-	}
-
-	// Check memory capacity
-	availableMemory := nm.Capacity.MemoryMb - nm.CurrentUsage.MemoryUsageMb
-	if availableMemory < task.MemoryRequirement {
-		return false
-	}
-
-	return true
-}
-
 func (nm *SingleNodeManager) getCurrentLoadUnsafe() float64 {
 	cpuLoad := float64(nm.CurrentUsage.CpuUsage) / 100.0
 	memoryLoad := float64(nm.CurrentUsage.MemoryUsageMb) / float64(nm.Capacity.MemoryMb)
@@ -220,14 +133,14 @@ func (nm *SingleNodeManager) getSuccessRateUnsafe() float64 {
 
 // Common errors
 var (
-	ErrInsufficientResources = fmt.Errorf("insufficient resources")
-	ErrNodeNotActive         = fmt.Errorf("node is not active")
+	ErrNodeNotActive = fmt.Errorf("node is not active")
 )
 
 // GetCPUUtilization returns current CPU utilization as percentage
 func (nm *SingleNodeManager) GetCPUUtilization() float64 {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
+	
 	return float64(nm.CurrentUsage.CpuUsage)
 }
 
@@ -235,6 +148,7 @@ func (nm *SingleNodeManager) GetCPUUtilization() float64 {
 func (nm *SingleNodeManager) GetMemoryUtilization() float64 {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
+	
 	if nm.Capacity.MemoryMb == 0 {
 		return 0
 	}
@@ -254,9 +168,8 @@ func (nm *SingleNodeManager) GetQueueLength() int {
 	defer nm.mu.RUnlock()
 	
 	if nm.queue == nil {
-		return 0 // No queue reference available
+		return 0
 	}
-	
 	return nm.queue.Size()
 }
 

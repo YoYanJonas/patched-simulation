@@ -15,7 +15,6 @@ import (
 // LoggingInterceptor logs all gRPC requests
 func LoggingInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	start := time.Now()
-
 	logger.GetLogger().Infof("gRPC call: %s started", info.FullMethod)
 
 	resp, err := handler(ctx, req)
@@ -60,7 +59,8 @@ func RecoveryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryS
 		}
 	}()
 
-	return handler(ctx, req)
+	resp, err = handler(ctx, req)
+	return resp, err
 }
 
 // TimeoutInterceptor adds timeout to gRPC calls
@@ -69,6 +69,12 @@ func TimeoutInterceptor(timeout time.Duration) grpc.UnaryServerInterceptor {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		return handler(ctx, req)
+		resp, err := handler(ctx, req)
+		
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.GetLogger().Errorf("Request timeout exceeded for method: %s", info.FullMethod)
+		}
+		
+		return resp, err
 	}
 }

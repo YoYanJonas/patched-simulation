@@ -5,18 +5,16 @@ import (
 	"time"
 
 	pb "scheduler-grpc-server/api/proto"
+	"scheduler-grpc-server/internal/rl"
+	"scheduler-grpc-server/pkg/logger"
 )
 
-// TaskStatus represents the current status of a task
+// TaskStatus represents the current status of a task in the queue
 type TaskStatus int32
 
 const (
 	TaskStatusPending TaskStatus = iota
 	TaskStatusQueued
-	TaskStatusRunning
-	TaskStatusCompleted
-	TaskStatusFailed
-	TaskStatusTimeout
 )
 
 // TaskEntry represents a task in the scheduler's queue
@@ -25,12 +23,17 @@ type TaskEntry struct {
 	Status       TaskStatus `json:"status"`
 	QueuedAt     time.Time  `json:"queued_at"`
 	ArrivalTime  time.Time  `json:"arrival_time"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 	Priority     int32      `json:"priority"`
 	EstimatedEnd time.Time  `json:"estimated_end"`
-	ActualEnd    *time.Time `json:"actual_end,omitempty"`
-	ErrorMessage string     `json:"error_message,omitempty"`
+	
+	// Cache information (stored separately, will be added to Task metadata when returning)
+	IsCached   bool              `json:"is_cached"`
+	CacheKey   string            `json:"cache_key"`
+	CacheAction pb.CacheAction   `json:"cache_action"`
+	
+	// Cache RL agent state (for delayed reward calculation)
+	CacheState *rl.CacheStateFeatures `json:"cache_state,omitempty"` // State when cache decision was made
+	CacheRLAction *rl.Action           `json:"cache_rl_action,omitempty"` // RL action taken
 }
 
 // NewTaskEntry creates a new task entry from a protobuf task
@@ -48,12 +51,24 @@ func NewTaskEntry(task *pb.Task) *TaskEntry {
 	}
 }
 
-// GetTaskID returns the task ID
+// GetTaskID returns the task ID (pattern-based, may be reused for repeated tasks)
 func (te *TaskEntry) GetTaskID() string {
 	if te.Task == nil {
 		return ""
 	}
 	return te.Task.TaskId
+}
+
+// GetCloudletId returns the cloudletId from task metadata (unique instance identifier)
+// This is the unique identifier assigned by CloudSim for each task instance
+func (te *TaskEntry) GetCloudletId() string {
+	if te.Task == nil || te.Task.Metadata == nil {
+		return ""
+	}
+	if cid, ok := te.Task.Metadata["cloudlet_id"]; ok && cid != "" {
+		return cid
+	}
+	return ""
 }
 
 // GetEstimatedDuration returns the estimated execution duration
@@ -64,44 +79,9 @@ func (te *TaskEntry) GetEstimatedDuration() time.Duration {
 	return time.Duration(te.Task.ExecutionTime) * time.Millisecond
 }
 
-// GetWaitTime returns how long the task has been waiting
+// GetWaitTime returns how long the task has been waiting in the queue
 func (te *TaskEntry) GetWaitTime() time.Duration {
-	if te.StartedAt != nil {
-		return te.StartedAt.Sub(te.QueuedAt)
-	}
 	return time.Since(te.QueuedAt)
-}
-
-// GetExecutionTime returns actual execution time if completed
-func (te *TaskEntry) GetExecutionTime() time.Duration {
-	if te.StartedAt == nil || te.CompletedAt == nil {
-		return 0
-	}
-	return te.CompletedAt.Sub(*te.StartedAt)
-}
-
-// MarkStarted marks the task as started
-func (te *TaskEntry) MarkStarted() {
-	now := time.Now()
-	te.StartedAt = &now
-	te.Status = TaskStatusRunning
-}
-
-// MarkCompleted marks the task as completed
-func (te *TaskEntry) MarkCompleted() {
-	now := time.Now()
-	te.CompletedAt = &now
-	te.ActualEnd = &now
-	te.Status = TaskStatusCompleted
-}
-
-// MarkFailed marks the task as failed
-func (te *TaskEntry) MarkFailed(reason string) {
-	now := time.Now()
-	te.CompletedAt = &now
-	te.ActualEnd = &now
-	te.Status = TaskStatusFailed
-	te.ErrorMessage = reason
 }
 
 // IsExpired checks if task has exceeded its estimated completion time
@@ -158,9 +138,9 @@ var (
 		return a.QueuedAt.Before(b.QueuedAt)
 	}
 
-	// ByDeadline sorts by estimated end time
+	// Later Feature: deadline-aware disabled (behaves like FIFO)
 	ByDeadline TaskComparator = func(a, b *TaskEntry) bool {
-		return a.EstimatedEnd.Before(b.EstimatedEnd)
+		return a.QueuedAt.Before(b.QueuedAt) // FIFO instead of deadline
 	}
 )
 
@@ -176,11 +156,12 @@ func (te *TaskEntry) GetExecutionTimeMs() int64 {
 	return te.Task.ExecutionTime
 }
 
+// Later Feature: deadline-aware disabled
 func (te *TaskEntry) GetDeadline() int64 {
-	if te.Task == nil {
-		return 0
+	if te.Task != nil && te.Task.Deadline != 0 {
+		logger.GetLogger().Warnf("[DEADLINE-DISABLED] Task %s has non-zero deadline %d, but GetDeadline() returns 0", te.Task.TaskId, te.Task.Deadline)
 	}
-	return te.Task.Deadline
+	return 0 // Deadline-aware disabled
 }
 
 func (te *TaskEntry) GetCPURequirement() float64 {

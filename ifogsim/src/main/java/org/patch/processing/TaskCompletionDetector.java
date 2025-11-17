@@ -212,14 +212,15 @@ public class TaskCompletionDetector {
             long energyConsumed, double cost) {
         try {
             // Create completion report
+            // Proto fields expect double, so convert long to double
             org.patch.proto.IfogsimScheduler.CompletedTask completedTask = org.patch.proto.IfogsimScheduler.CompletedTask
                     .newBuilder()
                     .setTaskId(taskId)
                     .setAssignedNodeId(String.valueOf(fogDevice.getId()))
-                    .setActualExecutionTimeMs(executionTime)
-                    .setActualLatencyMs(executionTime) // Using execution time as latency
-                    .setEnergyConsumed(energyConsumed)
-                    .setDeadlineMet(success)
+                    .setActualExecutionTimeMs((double) executionTime)
+                    .setActualLatencyMs((double) executionTime) // Using execution time as latency
+                    .setEnergyConsumed((double) energyConsumed)
+                    .setDeadlineMet(true) // Later Feature: deadline-aware disabled
                     .setStartTime((long) CloudSim.clock())
                     .setCompletionTime((long) CloudSim.clock())
                     .build();

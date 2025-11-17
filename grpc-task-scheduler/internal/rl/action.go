@@ -4,16 +4,11 @@ package rl
 type ActionType int
 
 const (
-	ActionNone ActionType = iota
-	ActionScheduleNext
-	ActionReorder
-	ActionDelay
-	ActionPriorityBoost
-	ActionPromoteHighPriority
-	ActionPromoteShortJobs
-	ActionBalancedScheduling
-	ActionDeadlineAware
-	ActionResourceOptimized
+	ActionSortByPriority ActionType = iota
+	ActionSortByExecutionTime
+	ActionSortByBalanced
+	ActionSortByResource
+	ActionSortByUrgency
 )
 
 // Action represents a scheduling decision
@@ -27,16 +22,11 @@ type Action struct {
 // GetAllActions returns all possible actions
 func GetAllActions() []Action {
 	return []Action{
-		{Type: ActionNone, Description: "No action - use default algorithm", Priority: 0.0},
-		{Type: ActionScheduleNext, Description: "Schedule next task immediately", Priority: 0.5},
-		{Type: ActionReorder, Description: "Reorder task queue for optimization", Priority: 0.7},
-		{Type: ActionDelay, Description: "Delay task execution", Priority: 0.3},
-		{Type: ActionPriorityBoost, Description: "Boost priority of selected tasks", Priority: 0.8},
-		{Type: ActionPromoteHighPriority, Description: "Promote high priority tasks to front", Priority: 0.6},
-		{Type: ActionPromoteShortJobs, Description: "Promote short execution time tasks", Priority: 0.6},
-		{Type: ActionBalancedScheduling, Description: "Balance priority and execution time", Priority: 0.7},
-		{Type: ActionDeadlineAware, Description: "Prioritize tasks close to deadline", Priority: 0.9},
-		{Type: ActionResourceOptimized, Description: "Optimize for resource utilization", Priority: 0.8},
+		{Type: ActionSortByPriority, Description: "Sort by priority (highest first)", Priority: 0.6},
+		{Type: ActionSortByExecutionTime, Description: "Sort by execution time (shortest first)", Priority: 0.6},
+		{Type: ActionSortByBalanced, Description: "Sort by balanced score (priority 60% + execution time 40%)", Priority: 0.7},
+		{Type: ActionSortByResource, Description: "Sort by resource requirement (lowest first)", Priority: 0.8},
+		{Type: ActionSortByUrgency, Description: "Sort by urgency (priority 70% + deadline 30%)", Priority: 0.8},
 	}
 }
 
@@ -47,6 +37,7 @@ func GetActionSize() int {
 
 // ApplyAction applies the chosen action to reorder the task queue
 func ApplyAction(action Action, tasks []TaskEntry) []TaskEntry {
+	
 	if len(tasks) <= 1 {
 		return tasks
 	}
@@ -55,38 +46,25 @@ func ApplyAction(action Action, tasks []TaskEntry) []TaskEntry {
 	copy(reordered, tasks)
 
 	switch action.Type {
-	case ActionNone:
-		return reordered
+	case ActionSortByPriority:
+		result := sortByPriority(reordered)
+		return result
 
-	case ActionScheduleNext:
-		return sortByPriority(reordered)
+	case ActionSortByExecutionTime:
+		result := sortByShortestJob(reordered)
+		return result
 
-	case ActionReorder:
-		if action.Priority > 0.7 {
-			return sortByBalanced(reordered)
-		}
-		return sortByPriority(reordered)
+	case ActionSortByBalanced:
+		result := sortByBalanced(reordered)
+		return result
 
-	case ActionDelay:
-		return sortByPriority(reordered) // High priority first = delay low priority
+	case ActionSortByResource:
+		result := sortByResource(reordered)
+		return result
 
-	case ActionPriorityBoost:
-		return sortByUrgency(reordered)
-
-	case ActionPromoteHighPriority:
-		return sortByPriority(reordered)
-
-	case ActionPromoteShortJobs:
-		return sortByShortestJob(reordered)
-
-	case ActionBalancedScheduling:
-		return sortByBalanced(reordered)
-
-	case ActionDeadlineAware:
-		return sortByDeadline(reordered)
-
-	case ActionResourceOptimized:
-		return sortByResource(reordered)
+	case ActionSortByUrgency:
+		result := sortByUrgency(reordered)
+		return result
 
 	default:
 		return reordered
@@ -176,15 +154,9 @@ func sortByBalanced(tasks []TaskEntry) []TaskEntry {
 	return tasks
 }
 
+// Later Feature: deadline-aware sorting disabled
 func sortByDeadline(tasks []TaskEntry) []TaskEntry {
-	n := len(tasks)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if tasks[j].GetDeadline() > tasks[j+1].GetDeadline() {
-				tasks[j], tasks[j+1] = tasks[j+1], tasks[j]
-			}
-		}
-	}
+	// Deadline-aware disabled: return unchanged (FIFO)
 	return tasks
 }
 
@@ -231,7 +203,11 @@ func CreateAction(actionType ActionType, priority float64) Action {
 			return action
 		}
 	}
-	return actions[0] // Return ActionNone as default
+	// Return first action (ActionSortByPriority) as default
+	if len(actions) > 0 {
+		return actions[0]
+	}
+	return Action{Type: ActionSortByPriority, Description: "Sort by priority", Priority: 0.6}
 }
 
 // GetActionByType returns an action by its type
@@ -242,5 +218,9 @@ func GetActionByType(actionType ActionType) Action {
 			return action
 		}
 	}
-	return actions[0] // Return ActionNone as default
+	// Return first action (ActionSortByPriority) as default
+	if len(actions) > 0 {
+		return actions[0]
+	}
+	return Action{Type: ActionSortByPriority, Description: "Sort by priority", Priority: 0.6}
 }

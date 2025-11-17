@@ -2,6 +2,12 @@
 
 A comprehensive **Reinforcement Learning (RL) enhanced fog computing simulation system** that extends iFogSim2 with real-time gRPC communication capabilities for intelligent task allocation and scheduling in fog computing environments. This system demonstrates the integration of machine learning algorithms with distributed computing simulation frameworks to optimize resource utilization and task management in edge computing scenarios.
 
+## Quick Start
+
+**Running a simulation is straightforward**: Use the orchestration script `scripts/run-scenario.sh`. You can run it in two ways: (1) **Interactive mode**: Simply execute `./scripts/run-scenario.sh` and it will show you all available scenarios (auto-discovered from the `config/` directory), prompt you to select one, and ask for the number of runs. (2) **Command-line mode**: For automation, pass arguments directly like `./scripts/run-scenario.sh rl-full-feature 10` where the first argument is the scenario name (must match a directory in `config/`) and the second is the number of simulation runs. The script handles everything automatically: it prepares the run directory, starts all Docker containers (allocator service, 3 scheduler services, and iFogSim simulation) in the correct order with health checks, waits for the simulation to complete, stops all containers, and verifies that report files were generated. Each run uses the learned models from previous runs while clearing in-memory state between runs, enabling RL policy improvement over multiple iterations.
+
+**Report files and model persistence**: After each run, check the `reports/` directory where you'll find timestamped folders like `reports/2025-11-01T14-30-25_rl-full-feature/` containing simulation reports (both human-readable `.txt` and machine-readable `.json`), config snapshots, and metadata. Learned RL models are automatically saved to the `models/` directory (`models/allocator/` for allocation models, `models/scheduler-node1/`, `scheduler-node2/`, `scheduler-node3/` for scheduling models) and will be loaded in subsequent runs. You can manually copy model files between scenario runs if needed. To add a new scenario, create a new directory under `config/` (e.g., `config/my-scenario/`) with the required structure (`allocator/config.yaml`, `scheduler/node1/config.yaml`, `scheduler/node2/config.yaml`, `scheduler/node3/config.yaml`, `simulation/application.yml`) and it will automatically appear in the interactive scenario list.
+
 ## System Architecture
 
 ```

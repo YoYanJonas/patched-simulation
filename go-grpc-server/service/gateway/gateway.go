@@ -89,15 +89,21 @@ func NewFogAllocationServiceWithConfig(logger *logger.Logger, cfg *grpcConfig.Co
 
 // ReportNodeState implements the state reporting RPC endpoint
 func (s *FogAllocationService) ReportNodeState(stream pb.FogAllocationService_ReportNodeStateServer) error {
-	s.logger.Info("Started new node state reporting stream")
-
+	s.logger.Info("[ALLOCATOR-CONNECTION] New node state reporting stream connected")
+	
+	nodeCount := 0
 	for {
 		// Receive node state update
 		stateUpdate, err := stream.Recv()
 		if err != nil {
-			s.logger.Error("Error receiving node state", err)
+			s.logger.Error(fmt.Sprintf("[ALLOCATOR-CONNECTION] Error receiving node state (received %d updates before error)", nodeCount), err)
 			return err
 		}
+		
+		nodeCount++
+		s.logger.Info(fmt.Sprintf("[ALLOCATOR-NODE-STATE] Received node state update #%d: NodeID=%s, CPU=%.2f%%, Mem=%.2f%%, Tasks=%d",
+			nodeCount, stateUpdate.NodeId, stateUpdate.CpuUtilization*100, stateUpdate.MemoryUtilization*100,
+			stateUpdate.TaskCount))
 
 		// Validate node state update
 		nodeID := stateUpdate.NodeId
@@ -154,79 +160,109 @@ func (s *FogAllocationService) ReportNodeState(stream pb.FogAllocationService_Re
 
 		// Store node state in registry
 		s.nodeRegistry.Store(nodeID, nodeState)
-		s.logger.Info(fmt.Sprintf("Updated node state for nodeID: %s, CPU: %.2f%%",
-			nodeID, stateUpdate.CpuUtilization*100))
+		s.logger.Info(fmt.Sprintf("[ALLOCATOR-NODE-REGISTERED] Node state stored in registry: NodeID=%s, CPU=%.2f%%, Mem=%.2f%%, Tasks=%d, Bandwidth=%.2f",
+			nodeID, stateUpdate.CpuUtilization*100, stateUpdate.MemoryUtilization*100,
+			stateUpdate.TaskCount, stateUpdate.NetworkBandwidth))
 
 		// Send acknowledgment
 		if err := stream.Send(&pb.NodeStateResponse{
 			Acknowledged: true,
 			Message:      "State update processed successfully",
 		}); err != nil {
-			s.logger.Error("Failed to send state acknowledgment", err)
+			s.logger.Error(fmt.Sprintf("[ALLOCATOR-ERROR] Failed to send state acknowledgment for NodeID=%s", nodeID), err)
 			return err
 		}
+		s.logger.Info(fmt.Sprintf("[ALLOCATOR-ACK] Sent acknowledgment for NodeID=%s", nodeID))
 	}
 }
 
 // AllocateTask implements the task allocation RPC endpoint
 func (s *FogAllocationService) AllocateTask(ctx context.Context, request *pb.TaskAllocationRequest) (*pb.TaskAllocationResponse, error) {
+	// [DEBUG] Log incoming allocation request
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-RECEIVE] Received AllocateTask request: TaskID=%s, CPU=%.3f, Mem=%.3f, BW=%.2f, Priority=%d, Deadline=%d",
+		request.TaskId, request.CpuRequirement, request.MemoryRequirement, request.BandwidthRequirement,
+		request.Priority, request.DeadlineMs))
+
 	// Validate input
 	if request == nil {
+		s.logger.Error("[ALLOCATOR-ERROR] Request is nil", nil)
 		return nil, status.Error(codes.InvalidArgument, "request cannot be nil")
 	}
 	
 	taskID := request.TaskId
 	if taskID == "" {
+		s.logger.Error("[ALLOCATOR-ERROR] TaskID is empty", nil)
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
 	}
 	
 	// Validate task requirements
 	if request.CpuRequirement < 0 || request.CpuRequirement > 1 {
+		s.logger.Error(fmt.Sprintf("[ALLOCATOR-ERROR] Invalid CPU requirement: %.3f", request.CpuRequirement), nil)
 		return nil, status.Error(codes.InvalidArgument, "cpu_requirement must be between 0 and 1")
 	}
 	if request.MemoryRequirement < 0 || request.MemoryRequirement > 1 {
+		s.logger.Error(fmt.Sprintf("[ALLOCATOR-ERROR] Invalid Memory requirement: %.3f", request.MemoryRequirement), nil)
 		return nil, status.Error(codes.InvalidArgument, "memory_requirement must be between 0 and 1")
 	}
 	if request.BandwidthRequirement < 0 {
+		s.logger.Error(fmt.Sprintf("[ALLOCATOR-ERROR] Invalid Bandwidth requirement: %.2f", request.BandwidthRequirement), nil)
 		return nil, status.Error(codes.InvalidArgument, "bandwidth_requirement must be non-negative")
 	}
 	
-	s.logger.Info(fmt.Sprintf("Processing task allocation request for taskID: %s", taskID))
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-PROCESS] Processing task allocation request for taskID: %s", taskID))
+
+	// [DEBUG] Check node registry
+	nodeCount := 0
+	s.nodeRegistry.Range(func(key, value interface{}) bool {
+		nodeCount++
+		return true
+	})
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-NODES] Node registry has %d registered nodes", nodeCount))
 
 	// Get available nodes for allocation
 	availableNodes := s.getAvailableNodes(request)
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-AVAILABLE] Found %d available nodes: %v", len(availableNodes), availableNodes))
+	
 	if len(availableNodes) == 0 {
-		s.logger.Error(fmt.Sprintf("No available nodes for taskID: %s", taskID), nil)
+		s.logger.Error(fmt.Sprintf("[ALLOCATOR-ERROR] No available nodes for taskID: %s (registered nodes: %d)", taskID, nodeCount), nil)
 		return nil, status.Error(codes.ResourceExhausted, "No available nodes found for task allocation")
 	}
 
 	// Capture current system state for the decision
 	systemState := s.buildSystemState()
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-STATE] System state: %d nodes in state", len(systemState.FogNodes)))
 
 	// Use RL agent to select the best node
 	selectedNode, err := s.agent.SelectNode(systemState, availableNodes)
 	if err != nil {
-		s.logger.Error(fmt.Sprintf("RL agent failed to select a node for taskID: %s - %v", taskID, err), nil)
+		s.logger.Error(fmt.Sprintf("[ALLOCATOR-ERROR] RL agent failed to select a node for taskID: %s - %v", taskID, err), nil)
 		return nil, status.Error(codes.Internal, "Failed to select a suitable node")
 	}
+
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-DECISION] RL agent selected node: %s for taskID: %s", selectedNode, taskID))
 
 	// Store the decision for learning and future evaluation
 	s.decisionStore.StoreDecision(taskID, selectedNode, systemState)
 
-	// Track when the task was allocated for deadline tracking
+	// Later Feature: deadline-aware tracking disabled (taskTimers not used for RL)
 	s.taskTimers.Store(taskID, time.Now())
 
-	s.logger.Info(fmt.Sprintf("Task %s allocated to node %s using %s algorithm",
-		taskID, selectedNode, s.agent.GetActiveAlgorithm()))
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-SUCCESS] Task %s allocated to node %s using %s algorithm (available nodes were: %v)",
+		taskID, selectedNode, s.agent.GetActiveAlgorithm(), availableNodes))
 
 	// Return allocation decision to client
-	return &pb.TaskAllocationResponse{
+	response := &pb.TaskAllocationResponse{
 		TaskId:                   taskID,
 		AllocatedNodeId:          selectedNode,
 		Success:                  true,
 		Message:                  fmt.Sprintf("Task allocated successfully using %s algorithm", s.agent.GetActiveAlgorithm()),
 		ExpectedCompletionTimeMs: estimateCompletionTime(request),
-	}, nil
+	}
+	
+	s.logger.Info(fmt.Sprintf("[ALLOCATOR-RESPONSE] Sending allocation response: TaskID=%s, NodeID=%s, Success=%t",
+		response.TaskId, response.AllocatedNodeId, response.Success))
+	
+	return response, nil
 }
 
 // getAvailableNodes returns nodes that meet the task requirements

@@ -303,6 +303,8 @@ type Task struct {
 	Deadline          int64                  `protobuf:"varint,10,opt,name=deadline,proto3" json:"deadline,omitempty"`                                                                         // Task deadline as Unix timestamp
 	Dependencies      []string               `protobuf:"bytes,8,rep,name=dependencies,proto3" json:"dependencies,omitempty"`                                                                   // Task IDs this task depends on
 	Metadata          map[string]string      `protobuf:"bytes,9,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Additional task metadata
+	LocalCacheExists  bool                   `protobuf:"varint,11,opt,name=local_cache_exists,json=localCacheExists,proto3" json:"local_cache_exists,omitempty"`                               // Whether fog node has local cache for this task (for cache synchronization)
+	OutputSize        int64                  `protobuf:"varint,12,opt,name=output_size,json=outputSize,proto3" json:"output_size,omitempty"`                                                   // Output data size in bytes (for network transfer time calculation)
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -405,6 +407,20 @@ func (x *Task) GetMetadata() map[string]string {
 		return x.Metadata
 	}
 	return nil
+}
+
+func (x *Task) GetLocalCacheExists() bool {
+	if x != nil {
+		return x.LocalCacheExists
+	}
+	return false
+}
+
+func (x *Task) GetOutputSize() int64 {
+	if x != nil {
+		return x.OutputSize
+	}
+	return 0
 }
 
 // Fog node definition
@@ -698,9 +714,11 @@ func (x *Location) GetRegion() string {
 
 // Request/Response messages
 type AddTaskToQueueRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Task          *Task                  `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
-	Policy        *SchedulingPolicy      `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Task   *Task                  `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
+	Policy *SchedulingPolicy      `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
+	// NEW: Queue context from fog node
+	QueueContext  *QueueContext `protobuf:"bytes,3,opt,name=queue_context,json=queueContext,proto3" json:"queue_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -749,9 +767,62 @@ func (x *AddTaskToQueueRequest) GetPolicy() *SchedulingPolicy {
 	return nil
 }
 
+func (x *AddTaskToQueueRequest) GetQueueContext() *QueueContext {
+	if x != nil {
+		return x.QueueContext
+	}
+	return nil
+}
+
+// Queue context sent from iFogSim fog node
+type QueueContext struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	TotalQueueSize int32                  `protobuf:"varint,1,opt,name=total_queue_size,json=totalQueueSize,proto3" json:"total_queue_size,omitempty"` // unscheduled + scheduled (from iFogSim)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *QueueContext) Reset() {
+	*x = QueueContext{}
+	mi := &file_api_proto_scheduler_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueueContext) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueueContext) ProtoMessage() {}
+
+func (x *QueueContext) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_scheduler_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueueContext.ProtoReflect.Descriptor instead.
+func (*QueueContext) Descriptor() ([]byte, []int) {
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *QueueContext) GetTotalQueueSize() int32 {
+	if x != nil {
+		return x.TotalQueueSize
+	}
+	return 0
+}
+
 type AddTaskToQueueResponse struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
-	TaskId              string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	TaskId              string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`             // TaskId (pattern-based, may be reused)
+	CloudletId          string                 `protobuf:"bytes,9,opt,name=cloudlet_id,json=cloudletId,proto3" json:"cloudlet_id,omitempty"` // CloudletId (unique instance identifier)
 	Success             bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
 	Message             string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	QueuePosition       int64                  `protobuf:"varint,4,opt,name=queue_position,json=queuePosition,proto3" json:"queue_position,omitempty"`
@@ -765,7 +836,7 @@ type AddTaskToQueueResponse struct {
 
 func (x *AddTaskToQueueResponse) Reset() {
 	*x = AddTaskToQueueResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[6]
+	mi := &file_api_proto_scheduler_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -777,7 +848,7 @@ func (x *AddTaskToQueueResponse) String() string {
 func (*AddTaskToQueueResponse) ProtoMessage() {}
 
 func (x *AddTaskToQueueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[6]
+	mi := &file_api_proto_scheduler_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -790,12 +861,19 @@ func (x *AddTaskToQueueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddTaskToQueueResponse.ProtoReflect.Descriptor instead.
 func (*AddTaskToQueueResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{6}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *AddTaskToQueueResponse) GetTaskId() string {
 	if x != nil {
 		return x.TaskId
+	}
+	return ""
+}
+
+func (x *AddTaskToQueueResponse) GetCloudletId() string {
+	if x != nil {
+		return x.CloudletId
 	}
 	return ""
 }
@@ -860,7 +938,7 @@ type SchedulingPolicy struct {
 
 func (x *SchedulingPolicy) Reset() {
 	*x = SchedulingPolicy{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[7]
+	mi := &file_api_proto_scheduler_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -872,7 +950,7 @@ func (x *SchedulingPolicy) String() string {
 func (*SchedulingPolicy) ProtoMessage() {}
 
 func (x *SchedulingPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[7]
+	mi := &file_api_proto_scheduler_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -885,7 +963,7 @@ func (x *SchedulingPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulingPolicy.ProtoReflect.Descriptor instead.
 func (*SchedulingPolicy) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{7}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SchedulingPolicy) GetAlgorithm() SchedulingAlgorithm {
@@ -923,7 +1001,7 @@ type SchedulingDecision struct {
 
 func (x *SchedulingDecision) Reset() {
 	*x = SchedulingDecision{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[8]
+	mi := &file_api_proto_scheduler_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -935,7 +1013,7 @@ func (x *SchedulingDecision) String() string {
 func (*SchedulingDecision) ProtoMessage() {}
 
 func (x *SchedulingDecision) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[8]
+	mi := &file_api_proto_scheduler_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -948,7 +1026,7 @@ func (x *SchedulingDecision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulingDecision.ProtoReflect.Descriptor instead.
 func (*SchedulingDecision) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{8}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SchedulingDecision) GetAlgorithmUsed() SchedulingAlgorithm {
@@ -1002,7 +1080,7 @@ type GetSchedulingStatusRequest struct {
 
 func (x *GetSchedulingStatusRequest) Reset() {
 	*x = GetSchedulingStatusRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[9]
+	mi := &file_api_proto_scheduler_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1014,7 +1092,7 @@ func (x *GetSchedulingStatusRequest) String() string {
 func (*GetSchedulingStatusRequest) ProtoMessage() {}
 
 func (x *GetSchedulingStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[9]
+	mi := &file_api_proto_scheduler_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1027,7 +1105,7 @@ func (x *GetSchedulingStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulingStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetSchedulingStatusRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{9}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetSchedulingStatusRequest) GetNodeId() string {
@@ -1051,7 +1129,7 @@ type GetSchedulingStatusResponse struct {
 
 func (x *GetSchedulingStatusResponse) Reset() {
 	*x = GetSchedulingStatusResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[10]
+	mi := &file_api_proto_scheduler_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1063,7 +1141,7 @@ func (x *GetSchedulingStatusResponse) String() string {
 func (*GetSchedulingStatusResponse) ProtoMessage() {}
 
 func (x *GetSchedulingStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[10]
+	mi := &file_api_proto_scheduler_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1076,7 +1154,7 @@ func (x *GetSchedulingStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulingStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetSchedulingStatusResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{10}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetSchedulingStatusResponse) GetNodeStatuses() []NodeStatus {
@@ -1129,7 +1207,7 @@ type HealthCheckRequest struct {
 
 func (x *HealthCheckRequest) Reset() {
 	*x = HealthCheckRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[11]
+	mi := &file_api_proto_scheduler_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1141,7 +1219,7 @@ func (x *HealthCheckRequest) String() string {
 func (*HealthCheckRequest) ProtoMessage() {}
 
 func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[11]
+	mi := &file_api_proto_scheduler_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1154,7 +1232,7 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{11}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{12}
 }
 
 type HealthCheckResponse struct {
@@ -1169,7 +1247,7 @@ type HealthCheckResponse struct {
 
 func (x *HealthCheckResponse) Reset() {
 	*x = HealthCheckResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[12]
+	mi := &file_api_proto_scheduler_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +1259,7 @@ func (x *HealthCheckResponse) String() string {
 func (*HealthCheckResponse) ProtoMessage() {}
 
 func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[12]
+	mi := &file_api_proto_scheduler_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +1272,7 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{12}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *HealthCheckResponse) GetHealthy() bool {
@@ -1234,7 +1312,7 @@ type GetSystemMetricsRequest struct {
 
 func (x *GetSystemMetricsRequest) Reset() {
 	*x = GetSystemMetricsRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[13]
+	mi := &file_api_proto_scheduler_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1246,7 +1324,7 @@ func (x *GetSystemMetricsRequest) String() string {
 func (*GetSystemMetricsRequest) ProtoMessage() {}
 
 func (x *GetSystemMetricsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[13]
+	mi := &file_api_proto_scheduler_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1259,7 +1337,7 @@ func (x *GetSystemMetricsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSystemMetricsRequest.ProtoReflect.Descriptor instead.
 func (*GetSystemMetricsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{13}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{14}
 }
 
 type GetSystemMetricsResponse struct {
@@ -1280,7 +1358,7 @@ type GetSystemMetricsResponse struct {
 
 func (x *GetSystemMetricsResponse) Reset() {
 	*x = GetSystemMetricsResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[14]
+	mi := &file_api_proto_scheduler_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1292,7 +1370,7 @@ func (x *GetSystemMetricsResponse) String() string {
 func (*GetSystemMetricsResponse) ProtoMessage() {}
 
 func (x *GetSystemMetricsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[14]
+	mi := &file_api_proto_scheduler_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1305,7 +1383,7 @@ func (x *GetSystemMetricsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSystemMetricsResponse.ProtoReflect.Descriptor instead.
 func (*GetSystemMetricsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{14}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetSystemMetricsResponse) GetUptimeSeconds() int64 {
@@ -1387,7 +1465,7 @@ type GetNodeRegistryRequest struct {
 
 func (x *GetNodeRegistryRequest) Reset() {
 	*x = GetNodeRegistryRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[15]
+	mi := &file_api_proto_scheduler_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1399,7 +1477,7 @@ func (x *GetNodeRegistryRequest) String() string {
 func (*GetNodeRegistryRequest) ProtoMessage() {}
 
 func (x *GetNodeRegistryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[15]
+	mi := &file_api_proto_scheduler_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1412,7 +1490,7 @@ func (x *GetNodeRegistryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodeRegistryRequest.ProtoReflect.Descriptor instead.
 func (*GetNodeRegistryRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{15}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{16}
 }
 
 type GetNodeRegistryResponse struct {
@@ -1426,7 +1504,7 @@ type GetNodeRegistryResponse struct {
 
 func (x *GetNodeRegistryResponse) Reset() {
 	*x = GetNodeRegistryResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[16]
+	mi := &file_api_proto_scheduler_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1438,7 +1516,7 @@ func (x *GetNodeRegistryResponse) String() string {
 func (*GetNodeRegistryResponse) ProtoMessage() {}
 
 func (x *GetNodeRegistryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[16]
+	mi := &file_api_proto_scheduler_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1451,7 +1529,7 @@ func (x *GetNodeRegistryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodeRegistryResponse.ProtoReflect.Descriptor instead.
 func (*GetNodeRegistryResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{16}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetNodeRegistryResponse) GetNodes() []*NodeSummary {
@@ -1488,7 +1566,7 @@ type NodeSummary struct {
 
 func (x *NodeSummary) Reset() {
 	*x = NodeSummary{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[17]
+	mi := &file_api_proto_scheduler_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1500,7 +1578,7 @@ func (x *NodeSummary) String() string {
 func (*NodeSummary) ProtoMessage() {}
 
 func (x *NodeSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[17]
+	mi := &file_api_proto_scheduler_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1513,7 +1591,7 @@ func (x *NodeSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeSummary.ProtoReflect.Descriptor instead.
 func (*NodeSummary) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{17}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *NodeSummary) GetNodeId() string {
@@ -1560,7 +1638,7 @@ type GetSchedulingStatsRequest struct {
 
 func (x *GetSchedulingStatsRequest) Reset() {
 	*x = GetSchedulingStatsRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[18]
+	mi := &file_api_proto_scheduler_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1572,7 +1650,7 @@ func (x *GetSchedulingStatsRequest) String() string {
 func (*GetSchedulingStatsRequest) ProtoMessage() {}
 
 func (x *GetSchedulingStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[18]
+	mi := &file_api_proto_scheduler_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1585,7 +1663,7 @@ func (x *GetSchedulingStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulingStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetSchedulingStatsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{18}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{19}
 }
 
 type GetSchedulingStatsResponse struct {
@@ -1600,7 +1678,7 @@ type GetSchedulingStatsResponse struct {
 
 func (x *GetSchedulingStatsResponse) Reset() {
 	*x = GetSchedulingStatsResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[19]
+	mi := &file_api_proto_scheduler_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1612,7 +1690,7 @@ func (x *GetSchedulingStatsResponse) String() string {
 func (*GetSchedulingStatsResponse) ProtoMessage() {}
 
 func (x *GetSchedulingStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[19]
+	mi := &file_api_proto_scheduler_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1625,7 +1703,7 @@ func (x *GetSchedulingStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulingStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetSchedulingStatsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{19}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetSchedulingStatsResponse) GetAlgorithmUsage() map[string]int64 {
@@ -1665,7 +1743,7 @@ type GetDashboardRequest struct {
 
 func (x *GetDashboardRequest) Reset() {
 	*x = GetDashboardRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[20]
+	mi := &file_api_proto_scheduler_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1677,7 +1755,7 @@ func (x *GetDashboardRequest) String() string {
 func (*GetDashboardRequest) ProtoMessage() {}
 
 func (x *GetDashboardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[20]
+	mi := &file_api_proto_scheduler_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1690,7 +1768,7 @@ func (x *GetDashboardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDashboardRequest.ProtoReflect.Descriptor instead.
 func (*GetDashboardRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{20}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{21}
 }
 
 type GetDashboardResponse struct {
@@ -1704,7 +1782,7 @@ type GetDashboardResponse struct {
 
 func (x *GetDashboardResponse) Reset() {
 	*x = GetDashboardResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[21]
+	mi := &file_api_proto_scheduler_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1716,7 +1794,7 @@ func (x *GetDashboardResponse) String() string {
 func (*GetDashboardResponse) ProtoMessage() {}
 
 func (x *GetDashboardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[21]
+	mi := &file_api_proto_scheduler_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1729,7 +1807,7 @@ func (x *GetDashboardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDashboardResponse.ProtoReflect.Descriptor instead.
 func (*GetDashboardResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{21}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetDashboardResponse) GetStatus() *SystemStatus {
@@ -1766,7 +1844,7 @@ type SystemStatus struct {
 
 func (x *SystemStatus) Reset() {
 	*x = SystemStatus{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[22]
+	mi := &file_api_proto_scheduler_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1778,7 +1856,7 @@ func (x *SystemStatus) String() string {
 func (*SystemStatus) ProtoMessage() {}
 
 func (x *SystemStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[22]
+	mi := &file_api_proto_scheduler_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1791,7 +1869,7 @@ func (x *SystemStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemStatus.ProtoReflect.Descriptor instead.
 func (*SystemStatus) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{22}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SystemStatus) GetServerStatus() string {
@@ -1839,7 +1917,7 @@ type UpdateObjectiveWeightsRequest struct {
 
 func (x *UpdateObjectiveWeightsRequest) Reset() {
 	*x = UpdateObjectiveWeightsRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[23]
+	mi := &file_api_proto_scheduler_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1851,7 +1929,7 @@ func (x *UpdateObjectiveWeightsRequest) String() string {
 func (*UpdateObjectiveWeightsRequest) ProtoMessage() {}
 
 func (x *UpdateObjectiveWeightsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[23]
+	mi := &file_api_proto_scheduler_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1864,7 +1942,7 @@ func (x *UpdateObjectiveWeightsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateObjectiveWeightsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateObjectiveWeightsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{23}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *UpdateObjectiveWeightsRequest) GetWeights() map[string]float64 {
@@ -1885,7 +1963,7 @@ type UpdateObjectiveWeightsResponse struct {
 
 func (x *UpdateObjectiveWeightsResponse) Reset() {
 	*x = UpdateObjectiveWeightsResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[24]
+	mi := &file_api_proto_scheduler_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1897,7 +1975,7 @@ func (x *UpdateObjectiveWeightsResponse) String() string {
 func (*UpdateObjectiveWeightsResponse) ProtoMessage() {}
 
 func (x *UpdateObjectiveWeightsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[24]
+	mi := &file_api_proto_scheduler_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1910,7 +1988,7 @@ func (x *UpdateObjectiveWeightsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateObjectiveWeightsResponse.ProtoReflect.Descriptor instead.
 func (*UpdateObjectiveWeightsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{24}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *UpdateObjectiveWeightsResponse) GetSuccess() bool {
@@ -1930,17 +2008,19 @@ func (x *UpdateObjectiveWeightsResponse) GetMessage() string {
 // Task completion reporting for delayed reward system
 type TaskCompletionReport struct {
 	state               protoimpl.MessageState    `protogen:"open.v1"`
-	TaskId              string                    `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"` // Using task_id as unique identifier
+	TaskId              string                    `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`             // DEPRECATED: Pattern-based taskId (for caching/fingerprinting). Use cloudlet_id for experience lookup.
+	CloudletId          string                    `protobuf:"bytes,6,opt,name=cloudlet_id,json=cloudletId,proto3" json:"cloudlet_id,omitempty"` // REQUIRED: CloudletId (unique instance identifier) - used for experience lookup
 	Tasks               []*CompletedTask          `protobuf:"bytes,2,rep,name=tasks,proto3" json:"tasks,omitempty"`
 	Metrics             *SystemPerformanceMetrics `protobuf:"bytes,3,opt,name=metrics,proto3" json:"metrics,omitempty"`
 	CompletionTimestamp int64                     `protobuf:"varint,4,opt,name=completion_timestamp,json=completionTimestamp,proto3" json:"completion_timestamp,omitempty"`
+	NodeStatus          *FogNode                  `protobuf:"bytes,5,opt,name=node_status,json=nodeStatus,proto3" json:"node_status,omitempty"` // Real CPU/Memory usage from iFogSim at completion time
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TaskCompletionReport) Reset() {
 	*x = TaskCompletionReport{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[25]
+	mi := &file_api_proto_scheduler_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1952,7 +2032,7 @@ func (x *TaskCompletionReport) String() string {
 func (*TaskCompletionReport) ProtoMessage() {}
 
 func (x *TaskCompletionReport) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[25]
+	mi := &file_api_proto_scheduler_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1965,12 +2045,19 @@ func (x *TaskCompletionReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskCompletionReport.ProtoReflect.Descriptor instead.
 func (*TaskCompletionReport) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{25}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *TaskCompletionReport) GetTaskId() string {
 	if x != nil {
 		return x.TaskId
+	}
+	return ""
+}
+
+func (x *TaskCompletionReport) GetCloudletId() string {
+	if x != nil {
+		return x.CloudletId
 	}
 	return ""
 }
@@ -1996,9 +2083,17 @@ func (x *TaskCompletionReport) GetCompletionTimestamp() int64 {
 	return 0
 }
 
+func (x *TaskCompletionReport) GetNodeStatus() *FogNode {
+	if x != nil {
+		return x.NodeStatus
+	}
+	return nil
+}
+
 type CompletedTask struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
-	TaskId                string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	TaskId                string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`              // DEPRECATED: Pattern-based taskId (for caching/fingerprinting). Use cloudlet_id for experience lookup.
+	CloudletId            string                 `protobuf:"bytes,10,opt,name=cloudlet_id,json=cloudletId,proto3" json:"cloudlet_id,omitempty"` // REQUIRED: CloudletId (unique instance identifier) - used for experience lookup
 	AssignedNodeId        string                 `protobuf:"bytes,2,opt,name=assigned_node_id,json=assignedNodeId,proto3" json:"assigned_node_id,omitempty"`
 	ActualExecutionTimeMs float64                `protobuf:"fixed64,3,opt,name=actual_execution_time_ms,json=actualExecutionTimeMs,proto3" json:"actual_execution_time_ms,omitempty"`
 	ActualLatencyMs       float64                `protobuf:"fixed64,4,opt,name=actual_latency_ms,json=actualLatencyMs,proto3" json:"actual_latency_ms,omitempty"`
@@ -2013,7 +2108,7 @@ type CompletedTask struct {
 
 func (x *CompletedTask) Reset() {
 	*x = CompletedTask{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[26]
+	mi := &file_api_proto_scheduler_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2025,7 +2120,7 @@ func (x *CompletedTask) String() string {
 func (*CompletedTask) ProtoMessage() {}
 
 func (x *CompletedTask) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[26]
+	mi := &file_api_proto_scheduler_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2038,12 +2133,19 @@ func (x *CompletedTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompletedTask.ProtoReflect.Descriptor instead.
 func (*CompletedTask) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{26}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CompletedTask) GetTaskId() string {
 	if x != nil {
 		return x.TaskId
+	}
+	return ""
+}
+
+func (x *CompletedTask) GetCloudletId() string {
+	if x != nil {
+		return x.CloudletId
 	}
 	return ""
 }
@@ -2118,7 +2220,7 @@ type SystemPerformanceMetrics struct {
 
 func (x *SystemPerformanceMetrics) Reset() {
 	*x = SystemPerformanceMetrics{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[27]
+	mi := &file_api_proto_scheduler_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2130,7 +2232,7 @@ func (x *SystemPerformanceMetrics) String() string {
 func (*SystemPerformanceMetrics) ProtoMessage() {}
 
 func (x *SystemPerformanceMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[27]
+	mi := &file_api_proto_scheduler_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2143,7 +2245,7 @@ func (x *SystemPerformanceMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemPerformanceMetrics.ProtoReflect.Descriptor instead.
 func (*SystemPerformanceMetrics) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{27}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SystemPerformanceMetrics) GetTotalThroughput() float64 {
@@ -2198,7 +2300,7 @@ type TaskCompletionAck struct {
 
 func (x *TaskCompletionAck) Reset() {
 	*x = TaskCompletionAck{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[28]
+	mi := &file_api_proto_scheduler_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2210,7 +2312,7 @@ func (x *TaskCompletionAck) String() string {
 func (*TaskCompletionAck) ProtoMessage() {}
 
 func (x *TaskCompletionAck) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[28]
+	mi := &file_api_proto_scheduler_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2223,7 +2325,7 @@ func (x *TaskCompletionAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskCompletionAck.ProtoReflect.Descriptor instead.
 func (*TaskCompletionAck) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{28}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *TaskCompletionAck) GetSuccess() bool {
@@ -2250,7 +2352,7 @@ type GetSortedQueueRequest struct {
 
 func (x *GetSortedQueueRequest) Reset() {
 	*x = GetSortedQueueRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[29]
+	mi := &file_api_proto_scheduler_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2262,7 +2364,7 @@ func (x *GetSortedQueueRequest) String() string {
 func (*GetSortedQueueRequest) ProtoMessage() {}
 
 func (x *GetSortedQueueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[29]
+	mi := &file_api_proto_scheduler_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2275,7 +2377,7 @@ func (x *GetSortedQueueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSortedQueueRequest.ProtoReflect.Descriptor instead.
 func (*GetSortedQueueRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{29}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetSortedQueueRequest) GetIncludeMetadata() bool {
@@ -2299,7 +2401,7 @@ type GetSortedQueueResponse struct {
 
 func (x *GetSortedQueueResponse) Reset() {
 	*x = GetSortedQueueResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[30]
+	mi := &file_api_proto_scheduler_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2311,7 +2413,7 @@ func (x *GetSortedQueueResponse) String() string {
 func (*GetSortedQueueResponse) ProtoMessage() {}
 
 func (x *GetSortedQueueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[30]
+	mi := &file_api_proto_scheduler_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2324,7 +2426,7 @@ func (x *GetSortedQueueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSortedQueueResponse.ProtoReflect.Descriptor instead.
 func (*GetSortedQueueResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{30}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetSortedQueueResponse) GetSortedTasks() []*Task {
@@ -2379,7 +2481,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[31]
+	mi := &file_api_proto_scheduler_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2391,7 +2493,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[31]
+	mi := &file_api_proto_scheduler_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2404,7 +2506,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{31}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SubscribeRequest) GetIncludeMetadata() bool {
@@ -2436,7 +2538,7 @@ type QueueUpdateResponse struct {
 
 func (x *QueueUpdateResponse) Reset() {
 	*x = QueueUpdateResponse{}
-	mi := &file_api_proto_scheduler_proto_msgTypes[32]
+	mi := &file_api_proto_scheduler_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2448,7 +2550,7 @@ func (x *QueueUpdateResponse) String() string {
 func (*QueueUpdateResponse) ProtoMessage() {}
 
 func (x *QueueUpdateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_scheduler_proto_msgTypes[32]
+	mi := &file_api_proto_scheduler_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2461,7 +2563,7 @@ func (x *QueueUpdateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueueUpdateResponse.ProtoReflect.Descriptor instead.
 func (*QueueUpdateResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{32}
+	return file_api_proto_scheduler_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *QueueUpdateResponse) GetSortedTasks() []*Task {
@@ -2517,7 +2619,7 @@ var File_api_proto_scheduler_proto protoreflect.FileDescriptor
 
 const file_api_proto_scheduler_proto_rawDesc = "" +
 	"\n" +
-	"\x19api/proto/scheduler.proto\x12\x06thesis\"\xbb\x03\n" +
+	"\x19api/proto/scheduler.proto\x12\x06thesis\"\x8a\x04\n" +
 	"\x04Task\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1b\n" +
 	"\ttask_name\x18\x02 \x01(\tR\btaskName\x12-\n" +
@@ -2529,7 +2631,10 @@ const file_api_proto_scheduler_proto_rawDesc = "" +
 	"\bdeadline\x18\n" +
 	" \x01(\x03R\bdeadline\x12\"\n" +
 	"\fdependencies\x18\b \x03(\tR\fdependencies\x126\n" +
-	"\bmetadata\x18\t \x03(\v2\x1a.thesis.Task.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\t \x03(\v2\x1a.thesis.Task.MetadataEntryR\bmetadata\x12,\n" +
+	"\x12local_cache_exists\x18\v \x01(\bR\x10localCacheExists\x12\x1f\n" +
+	"\voutput_size\x18\f \x01(\x03R\n" +
+	"outputSize\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x83\x03\n" +
@@ -2558,12 +2663,17 @@ const file_api_proto_scheduler_proto_rawDesc = "" +
 	"\bLocation\x12\x1a\n" +
 	"\blatitude\x18\x01 \x01(\x01R\blatitude\x12\x1c\n" +
 	"\tlongitude\x18\x02 \x01(\x01R\tlongitude\x12\x16\n" +
-	"\x06region\x18\x03 \x01(\tR\x06region\"k\n" +
+	"\x06region\x18\x03 \x01(\tR\x06region\"\xa6\x01\n" +
 	"\x15AddTaskToQueueRequest\x12 \n" +
 	"\x04task\x18\x01 \x01(\v2\f.thesis.TaskR\x04task\x120\n" +
-	"\x06policy\x18\x02 \x01(\v2\x18.thesis.SchedulingPolicyR\x06policy\"\xbc\x02\n" +
+	"\x06policy\x18\x02 \x01(\v2\x18.thesis.SchedulingPolicyR\x06policy\x129\n" +
+	"\rqueue_context\x18\x03 \x01(\v2\x14.thesis.QueueContextR\fqueueContext\"8\n" +
+	"\fQueueContext\x12(\n" +
+	"\x10total_queue_size\x18\x01 \x01(\x05R\x0etotalQueueSize\"\xdd\x02\n" +
 	"\x16AddTaskToQueueResponse\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x18\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
+	"\vcloudlet_id\x18\t \x01(\tR\n" +
+	"cloudletId\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12%\n" +
 	"\x0equeue_position\x18\x04 \x01(\x03R\rqueuePosition\x123\n" +
@@ -2665,14 +2775,21 @@ const file_api_proto_scheduler_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\"T\n" +
 	"\x1eUpdateObjectiveWeightsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xcb\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x9e\x02\n" +
 	"\x14TaskCompletionReport\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12+\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
+	"\vcloudlet_id\x18\x06 \x01(\tR\n" +
+	"cloudletId\x12+\n" +
 	"\x05tasks\x18\x02 \x03(\v2\x15.thesis.CompletedTaskR\x05tasks\x12:\n" +
 	"\ametrics\x18\x03 \x01(\v2 .thesis.SystemPerformanceMetricsR\ametrics\x121\n" +
-	"\x14completion_timestamp\x18\x04 \x01(\x03R\x13completionTimestamp\"\xde\x03\n" +
+	"\x14completion_timestamp\x18\x04 \x01(\x03R\x13completionTimestamp\x120\n" +
+	"\vnode_status\x18\x05 \x01(\v2\x0f.thesis.FogNodeR\n" +
+	"nodeStatus\"\xff\x03\n" +
 	"\rCompletedTask\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12(\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
+	"\vcloudlet_id\x18\n" +
+	" \x01(\tR\n" +
+	"cloudletId\x12(\n" +
 	"\x10assigned_node_id\x18\x02 \x01(\tR\x0eassignedNodeId\x127\n" +
 	"\x18actual_execution_time_ms\x18\x03 \x01(\x01R\x15actualExecutionTimeMs\x12*\n" +
 	"\x11actual_latency_ms\x18\x04 \x01(\x01R\x0factualLatencyMs\x12'\n" +
@@ -2778,7 +2895,7 @@ func file_api_proto_scheduler_proto_rawDescGZIP() []byte {
 }
 
 var file_api_proto_scheduler_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_api_proto_scheduler_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_api_proto_scheduler_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_api_proto_scheduler_proto_goTypes = []any{
 	(TaskType)(0),                          // 0: thesis.TaskType
 	(NodeStatus)(0),                        // 1: thesis.NodeStatus
@@ -2791,104 +2908,107 @@ var file_api_proto_scheduler_proto_goTypes = []any{
 	(*ResourceUsage)(nil),                  // 8: thesis.ResourceUsage
 	(*Location)(nil),                       // 9: thesis.Location
 	(*AddTaskToQueueRequest)(nil),          // 10: thesis.AddTaskToQueueRequest
-	(*AddTaskToQueueResponse)(nil),         // 11: thesis.AddTaskToQueueResponse
-	(*SchedulingPolicy)(nil),               // 12: thesis.SchedulingPolicy
-	(*SchedulingDecision)(nil),             // 13: thesis.SchedulingDecision
-	(*GetSchedulingStatusRequest)(nil),     // 14: thesis.GetSchedulingStatusRequest
-	(*GetSchedulingStatusResponse)(nil),    // 15: thesis.GetSchedulingStatusResponse
-	(*HealthCheckRequest)(nil),             // 16: thesis.HealthCheckRequest
-	(*HealthCheckResponse)(nil),            // 17: thesis.HealthCheckResponse
-	(*GetSystemMetricsRequest)(nil),        // 18: thesis.GetSystemMetricsRequest
-	(*GetSystemMetricsResponse)(nil),       // 19: thesis.GetSystemMetricsResponse
-	(*GetNodeRegistryRequest)(nil),         // 20: thesis.GetNodeRegistryRequest
-	(*GetNodeRegistryResponse)(nil),        // 21: thesis.GetNodeRegistryResponse
-	(*NodeSummary)(nil),                    // 22: thesis.NodeSummary
-	(*GetSchedulingStatsRequest)(nil),      // 23: thesis.GetSchedulingStatsRequest
-	(*GetSchedulingStatsResponse)(nil),     // 24: thesis.GetSchedulingStatsResponse
-	(*GetDashboardRequest)(nil),            // 25: thesis.GetDashboardRequest
-	(*GetDashboardResponse)(nil),           // 26: thesis.GetDashboardResponse
-	(*SystemStatus)(nil),                   // 27: thesis.SystemStatus
-	(*UpdateObjectiveWeightsRequest)(nil),  // 28: thesis.UpdateObjectiveWeightsRequest
-	(*UpdateObjectiveWeightsResponse)(nil), // 29: thesis.UpdateObjectiveWeightsResponse
-	(*TaskCompletionReport)(nil),           // 30: thesis.TaskCompletionReport
-	(*CompletedTask)(nil),                  // 31: thesis.CompletedTask
-	(*SystemPerformanceMetrics)(nil),       // 32: thesis.SystemPerformanceMetrics
-	(*TaskCompletionAck)(nil),              // 33: thesis.TaskCompletionAck
-	(*GetSortedQueueRequest)(nil),          // 34: thesis.GetSortedQueueRequest
-	(*GetSortedQueueResponse)(nil),         // 35: thesis.GetSortedQueueResponse
-	(*SubscribeRequest)(nil),               // 36: thesis.SubscribeRequest
-	(*QueueUpdateResponse)(nil),            // 37: thesis.QueueUpdateResponse
-	nil,                                    // 38: thesis.Task.MetadataEntry
-	nil,                                    // 39: thesis.FogNode.MetadataEntry
-	nil,                                    // 40: thesis.SchedulingPolicy.ParametersEntry
-	nil,                                    // 41: thesis.SchedulingDecision.NodeScoresEntry
-	nil,                                    // 42: thesis.GetSchedulingStatusResponse.SystemMetricsEntry
-	nil,                                    // 43: thesis.GetSchedulingStatsResponse.AlgorithmUsageEntry
-	nil,                                    // 44: thesis.GetSchedulingStatsResponse.AlgorithmPerformanceEntry
-	nil,                                    // 45: thesis.UpdateObjectiveWeightsRequest.WeightsEntry
-	nil,                                    // 46: thesis.CompletedTask.ResourceUsageEntry
-	nil,                                    // 47: thesis.GetSortedQueueResponse.MetadataEntry
-	nil,                                    // 48: thesis.QueueUpdateResponse.MetadataEntry
+	(*QueueContext)(nil),                   // 11: thesis.QueueContext
+	(*AddTaskToQueueResponse)(nil),         // 12: thesis.AddTaskToQueueResponse
+	(*SchedulingPolicy)(nil),               // 13: thesis.SchedulingPolicy
+	(*SchedulingDecision)(nil),             // 14: thesis.SchedulingDecision
+	(*GetSchedulingStatusRequest)(nil),     // 15: thesis.GetSchedulingStatusRequest
+	(*GetSchedulingStatusResponse)(nil),    // 16: thesis.GetSchedulingStatusResponse
+	(*HealthCheckRequest)(nil),             // 17: thesis.HealthCheckRequest
+	(*HealthCheckResponse)(nil),            // 18: thesis.HealthCheckResponse
+	(*GetSystemMetricsRequest)(nil),        // 19: thesis.GetSystemMetricsRequest
+	(*GetSystemMetricsResponse)(nil),       // 20: thesis.GetSystemMetricsResponse
+	(*GetNodeRegistryRequest)(nil),         // 21: thesis.GetNodeRegistryRequest
+	(*GetNodeRegistryResponse)(nil),        // 22: thesis.GetNodeRegistryResponse
+	(*NodeSummary)(nil),                    // 23: thesis.NodeSummary
+	(*GetSchedulingStatsRequest)(nil),      // 24: thesis.GetSchedulingStatsRequest
+	(*GetSchedulingStatsResponse)(nil),     // 25: thesis.GetSchedulingStatsResponse
+	(*GetDashboardRequest)(nil),            // 26: thesis.GetDashboardRequest
+	(*GetDashboardResponse)(nil),           // 27: thesis.GetDashboardResponse
+	(*SystemStatus)(nil),                   // 28: thesis.SystemStatus
+	(*UpdateObjectiveWeightsRequest)(nil),  // 29: thesis.UpdateObjectiveWeightsRequest
+	(*UpdateObjectiveWeightsResponse)(nil), // 30: thesis.UpdateObjectiveWeightsResponse
+	(*TaskCompletionReport)(nil),           // 31: thesis.TaskCompletionReport
+	(*CompletedTask)(nil),                  // 32: thesis.CompletedTask
+	(*SystemPerformanceMetrics)(nil),       // 33: thesis.SystemPerformanceMetrics
+	(*TaskCompletionAck)(nil),              // 34: thesis.TaskCompletionAck
+	(*GetSortedQueueRequest)(nil),          // 35: thesis.GetSortedQueueRequest
+	(*GetSortedQueueResponse)(nil),         // 36: thesis.GetSortedQueueResponse
+	(*SubscribeRequest)(nil),               // 37: thesis.SubscribeRequest
+	(*QueueUpdateResponse)(nil),            // 38: thesis.QueueUpdateResponse
+	nil,                                    // 39: thesis.Task.MetadataEntry
+	nil,                                    // 40: thesis.FogNode.MetadataEntry
+	nil,                                    // 41: thesis.SchedulingPolicy.ParametersEntry
+	nil,                                    // 42: thesis.SchedulingDecision.NodeScoresEntry
+	nil,                                    // 43: thesis.GetSchedulingStatusResponse.SystemMetricsEntry
+	nil,                                    // 44: thesis.GetSchedulingStatsResponse.AlgorithmUsageEntry
+	nil,                                    // 45: thesis.GetSchedulingStatsResponse.AlgorithmPerformanceEntry
+	nil,                                    // 46: thesis.UpdateObjectiveWeightsRequest.WeightsEntry
+	nil,                                    // 47: thesis.CompletedTask.ResourceUsageEntry
+	nil,                                    // 48: thesis.GetSortedQueueResponse.MetadataEntry
+	nil,                                    // 49: thesis.QueueUpdateResponse.MetadataEntry
 }
 var file_api_proto_scheduler_proto_depIdxs = []int32{
 	0,  // 0: thesis.Task.task_type:type_name -> thesis.TaskType
-	38, // 1: thesis.Task.metadata:type_name -> thesis.Task.MetadataEntry
+	39, // 1: thesis.Task.metadata:type_name -> thesis.Task.MetadataEntry
 	1,  // 2: thesis.FogNode.status:type_name -> thesis.NodeStatus
 	7,  // 3: thesis.FogNode.capacity:type_name -> thesis.ResourceCapacity
 	8,  // 4: thesis.FogNode.current_usage:type_name -> thesis.ResourceUsage
 	9,  // 5: thesis.FogNode.location:type_name -> thesis.Location
-	39, // 6: thesis.FogNode.metadata:type_name -> thesis.FogNode.MetadataEntry
+	40, // 6: thesis.FogNode.metadata:type_name -> thesis.FogNode.MetadataEntry
 	5,  // 7: thesis.AddTaskToQueueRequest.task:type_name -> thesis.Task
-	12, // 8: thesis.AddTaskToQueueRequest.policy:type_name -> thesis.SchedulingPolicy
-	4,  // 9: thesis.AddTaskToQueueResponse.cache_action:type_name -> thesis.CacheAction
-	2,  // 10: thesis.SchedulingPolicy.algorithm:type_name -> thesis.SchedulingAlgorithm
-	3,  // 11: thesis.SchedulingPolicy.objective:type_name -> thesis.ObjectiveFunction
-	40, // 12: thesis.SchedulingPolicy.parameters:type_name -> thesis.SchedulingPolicy.ParametersEntry
-	2,  // 13: thesis.SchedulingDecision.algorithm_used:type_name -> thesis.SchedulingAlgorithm
-	3,  // 14: thesis.SchedulingDecision.objective_used:type_name -> thesis.ObjectiveFunction
-	41, // 15: thesis.SchedulingDecision.node_scores:type_name -> thesis.SchedulingDecision.NodeScoresEntry
-	1,  // 16: thesis.GetSchedulingStatusResponse.node_statuses:type_name -> thesis.NodeStatus
-	42, // 17: thesis.GetSchedulingStatusResponse.system_metrics:type_name -> thesis.GetSchedulingStatusResponse.SystemMetricsEntry
-	22, // 18: thesis.GetNodeRegistryResponse.nodes:type_name -> thesis.NodeSummary
-	1,  // 19: thesis.NodeSummary.status:type_name -> thesis.NodeStatus
-	43, // 20: thesis.GetSchedulingStatsResponse.algorithm_usage:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmUsageEntry
-	44, // 21: thesis.GetSchedulingStatsResponse.algorithm_performance:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmPerformanceEntry
-	27, // 22: thesis.GetDashboardResponse.status:type_name -> thesis.SystemStatus
-	45, // 23: thesis.UpdateObjectiveWeightsRequest.weights:type_name -> thesis.UpdateObjectiveWeightsRequest.WeightsEntry
-	31, // 24: thesis.TaskCompletionReport.tasks:type_name -> thesis.CompletedTask
-	32, // 25: thesis.TaskCompletionReport.metrics:type_name -> thesis.SystemPerformanceMetrics
-	46, // 26: thesis.CompletedTask.resource_usage:type_name -> thesis.CompletedTask.ResourceUsageEntry
-	5,  // 27: thesis.GetSortedQueueResponse.sorted_tasks:type_name -> thesis.Task
-	47, // 28: thesis.GetSortedQueueResponse.metadata:type_name -> thesis.GetSortedQueueResponse.MetadataEntry
-	5,  // 29: thesis.QueueUpdateResponse.sorted_tasks:type_name -> thesis.Task
-	48, // 30: thesis.QueueUpdateResponse.metadata:type_name -> thesis.QueueUpdateResponse.MetadataEntry
-	10, // 31: thesis.TaskScheduler.AddTaskToQueue:input_type -> thesis.AddTaskToQueueRequest
-	14, // 32: thesis.TaskScheduler.GetSchedulingStatus:input_type -> thesis.GetSchedulingStatusRequest
-	16, // 33: thesis.TaskScheduler.HealthCheck:input_type -> thesis.HealthCheckRequest
-	28, // 34: thesis.TaskScheduler.UpdateObjectiveWeights:input_type -> thesis.UpdateObjectiveWeightsRequest
-	30, // 35: thesis.TaskScheduler.ReportTaskCompletion:input_type -> thesis.TaskCompletionReport
-	34, // 36: thesis.TaskScheduler.GetSortedQueue:input_type -> thesis.GetSortedQueueRequest
-	36, // 37: thesis.TaskScheduler.SubscribeToQueueUpdates:input_type -> thesis.SubscribeRequest
-	18, // 38: thesis.SystemMonitoring.GetSystemMetrics:input_type -> thesis.GetSystemMetricsRequest
-	20, // 39: thesis.SystemMonitoring.GetNodeRegistry:input_type -> thesis.GetNodeRegistryRequest
-	23, // 40: thesis.SystemMonitoring.GetSchedulingStats:input_type -> thesis.GetSchedulingStatsRequest
-	25, // 41: thesis.SystemMonitoring.GetDashboard:input_type -> thesis.GetDashboardRequest
-	11, // 42: thesis.TaskScheduler.AddTaskToQueue:output_type -> thesis.AddTaskToQueueResponse
-	15, // 43: thesis.TaskScheduler.GetSchedulingStatus:output_type -> thesis.GetSchedulingStatusResponse
-	17, // 44: thesis.TaskScheduler.HealthCheck:output_type -> thesis.HealthCheckResponse
-	29, // 45: thesis.TaskScheduler.UpdateObjectiveWeights:output_type -> thesis.UpdateObjectiveWeightsResponse
-	33, // 46: thesis.TaskScheduler.ReportTaskCompletion:output_type -> thesis.TaskCompletionAck
-	35, // 47: thesis.TaskScheduler.GetSortedQueue:output_type -> thesis.GetSortedQueueResponse
-	37, // 48: thesis.TaskScheduler.SubscribeToQueueUpdates:output_type -> thesis.QueueUpdateResponse
-	19, // 49: thesis.SystemMonitoring.GetSystemMetrics:output_type -> thesis.GetSystemMetricsResponse
-	21, // 50: thesis.SystemMonitoring.GetNodeRegistry:output_type -> thesis.GetNodeRegistryResponse
-	24, // 51: thesis.SystemMonitoring.GetSchedulingStats:output_type -> thesis.GetSchedulingStatsResponse
-	26, // 52: thesis.SystemMonitoring.GetDashboard:output_type -> thesis.GetDashboardResponse
-	42, // [42:53] is the sub-list for method output_type
-	31, // [31:42] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	13, // 8: thesis.AddTaskToQueueRequest.policy:type_name -> thesis.SchedulingPolicy
+	11, // 9: thesis.AddTaskToQueueRequest.queue_context:type_name -> thesis.QueueContext
+	4,  // 10: thesis.AddTaskToQueueResponse.cache_action:type_name -> thesis.CacheAction
+	2,  // 11: thesis.SchedulingPolicy.algorithm:type_name -> thesis.SchedulingAlgorithm
+	3,  // 12: thesis.SchedulingPolicy.objective:type_name -> thesis.ObjectiveFunction
+	41, // 13: thesis.SchedulingPolicy.parameters:type_name -> thesis.SchedulingPolicy.ParametersEntry
+	2,  // 14: thesis.SchedulingDecision.algorithm_used:type_name -> thesis.SchedulingAlgorithm
+	3,  // 15: thesis.SchedulingDecision.objective_used:type_name -> thesis.ObjectiveFunction
+	42, // 16: thesis.SchedulingDecision.node_scores:type_name -> thesis.SchedulingDecision.NodeScoresEntry
+	1,  // 17: thesis.GetSchedulingStatusResponse.node_statuses:type_name -> thesis.NodeStatus
+	43, // 18: thesis.GetSchedulingStatusResponse.system_metrics:type_name -> thesis.GetSchedulingStatusResponse.SystemMetricsEntry
+	23, // 19: thesis.GetNodeRegistryResponse.nodes:type_name -> thesis.NodeSummary
+	1,  // 20: thesis.NodeSummary.status:type_name -> thesis.NodeStatus
+	44, // 21: thesis.GetSchedulingStatsResponse.algorithm_usage:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmUsageEntry
+	45, // 22: thesis.GetSchedulingStatsResponse.algorithm_performance:type_name -> thesis.GetSchedulingStatsResponse.AlgorithmPerformanceEntry
+	28, // 23: thesis.GetDashboardResponse.status:type_name -> thesis.SystemStatus
+	46, // 24: thesis.UpdateObjectiveWeightsRequest.weights:type_name -> thesis.UpdateObjectiveWeightsRequest.WeightsEntry
+	32, // 25: thesis.TaskCompletionReport.tasks:type_name -> thesis.CompletedTask
+	33, // 26: thesis.TaskCompletionReport.metrics:type_name -> thesis.SystemPerformanceMetrics
+	6,  // 27: thesis.TaskCompletionReport.node_status:type_name -> thesis.FogNode
+	47, // 28: thesis.CompletedTask.resource_usage:type_name -> thesis.CompletedTask.ResourceUsageEntry
+	5,  // 29: thesis.GetSortedQueueResponse.sorted_tasks:type_name -> thesis.Task
+	48, // 30: thesis.GetSortedQueueResponse.metadata:type_name -> thesis.GetSortedQueueResponse.MetadataEntry
+	5,  // 31: thesis.QueueUpdateResponse.sorted_tasks:type_name -> thesis.Task
+	49, // 32: thesis.QueueUpdateResponse.metadata:type_name -> thesis.QueueUpdateResponse.MetadataEntry
+	10, // 33: thesis.TaskScheduler.AddTaskToQueue:input_type -> thesis.AddTaskToQueueRequest
+	15, // 34: thesis.TaskScheduler.GetSchedulingStatus:input_type -> thesis.GetSchedulingStatusRequest
+	17, // 35: thesis.TaskScheduler.HealthCheck:input_type -> thesis.HealthCheckRequest
+	29, // 36: thesis.TaskScheduler.UpdateObjectiveWeights:input_type -> thesis.UpdateObjectiveWeightsRequest
+	31, // 37: thesis.TaskScheduler.ReportTaskCompletion:input_type -> thesis.TaskCompletionReport
+	35, // 38: thesis.TaskScheduler.GetSortedQueue:input_type -> thesis.GetSortedQueueRequest
+	37, // 39: thesis.TaskScheduler.SubscribeToQueueUpdates:input_type -> thesis.SubscribeRequest
+	19, // 40: thesis.SystemMonitoring.GetSystemMetrics:input_type -> thesis.GetSystemMetricsRequest
+	21, // 41: thesis.SystemMonitoring.GetNodeRegistry:input_type -> thesis.GetNodeRegistryRequest
+	24, // 42: thesis.SystemMonitoring.GetSchedulingStats:input_type -> thesis.GetSchedulingStatsRequest
+	26, // 43: thesis.SystemMonitoring.GetDashboard:input_type -> thesis.GetDashboardRequest
+	12, // 44: thesis.TaskScheduler.AddTaskToQueue:output_type -> thesis.AddTaskToQueueResponse
+	16, // 45: thesis.TaskScheduler.GetSchedulingStatus:output_type -> thesis.GetSchedulingStatusResponse
+	18, // 46: thesis.TaskScheduler.HealthCheck:output_type -> thesis.HealthCheckResponse
+	30, // 47: thesis.TaskScheduler.UpdateObjectiveWeights:output_type -> thesis.UpdateObjectiveWeightsResponse
+	34, // 48: thesis.TaskScheduler.ReportTaskCompletion:output_type -> thesis.TaskCompletionAck
+	36, // 49: thesis.TaskScheduler.GetSortedQueue:output_type -> thesis.GetSortedQueueResponse
+	38, // 50: thesis.TaskScheduler.SubscribeToQueueUpdates:output_type -> thesis.QueueUpdateResponse
+	20, // 51: thesis.SystemMonitoring.GetSystemMetrics:output_type -> thesis.GetSystemMetricsResponse
+	22, // 52: thesis.SystemMonitoring.GetNodeRegistry:output_type -> thesis.GetNodeRegistryResponse
+	25, // 53: thesis.SystemMonitoring.GetSchedulingStats:output_type -> thesis.GetSchedulingStatsResponse
+	27, // 54: thesis.SystemMonitoring.GetDashboard:output_type -> thesis.GetDashboardResponse
+	44, // [44:55] is the sub-list for method output_type
+	33, // [33:44] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_scheduler_proto_init() }
@@ -2902,7 +3022,7 @@ func file_api_proto_scheduler_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_scheduler_proto_rawDesc), len(file_api_proto_scheduler_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   44,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

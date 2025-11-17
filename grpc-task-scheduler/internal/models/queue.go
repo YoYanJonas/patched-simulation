@@ -13,7 +13,9 @@ type TaskQueue interface {
 	Peek() *TaskEntry
 	Size() int
 	IsEmpty() bool
-	Remove(taskID string) *TaskEntry
+	// Remove removes a task from the queue using cloudletId (unique instance identifier)
+	// NOTE: The parameter is named taskID for interface compatibility, but implementations expect cloudletId
+	Remove(taskID string) *TaskEntry  // taskID parameter is actually cloudletId (unique instance ID)
 	GetAll() []*TaskEntry
 	Clear()
 }
@@ -40,6 +42,7 @@ func (q *FIFOQueue) Enqueue(task *TaskEntry) error {
 	task.Status = TaskStatusQueued
 	task.QueuedAt = time.Now()
 	q.tasks = append(q.tasks, task)
+	
 	return nil
 }
 
@@ -76,17 +79,20 @@ func (q *FIFOQueue) IsEmpty() bool {
 	return q.Size() == 0
 }
 
-func (q *FIFOQueue) Remove(taskID string) *TaskEntry {
+func (q *FIFOQueue) Remove(cloudletId string) *TaskEntry {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	for i, task := range q.tasks {
-		if task.GetTaskID() == taskID {
+		// CRITICAL FIX: Use cloudletId (unique instance identifier) instead of TaskId (pattern-based)
+		// This ensures tasks are correctly removed when completion reports use cloudletId
+		if task.GetCloudletId() == cloudletId {
 			removed := q.tasks[i]
 			q.tasks = append(q.tasks[:i], q.tasks[i+1:]...)
 			return removed
 		}
 	}
+	
 	return nil
 }
 
@@ -102,6 +108,7 @@ func (q *FIFOQueue) GetAll() []*TaskEntry {
 func (q *FIFOQueue) Clear() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	
 	q.tasks = q.tasks[:0]
 }
 
@@ -190,12 +197,14 @@ func (q *PriorityQueue) IsEmpty() bool {
 	return q.Size() == 0
 }
 
-func (q *PriorityQueue) Remove(taskID string) *TaskEntry {
+func (q *PriorityQueue) Remove(cloudletId string) *TaskEntry {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	for i, task := range q.tasks {
-		if task.GetTaskID() == taskID {
+		// CRITICAL FIX: Use cloudletId (unique instance identifier) instead of TaskId (pattern-based)
+		// This ensures tasks are correctly removed when completion reports use cloudletId
+		if task.GetCloudletId() == cloudletId {
 			removed := q.tasks[i]
 			// Remove from heap efficiently
 			lastIndex := len(q.tasks) - 1
@@ -207,6 +216,7 @@ func (q *PriorityQueue) Remove(taskID string) *TaskEntry {
 			return removed
 		}
 	}
+	
 	return nil
 }
 
@@ -222,6 +232,7 @@ func (q *PriorityQueue) GetAll() []*TaskEntry {
 func (q *PriorityQueue) Clear() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	
 	q.tasks = q.tasks[:0]
 	heap.Init(&q.tasks)
 }
@@ -306,17 +317,20 @@ func (q *SJFQueue) IsEmpty() bool {
 	return q.Size() == 0
 }
 
-func (q *SJFQueue) Remove(taskID string) *TaskEntry {
+func (q *SJFQueue) Remove(cloudletId string) *TaskEntry {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	for i, task := range q.tasks {
-		if task.GetTaskID() == taskID {
+		// CRITICAL FIX: Use cloudletId (unique instance identifier) instead of TaskId (pattern-based)
+		// This ensures tasks are correctly removed when completion reports use cloudletId
+		if task.GetCloudletId() == cloudletId {
 			removed := q.tasks[i]
 			q.tasks = append(q.tasks[:i], q.tasks[i+1:]...)
 			return removed
 		}
 	}
+	
 	return nil
 }
 
@@ -332,5 +346,6 @@ func (q *SJFQueue) GetAll() []*TaskEntry {
 func (q *SJFQueue) Clear() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	
 	q.tasks = q.tasks[:0]
 }
