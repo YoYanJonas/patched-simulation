@@ -121,7 +121,7 @@ schedulers:
 
     # Streaming queue update interval (polling)
     streaming:
-      update-interval-ms: ${STREAMING_UPDATE_INTERVAL_MS:1000} # Interval in milliseconds for polling queue updates (default: 1000ms = 1 second)
+      update-interval-ms: ${STREAMING_UPDATE_INTERVAL_MS:5000} # Interval in milliseconds for polling queue updates (default: 5000ms = 5 seconds)
 
 # Sensor task parameters (for dynamic CPU/Memory)
 # 36 task styles: 6 CPU × 6 Memory combinations (all within fog node capacity: 2800 MIPS, 4000 MB)
@@ -144,8 +144,8 @@ sensors:
 external-tasks:
   # Task generation settings
   generation:
-    enabled: true
-    default-rate: 2.0 # tasks per second
+    enabled: false # DISABLED - sensor tasks only
+    default-rate: 2.0 # tasks per second (unused when disabled)
     initial-delay: 1000 # milliseconds before first task
 
   # Task parameters

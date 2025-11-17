@@ -115,11 +115,10 @@ public class StreamingQueueObserver {
         
         // Calculate max polls based on simulation time (proportional to MAX_SIMULATION_TIME)
         double maxSimulationTime = Config.MAX_SIMULATION_TIME;
-        // Target: 1000 polls max, but scale with simulation time
-        // If simulation is 100 seconds, that's 100 polls at 1s interval = reasonable
-        // If simulation is 1000 seconds, that's 1000 polls at 1s interval = reasonable
-        // Formula: maxPolls = min(1000, MAX_SIMULATION_TIME / streamingIntervalSeconds)
-        this.maxPolls = (int) Math.min(1000, Math.max(100, maxSimulationTime / this.streamingIntervalSeconds));
+        // Dynamic calculation: maxPolls = (MAX_SIMULATION_TIME / streamingIntervalSeconds) * 2
+        // Multiplier of 2 provides buffer for adaptive polling and edge cases
+        // Minimum of 100 polls to ensure basic functionality
+        this.maxPolls = (int) Math.max(100, maxSimulationTime / this.streamingIntervalSeconds * 2);
         
         logger.info("StreamingQueueObserver initialized for device: " + deviceId +
                 " with update interval: " + streamingIntervalMs + "ms (" + streamingIntervalSeconds

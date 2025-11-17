@@ -60,7 +60,7 @@ public class RL3FogSimulation {
     // Simulation parameters
     private static final int NUM_FOG_NODES = 3;
     private static final int SENSORS_PER_FOG = 2;
-    private static final double SIMULATION_TIME = 300.0; // 5 minutes
+    private static final double SIMULATION_TIME = 25000.0; // ~6.94 hours (25,000 seconds)
 
     // Device IDs
     private static int cloudId;
@@ -94,9 +94,9 @@ public class RL3FogSimulation {
             // SIMULATION_TIME: When to stop generating NEW tasks (sensors, external tasks)
             // MAX_SIMULATION_TIME: Safety timeout to prevent infinite simulation (very large value)
             org.fog.utils.Config.SIMULATION_TIME = (int) SIMULATION_TIME;
-            // Set MAX_SIMULATION_TIME to a large safety value (1 hour) - actual termination
+            // Set MAX_SIMULATION_TIME to a large safety value (24 hours) - actual termination
             // happens when all tasks complete
-            org.fog.utils.Config.MAX_SIMULATION_TIME = 3600; // 1 hour safety cap
+            org.fog.utils.Config.MAX_SIMULATION_TIME = 86400; // 24 hours safety cap
             logger.info(String.format("SIMULATION_TIME set to: %d seconds (stop generating new tasks)",
                     org.fog.utils.Config.SIMULATION_TIME));
             logger.info(String.format("MAX_SIMULATION_TIME set to: %d seconds (safety timeout - actual termination when all tasks complete)",
