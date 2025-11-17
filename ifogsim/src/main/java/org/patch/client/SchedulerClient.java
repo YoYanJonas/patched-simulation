@@ -181,17 +181,6 @@ public class SchedulerClient implements AutoCloseable {
 
             logger.info(String.format("[IFOGSIM-SCHED-CALL] Calling gRPC addTaskToQueue: TaskID=%s", task.getTaskId()));
 
-            System.out.println(String.format(
-                    "[FLOW-GRPC-CLIENT-CALL-START] Time: %.2f - SchedulerClient - Preparing gRPC AddTaskToQueue request for TaskID=%s",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
-            System.out.println(String.format(
-                    "[FLOW-GRPC-CLIENT-REQUEST] Time: %.2f - SchedulerClient - Request details: TaskID=%s, TaskName=%s, Type=%s, CPU=%d, Mem=%d, Priority=%d, Nodes=%d, QueueContext=%s",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), task.getTaskName(),
-                    task.getTaskType().toString(), task.getCpuRequirement(), task.getMemoryRequirement(),
-                    task.getPriority(), availableNodes.size(),
-                    queueContext != null ? String.format("total_queue_size=%d", queueContext.getTotalQueueSize())
-                            : "NULL"));
-
             // Note: QueueContext should be set by caller via overloaded method
             AddTaskToQueueRequest.Builder requestBuilder = AddTaskToQueueRequest.newBuilder()
                     .setTask(task)
@@ -201,16 +190,9 @@ public class SchedulerClient implements AutoCloseable {
             // Add QueueContext if provided
             if (queueContext != null) {
                 requestBuilder.setQueueContext(queueContext);
-                System.out.println(String.format(
-                        "[FLOW-GRPC-CLIENT-QUEUE-CONTEXT] Time: %.2f - SchedulerClient - Added QueueContext to request: total_queue_size=%d",
-                        org.cloudbus.cloudsim.core.CloudSim.clock(), queueContext.getTotalQueueSize()));
             }
 
             AddTaskToQueueRequest request = requestBuilder.build();
-
-            System.out.println(String.format(
-                    "[FLOW-GRPC-CLIENT-CALL-NOW] Time: %.2f - SchedulerClient - EXECUTING gRPC call: addTaskToQueue for TaskID=%s (BLOCKING)",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId()));
 
             // Retry mechanism with exponential backoff for transient failures
             AddTaskToQueueResponse response = null;
@@ -285,9 +267,6 @@ public class SchedulerClient implements AutoCloseable {
                 return createFallbackAddTaskToQueueResponse(task, availableNodes);
             }
 
-            System.out.println(String.format(
-                    "[FLOW-GRPC-CLIENT-RESPONSE-RECEIVED] Time: %.2f - SchedulerClient - gRPC call COMPLETED for TaskID=%s (retries=%d)",
-                    org.cloudbus.cloudsim.core.CloudSim.clock(), task.getTaskId(), retryAttempt));
             long duration = System.currentTimeMillis() - startTime;
 
             // Record latency in statistics manager
@@ -301,12 +280,6 @@ public class SchedulerClient implements AutoCloseable {
                     task.getCpuRequirement(), task.getMemoryRequirement()));
 
             double respTime = org.cloudbus.cloudsim.core.CloudSim.clock();
-            System.out.println(String.format(
-                    "[FLOW-GRPC-CLIENT-RESPONSE-DETAILS] Time: %.2f - SchedulerClient - Response for TaskID=%s: Success=%s, Position=%d, Wait=%dms, Cached=%s, CacheAction=%s, CacheKey=%s, Duration=%dms",
-                    respTime, response.getTaskId(), response.getSuccess(), response.getQueuePosition(),
-                    response.getEstimatedWaitTimeMs(), response.getIsCachedTask(),
-                    response.getCacheAction() != null ? response.getCacheAction().toString() : "NONE",
-                    response.getCacheKey(), duration));
 
             logger.info(String.format(
                     "[IFOGSIM-SCHED-RESP] Time: %.2f - Received scheduler response: TaskID=%s, Success=%s, Position=%d, Wait=%dms, Cached=%s, Duration=%dms",
@@ -666,9 +639,6 @@ public class SchedulerClient implements AutoCloseable {
         long realStartTime = System.currentTimeMillis();
         double simulationStartTime = CloudSim.clock();
 
-        logger.info(String.format(
-                "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Starting async scheduling for task: %s (Device: %d)",
-                simulationStartTime, task.getTaskId(), deviceId));
 
         // Make async gRPC call
         java.util.concurrent.CompletableFuture<AddTaskToQueueResponse> future;
@@ -700,9 +670,6 @@ public class SchedulerClient implements AutoCloseable {
         long timeoutMs = EnhancedConfigurationLoader.getSimulationConfigLong(
                 "simulation.network.latency.timeout-ms", 5000);
 
-        logger.info(String.format(
-                "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Created pending request for task: %s (Est. Energy: %.6f J, Est. Cost: %.8f $, Timeout: %d ms)",
-                simulationStartTime, task.getTaskId(), estimatedEnergy, estimatedCost, timeoutMs));
         double timeoutSimulationSec = NetworkLatencyConverter.convertToSimulationTime(timeoutMs);
         CloudSim.send(deviceId, deviceId, timeoutSimulationSec,
                 org.patch.utils.ExtendedFogEvents.GRPC_SCHEDULER_TIMEOUT, pending);
@@ -728,9 +695,6 @@ public class SchedulerClient implements AutoCloseable {
             double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
                     simulationLatency, messageSizeBytes);
 
-            logger.info(String.format(
-                    "[DEBUG-ASYNC-SCHEDULER] Time: %.2f - Scheduling response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
-                    CloudSim.clock(), task.getTaskId(), realLatency, simulationLatency, actualEnergy, actualCost));
 
             // CRITICAL: Add to deferred queue instead of calling CloudSim.send() directly
             // This prevents ConcurrentModificationException by deferring until end of tick

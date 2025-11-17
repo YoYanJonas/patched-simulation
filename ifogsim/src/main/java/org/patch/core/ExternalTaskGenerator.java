@@ -103,9 +103,6 @@ public class ExternalTaskGenerator extends SimEntity {
     @Override
     public void startEntity() {
         logger.info("External task generator started - generating tasks at " + taskGenerationRate + " tasks/second");
-        System.out.println(String.format(
-                "[FLOW-EXTERNAL-GEN-START] Time: %.2f - External task generator started (ID:%d) - Rate: %.2f tasks/sec, CloudDevice: %d",
-                CloudSim.clock(), getId(), taskGenerationRate, cloudDeviceId));
     }
 
     @Override
@@ -170,24 +167,11 @@ public class ExternalTaskGenerator extends SimEntity {
         // Convert to tuple
         Tuple tuple = convertToTuple(task);
 
-        System.out.println(String.format(
-                "[FLOW-EXTERNAL-GEN-CREATE] Time: %.2f - Generated external task %d (AppId:%s, CPU:%d, Mem:%d, Out:%d) - Will send to cloud device %d (Total generated: %d)",
-                currentTime, task.getId(), task.getAppId(), task.getCloudletLength(), 
-                task.getInputSize(), task.getOutputSize(), cloudDeviceId, taskCounter));
-
-        System.out.println(String.format(
-                "[FLOW-EXTERNAL-GEN-SEND] Time: %.2f - Sending external task %d to cloud device %d for RL allocation (TaskID: %d)",
-                CloudSim.clock(), task.getId(), cloudDeviceId, task.getId()));
-
         // Send directly to cloud device for RL allocation
         sendNow(cloudDeviceId, FogEvents.TUPLE_ARRIVAL, tuple);
 
         logger.info("Generated external task " + task.getId() + " and sent to cloud device " + cloudDeviceId
                 + " for allocation");
-        
-        System.out.println(String.format(
-                "[FLOW-EXTERNAL-GEN-SENT] Time: %.2f - External task %d successfully sent to cloud device %d for allocation (Total generated: %d)",
-                CloudSim.clock(), task.getId(), cloudDeviceId, taskCounter));
     }
 
     /**

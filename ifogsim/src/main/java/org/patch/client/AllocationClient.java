@@ -463,9 +463,6 @@ public class AllocationClient implements AutoCloseable {
         CloudSim.send(deviceId, deviceId, timeoutSimulationSec, 
             org.patch.utils.ExtendedFogEvents.GRPC_ALLOCATOR_TIMEOUT, pending);
         
-        logger.info(String.format(
-            "[DEBUG-ASYNC-ALLOCATOR] Time: %.2f - Created pending allocation request for task: %s (Est. Energy: %.6f J, Est. Cost: %.8f $, Timeout: %d ms)",
-            simulationStartTime, taskId, estimatedEnergy, estimatedCost, timeoutMs));
         
         // When future completes, calculate actual latency and schedule event
         future.whenComplete((response, throwable) -> {
@@ -488,9 +485,6 @@ public class AllocationClient implements AutoCloseable {
             double actualCost = NetworkEnergyCostCalculator.calculateNetworkCost(
                 simulationLatency, messageSizeBytes);
             
-            logger.info(String.format(
-                "[DEBUG-ASYNC-ALLOCATOR] Time: %.2f - Scheduling allocation response event for task: %s (Real latency: %d ms, Sim latency: %.4f sec, Energy: %.6f J, Cost: %.8f $)",
-                CloudSim.clock(), taskId, realLatency, simulationLatency, actualEnergy, actualCost));
             
             // CRITICAL: Add to deferred queue instead of calling CloudSim.send() directly
             // This prevents ConcurrentModificationException by deferring until end of tick

@@ -310,9 +310,6 @@ public class StreamingQueueObserver {
             
             processQueueUpdate(response);
         } else {
-            System.err.println(String.format(
-                    "[FLOW-FOG-STREAMING-RECEIVE] Time: %.2f - FogNode (ID:%d) - ERROR: getSortedQueueFromScheduler returned NULL!",
-                    CloudSim.clock(), deviceId));
             // Treat null response as empty (conservative)
             consecutiveEmptyPolls++;
             currentPollInterval = streamingIntervalSeconds * ADAPTIVE_POLL_INTERVAL_MULTIPLIER;
@@ -371,40 +368,14 @@ public class StreamingQueueObserver {
                 }
 
                 // Request sorted queue from scheduler
-                double requestTime = CloudSim.clock();
-                System.out.println(String.format(
-                        "[FLOW-STREAMING-QUEUE-REQUEST-START] Time: %.2f - FogNode (ID:%d) - Requesting sorted queue from scheduler (GetSortedQueue)",
-                        requestTime, deviceId));
                 logger.info(String.format("[IFOGSIM-QUEUE-GET] Device %d requesting sorted queue from scheduler",
                         deviceId));
 
                 GetSortedQueueResponse response = schedulerClient.getSortedQueue(String.valueOf(deviceId));
-                double receiveTime = CloudSim.clock();
 
                 if (response != null) {
-                    System.out.println(String.format(
-                            "[FLOW-STREAMING-QUEUE-RESPONSE-RECEIVED] Time: %.2f - FogNode (ID:%d) - Received queue response: Tasks=%d, TotalTasks=%d, NodeID=%s, Timestamp=%d",
-                            receiveTime, deviceId, response.getQueueTasksCount(), response.getTotalTasks(),
-                            response.getNodeId(), response.getTimestamp()));
                     logger.info(String.format("[IFOGSIM-QUEUE-RESP] Device %d received queue: Tasks=%d",
                             deviceId, response.getQueueTasksCount()));
-
-                    // Log first 3 task IDs for tracing
-                    if (response.getQueueTasksCount() > 0) {
-                        StringBuilder taskIds = new StringBuilder();
-                        int maxTasks = Math.min(3, response.getQueueTasksCount());
-                        for (int i = 0; i < maxTasks && i < response.getQueueTasksList().size(); i++) {
-                            if (i > 0)
-                                taskIds.append(",");
-                            taskIds.append(response.getQueueTasksList().get(i).getTaskId());
-                        }
-                        if (response.getQueueTasksCount() > 3) {
-                            taskIds.append("... (+").append(response.getQueueTasksCount() - 3).append(" more)");
-                        }
-                        System.out.println(String.format(
-                                "[FLOW-STREAMING-QUEUE-TASKIDS] Time: %.2f - FogNode (ID:%d) - Task IDs in response: [%s]",
-                                receiveTime, deviceId, taskIds.toString()));
-                    }
 
                     return response;
                 } else {
@@ -489,12 +460,6 @@ public class StreamingQueueObserver {
     private void processQueueUpdate(GetSortedQueueResponse response) {
         try {
             int taskCount = response.getQueueTasksCount();
-            double currentTime = CloudSim.clock();
-
-            String nodeId = response.getNodeId();
-            System.out.println(String.format(
-                    "[FLOW-FOG-SCHEDULED-QUEUE-RECEIVE-START] Time: %.2f - FogNode (ID:%d) - Processing queue update from scheduler: Tasks=%d, TotalTasks=%d, NodeID=%s, Timestamp=%d",
-                    currentTime, deviceId, taskCount, response.getTotalTasks(), nodeId, response.getTimestamp()));
 
             // Log task details if queue has tasks (first 10)
             if (taskCount > 0 && taskCount <= 10) {
@@ -520,49 +485,19 @@ public class StreamingQueueObserver {
             updateScheduledQueue(response);
             int newSize = scheduledQueue.size();
 
-            System.out.println(String.format(
-                    "[FLOW-FOG-SCHEDULED-QUEUE-UPDATE] Time: %.2f - FogNode (ID:%d) - Scheduled queue updated: oldSize=%d, newSize=%d, QueueIsEmpty=%s (from streaming endpoint)",
-                    CloudSim.clock(), deviceId, oldSize, newSize, scheduledQueue.isEmpty() ? "YES" : "NO"));
-
             // Log if queue went from empty to non-empty (tasks are ready to execute)
             if (oldSize == 0 && newSize > 0) {
-                System.out.println(String.format(
-                        "[FLOW-FOG-SCHEDULED-QUEUE-READY] Time: %.2f - FogNode (ID:%d) - Scheduled queue NOW HAS TASKS! Ready for execution (queue size: %d)",
-                        CloudSim.clock(), deviceId, newSize));
                 logger.info(String.format("Scheduled queue now has %d tasks - ready for execution", newSize));
-
-                if (queueUpdateCallback != null) {
-                    System.out.println(String.format(
-                            "[FLOW-FOG-SCHEDULED-QUEUE-CALLBACK-READY] Time: %.2f - FogNode (ID:%d) - Queue callback IS SET - Will trigger execution",
-                            CloudSim.clock(), deviceId));
-                } else {
-                    System.err.println(String.format(
-                            "[FLOW-FOG-SCHEDULED-QUEUE-CALLBACK-MISSING] Time: %.2f - FogNode (ID:%d) - ERROR: Queue callback is NULL! Execution will NOT be triggered!",
-                            CloudSim.clock(), deviceId));
-                }
             }
 
             logger.fine("Successfully processed queue update for device: " + deviceId);
 
             // Trigger callback if queue has tasks to trigger task execution
             if (queueUpdateCallback != null && !scheduledQueue.isEmpty()) {
-                System.out.println(String.format(
-                        "[FLOW-FOG-SCHEDULED-QUEUE-CALLBACK] Time: %.2f - FogNode (ID:%d) - Triggering execution callback (scheduled queue size: %d) - Tasks ready for execution",
-                        CloudSim.clock(), deviceId, scheduledQueue.size()));
                 queueUpdateCallback.accept(scheduledQueue);
-                System.out.println(String.format(
-                        "[FLOW-FOG-SCHEDULED-QUEUE-CALLBACK] Time: %.2f - FogNode (ID:%d) - Execution callback triggered (scheduled queue size: %d)",
-                        CloudSim.clock(), deviceId, scheduledQueue.size()));
-            } else if (scheduledQueue.isEmpty()) {
-                System.out.println(String.format(
-                        "[FLOW-FOG-SCHEDULED-QUEUE-EMPTY] Time: %.2f - FogNode (ID:%d) - Scheduled queue is EMPTY, no execution callback triggered",
-                        CloudSim.clock(), deviceId));
             }
 
         } catch (Exception e) {
-            System.out.println(String.format(
-                    "[FLOW-FOG-SCHEDULED-QUEUE] Time: %.2f - FogNode (ID:%d) - ERROR processing queue update: %s",
-                    CloudSim.clock(), deviceId, e.getMessage()));
             logger.log(Level.WARNING, "Error processing queue update", e);
         }
     }
@@ -592,9 +527,6 @@ public class StreamingQueueObserver {
                     long cloudletId = taskInfo.getTuple().getCloudletId();
                     if (taskExecutionEngine != null && taskExecutionEngine.isCloudletIdActive(cloudletId)) {
                         skippedCount++;
-                        System.out.println(String.format(
-                                "[FLOW-FOG-SCHEDULED-QUEUE-SKIP] Time: %.2f - FogNode (ID:%d) - SKIPPING task %s (cloudletId=%d) - already executing",
-                                CloudSim.clock(), deviceId, taskInfo.getTaskId(), cloudletId));
                         logger.fine("Skipping task " + taskInfo.getTaskId() + " (cloudletId=" + cloudletId
                                 + ") - already in activeTasks");
                         continue; // Skip this task - it's already being processed
@@ -602,16 +534,9 @@ public class StreamingQueueObserver {
 
                     scheduledQueue.addTask(taskInfo);
                     addedCount++;
-
-                    System.out.println(String.format(
-                            "[FLOW-FOG-SCHEDULED-QUEUE-ADD] Time: %.2f - FogNode (ID:%d) - Adding task %s to scheduled queue (task %d/%d, queue size now: %d)",
-                            CloudSim.clock(), deviceId, taskInfo.getTaskId(), addedCount, response.getQueueTasksCount(),
-                            scheduledQueue.size()));
                 } else {
                     skippedCount++;
-                    System.err.println(String.format(
-                            "[FLOW-FOG-SCHEDULED-QUEUE-ERROR] Time: %.2f - FogNode (ID:%d) - Failed to convert task %s to TaskInfo - SKIPPED",
-                            CloudSim.clock(), deviceId, task.getTaskId()));
+                    logger.warning("Failed to convert task " + task.getTaskId() + " to TaskInfo - SKIPPED");
                 }
             }
 
@@ -622,10 +547,6 @@ public class StreamingQueueObserver {
             logger.fine("Updated scheduled queue with " + response.getQueueTasksCount() +
                     " tasks for device: " + deviceId);
 
-            System.out.println(String.format(
-                    "[FLOW-FOG-SCHEDULED-QUEUE-UPDATE-SUMMARY] Time: %.2f - FogNode (ID:%d) - Queue update: added=%d, skipped=%d, total_in_response=%d, queue_size_now=%d",
-                    CloudSim.clock(), deviceId, addedCount, skippedCount, response.getQueueTasksCount(),
-                    scheduledQueue.size()));
 
             // Trigger callback if set
             if (queueUpdateCallback != null) {
@@ -645,24 +566,13 @@ public class StreamingQueueObserver {
      */
     private ScheduledQueue.TaskInfo convertTaskToTaskInfo(Task task) {
         try {
-            System.out.println(String.format(
-                    "[FLOW-QUEUE-OBSERVER-CONVERT] Time: %.2f - FogNode (ID:%d) - Converting task %s to TaskInfo (CPU=%d, Mem=%d)",
-                    CloudSim.clock(), deviceId, task.getTaskId(), task.getCpuRequirement(),
-                    task.getMemoryRequirement()));
-
             // Convert proto task to tuple
             Tuple tuple = convertProtoTaskToTuple(task);
 
             if (tuple == null) {
-                System.err.println(String.format(
-                        "[FLOW-QUEUE-OBSERVER-CONVERT-ERROR] Time: %.2f - FogNode (ID:%d) - ERROR: convertProtoTaskToTuple returned NULL for task %s!",
-                        CloudSim.clock(), deviceId, task.getTaskId()));
+                logger.warning("convertProtoTaskToTuple returned NULL for task: " + task.getTaskId());
                 return null;
             }
-
-            System.out.println(String.format(
-                    "[FLOW-QUEUE-OBSERVER-CONVERT] Time: %.2f - FogNode (ID:%d) - Successfully converted task %s to tuple (tuple ID: %d)",
-                    CloudSim.clock(), deviceId, task.getTaskId(), tuple.getCloudletId()));
 
             // Extract cache information from Task metadata
             boolean isCached = false;
@@ -694,21 +604,6 @@ public class StreamingQueueObserver {
                     }
                     logger.warning("Failed to parse cache_action: " + cacheActionStr + ", using: " + cacheAction);
                 }
-
-                System.out.println(String.format(
-                        "[FLOW-QUEUE-OBSERVER-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s cache metadata: is_cached=%s, cache_key=%s, cache_action=%s (metadata size=%d)",
-                        CloudSim.clock(), deviceId, task.getTaskId(), isCachedStr != null ? isCachedStr : "null",
-                        cacheKey.isEmpty() ? "NONE" : cacheKey, cacheAction, task.getMetadataMap().size()));
-            } else {
-                System.out.println(String.format(
-                        "[FLOW-QUEUE-OBSERVER-CACHE] Time: %.2f - FogNode (ID:%d) - Task %s has NO metadata map",
-                        CloudSim.clock(), deviceId, task.getTaskId()));
-            }
-
-            if (isCached) {
-                System.out.println(String.format(
-                        "[FLOW-QUEUE-OBSERVER] Time: %.2f - FogNode (ID:%d) - Task %s has cache info: isCached=true, cacheKey=%s, cacheAction=%s",
-                        CloudSim.clock(), deviceId, task.getTaskId(), cacheKey, cacheAction));
             }
 
             // Create TaskInfo with cache information from metadata (including cacheAction)

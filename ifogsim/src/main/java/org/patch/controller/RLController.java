@@ -207,10 +207,6 @@ public class RLController extends Controller {
                 // Graceful shutdown - stop generating NEW tasks, start completion checking
                 double currentTime = CloudSim.clock();
 
-                System.out.println(String.format(
-                        "[STOP-SIMULATION] Time: %.2f - Processing STOP_SIMULATION event - Stopping NEW task generation, starting completion checks...",
-                        currentTime));
-
                 logger.info(String.format(
                         "[STOP-SIMULATION] Time: %.2f - All task generators should stop generating NEW tasks now. Starting periodic completion checks.",
                         currentTime));

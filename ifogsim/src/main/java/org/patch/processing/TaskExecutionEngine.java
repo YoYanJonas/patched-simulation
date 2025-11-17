@@ -102,9 +102,6 @@ public class TaskExecutionEngine {
 
         try {
             if (scheduledQueue == null) {
-                System.err.println(String.format(
-                        "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - ERROR: Scheduled queue is NULL!",
-                        currentTime, fogDevice.getId()));
                 logger.warning("Scheduled queue is null, cannot process tasks");
                 return false;
             }
@@ -116,15 +113,10 @@ public class TaskExecutionEngine {
             // Get the next task from the head of the queue
             taskInfo = scheduledQueue.getNextTask();
             if (taskInfo == null) {
-                System.err.println(String.format(
-                        "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - ERROR: getNextTask() returned NULL (queue size: %d)",
-                        currentTime, fogDevice.getId(), scheduledQueue.size()));
+                logger.warning("getNextTask() returned NULL (queue size: " + scheduledQueue.size() + ")");
                 return false;
             }
         } catch (Exception e) {
-            System.err.println(String.format(
-                    "[FLOW-FOG-EXECUTE] Time: %.2f - FogNode (ID:%d) - ERROR checking scheduled queue: %s",
-                    currentTime, fogDevice.getId(), e.getMessage()));
             logger.log(Level.SEVERE, "Error checking scheduled queue state", e);
             return false;
         }
@@ -204,9 +196,7 @@ public class TaskExecutionEngine {
             }
         }
 
-        // Optional: Detect cache mismatch (for debugging and synchronization)
-        // If scheduler says NOT cached, check if local cache has it (mismatch
-        // detection)
+        // If scheduler says NOT cached, check if local cache has it (mismatch detection)
         if (!isCachedByScheduler && cacheEnabled && cacheManager != null) {
             TaskCacheManager.CacheResult localCacheResult = cacheManager.checkCache(taskId);
             if (localCacheResult == TaskCacheManager.CacheResult.HIT_VALID) {
@@ -524,7 +514,6 @@ public class TaskExecutionEngine {
                 state.setCapturedRamUtilization(actualRamUtilization);
                 state.setUtilizationCaptured(true);
 
-                // Log for debugging
                 logger.info(String.format(
                         "[TASK-EXEC-CAPTURE] Time: %.2f - cloudletId: %d, taskId: %s, Captured utilization: CPU=%.2f%% (task=%d MI / allocated=%.2f MIPS), Memory=%.2f%% (allocated=%d MB / total=%d MB)",
                         CloudSim.clock(), tuple.getCloudletId(), taskId,
@@ -558,7 +547,6 @@ public class TaskExecutionEngine {
             // Calculate absolute finish time for logging (current time + duration)
             double estimatedFinishTime = CloudSim.clock() + processingTime;
 
-            // Log execution start for debugging
             logger.info(String.format(
                     "[TASK-EXEC-START] Time: %.2f - cloudletId: %d, estimatedDuration: %.2f, processingTime: %.2f, estimatedFinishTime: %.2f",
                     CloudSim.clock(), tuple.getCloudletId(), estimatedDuration, processingTime, estimatedFinishTime));

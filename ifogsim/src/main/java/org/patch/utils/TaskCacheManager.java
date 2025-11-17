@@ -65,8 +65,6 @@ public class TaskCacheManager {
 
         if (entry == null) {
             cacheMisses++;
-            logger.info(String.format("[DEBUG-CACHE-CHECK] Task: %s - Cache MISS (entry not found), misses=%d", 
-                taskId, cacheMisses));
             return CacheResult.MISS;
         }
 
@@ -80,15 +78,11 @@ public class TaskCacheManager {
             cache.remove(taskId);
             cacheTimestamps.remove(taskId);
             cacheInvalidations++;
-            logger.info(String.format("[DEBUG-CACHE-CHECK] Task: %s - Cache EXPIRED (age=%d ms, TTL=%d ms), invalidations=%d", 
-                taskId, age, cacheTTLMs, cacheInvalidations));
             return CacheResult.HIT_INVALID;
         }
 
         // Cache hit - valid
         cacheHits++;
-        logger.info(String.format("[DEBUG-CACHE-CHECK] Task: %s - Cache HIT (age=%d ms, TTL=%d ms), hits=%d", 
-            taskId, age, cacheTTLMs, cacheHits));
         return CacheResult.HIT_VALID;
     }
 
@@ -102,8 +96,6 @@ public class TaskCacheManager {
         // Check cache size limit
         int sizeBefore = cache.size();
         if (cache.size() >= maxCacheSize) {
-            logger.info(String.format("[DEBUG-CACHE-STORE] Task: %s - Cache full (size=%d), cleaning up old entries", 
-                taskId, cache.size()));
             cleanupOldEntries();
         }
 
@@ -111,9 +103,6 @@ public class TaskCacheManager {
         cacheTimestamps.put(taskId, System.currentTimeMillis());
         cacheStores++;
         int sizeAfter = cache.size();
-
-        logger.info(String.format("[DEBUG-CACHE-STORE] Task: %s - Stored in cache (size: %d -> %d, stores=%d)", 
-            taskId, sizeBefore, sizeAfter, cacheStores));
     }
 
     /**

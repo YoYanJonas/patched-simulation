@@ -448,10 +448,7 @@ public class RLCloudDevice extends FogDevice {
                 (tuple.getDestModuleName() != null && tuple.getDestModuleName().equals("external_task"));
 
         if (isExternalTask) {
-            System.out.println(String.format(
-                    "[FLOW-CLOUD-ARRIVAL] Time: %.2f - Cloud (ID:%d) received EXTERNAL task %d from %s (TupleType:%s, DestModule:%s) - Starting allocation process",
-                    currentTime, getId(), tuple.getCloudletId(), sourceName,
-                    tuple.getTupleType(), tuple.getDestModuleName()));
+            // External task processing
         }
 
         // Send ACK back to source
@@ -491,31 +488,13 @@ public class RLCloudDevice extends FogDevice {
             executeTuple(ev, tuple.getDestModuleName());
 
         } else if (tuple.getDestModuleName() != null) {
-            if (isExternalTask) {
-                System.out.println(String.format(
-                        "[FLOW-CLOUD-ALLOC-START] Time: %.2f - Cloud (ID:%d) - External task %d needs allocation decision (DestModule:%s, CPU:%.0f, Mem:%.0f) - Calling allocator",
-                        CloudSim.clock(), getId(), tuple.getCloudletId(), tuple.getDestModuleName(),
-                        tuple.getCloudletLength(), tuple.getCloudletFileSize()));
-            }
-
             // Use RL allocation for placement decision
             int targetNodeId = getRLAllocationDecision(tuple);
 
             if (targetNodeId > 0) {
-                if (isExternalTask) {
-                    System.out.println(String.format(
-                            "[FLOW-CLOUD-ALLOC-SUCCESS] Time: %.2f - Cloud (ID:%d) - Allocator selected fog node %d for external task %d - Forwarding to fog node",
-                            CloudSim.clock(), getId(), targetNodeId, tuple.getCloudletId()));
-                }
-
                 // Forward to selected fog node using enhanced forwarding
                 forwardTaskToFogNode(tuple, String.valueOf(targetNodeId));
             } else {
-                if (isExternalTask) {
-                    System.out.println(String.format(
-                            "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Allocation FAILED for external task %d, using fallback routing",
-                            CloudSim.clock(), getId(), tuple.getCloudletId()));
-                }
 
                 // Fallback to default routing
                 if (tuple.getDirection() == Tuple.UP)
@@ -570,10 +549,6 @@ public class RLCloudDevice extends FogDevice {
         totalAllocationDecisions++;
 
         try {
-            System.out.println(String.format(
-                    "[FLOW-CLOUD-ALLOC-REQUEST] Time: %.2f - Cloud (ID:%d) - Requesting allocation for task %d (CPU=%.0f, Mem=%.0f, BW=%.0f, Priority=1) - Calling allocator service",
-                    currentTime, getId(), tuple.getCloudletId(), tuple.getCloudletLength(),
-                    tuple.getCloudletFileSize(), tuple.getCloudletOutputSize()));
 
             logger.info(String.format(
                     "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Task %d arrived at cloud, requesting allocation (CPU=%.2f, Mem=%.2f)",
@@ -599,11 +574,6 @@ public class RLCloudDevice extends FogDevice {
 
             long latency = System.currentTimeMillis() - startTime;
             totalAllocationLatency += latency;
-
-            System.out.println(String.format(
-                    "[FLOW-CLOUD-ALLOC-RESPONSE] Time: %.2f - Cloud (ID:%d) - Allocator response: task %d -> node %s, success=%s, latency=%dms",
-                    currentTime, getId(), tuple.getCloudletId(), response.getAllocatedNodeId(), response.getSuccess(),
-                    latency));
 
             logger.info(String.format(
                     "[FLOW-CLOUD-ALLOC] Time: %.2f - Cloud (ID:%d) - Allocation response received: task %d -> node %s, success=%s, latency=%dms",
@@ -667,43 +637,21 @@ public class RLCloudDevice extends FogDevice {
             // Find fog node by ID
             int fogNodeId = findFogNodeById(allocatedNodeId);
             if (fogNodeId > 0) {
-                System.out.println(String.format(
-                        "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) forwarding external task %d to fog node %d (allocated: %s, Total forwarded: %d)",
-                        currentTime, getId(), task.getCloudletId(), fogNodeId, allocatedNodeId, forwardTaskCount));
-
                 // Send task to fog node's unscheduled queue
                 send(fogNodeId, 0, FogEvents.TUPLE_ARRIVAL, task);
-
-                // Log forwarding (first 100, then every 50th)
-                if (forwardTaskCount <= 100 || forwardTaskCount % 50 == 0) {
-                    System.out.println(String.format(
-                            "[CLOUD-FORWARD] Cloud (ID:%d) - Task %d forwarded to fog node %d (allocated: %s) at time %.2f (Total forwarded: %d)",
-                            getId(), task.getCloudletId(), fogNodeId, allocatedNodeId, CloudSim.clock(),
-                            forwardTaskCount));
-                }
 
                 logger.info("Task " + task.getCloudletId() + " forwarded to fog node " + fogNodeId + " (allocated: "
                         + allocatedNodeId + ")");
 
-                System.out.println(String.format(
-                        "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) - External task %d successfully sent to fog node %d",
-                        CloudSim.clock(), getId(), task.getCloudletId(), fogNodeId));
-
                 // Emit forwarding event for monitoring
                 schedule(getId(), 0, ExtendedFogEvents.TASK_FORWARDED, task);
             } else {
-                System.out.println(String.format(
-                        "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) - Fog node %s NOT FOUND, using fallback routing for task %d",
-                        currentTime, getId(), allocatedNodeId, task.getCloudletId()));
 
                 logger.warning("Fog node " + allocatedNodeId + " not found, using fallback routing");
                 // Fallback to default routing
                 sendDown(task, Integer.parseInt(allocatedNodeId));
             }
         } catch (Exception e) {
-            System.out.println(String.format(
-                    "[FLOW-CLOUD-FORWARD] Time: %.2f - Cloud (ID:%d) - ERROR forwarding task %d to fog node %s: %s",
-                    CloudSim.clock(), getId(), task.getCloudletId(), allocatedNodeId, e.getMessage()));
 
             logger.severe("Failed to forward task to fog node: " + e.getMessage());
             // Fallback to default routing
