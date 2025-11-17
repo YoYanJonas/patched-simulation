@@ -7,6 +7,7 @@ import (
 	pb "scheduler-grpc-server/api/proto"
 	"scheduler-grpc-server/pkg/config"
 	"scheduler-grpc-server/pkg/logger"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,7 @@ type QLearningScheduler struct {
 	config        config.RLConfig
 	rewardWeights config.RewardWeights
 	qTable        map[string]map[ActionType]float64
+	qTableMu      sync.RWMutex // Protects qTable from concurrent access
 	isLearning    bool
 	stats         map[string]interface{}
 	rng           *rand.Rand
@@ -75,7 +77,8 @@ func NewQLearningScheduler(cfg config.RLConfig, weights config.RewardWeights) *Q
 
 	logger.GetLogger().Infof("[Q-LEARNING-INIT] Q-learning scheduler initialized: LearningRate=%.3f, ExplorationRate=%.3f, DiscountFactor=%.3f",
 		cfg.LearningRate, cfg.ExplorationRate, cfg.DiscountFactor)
-	logger.GetLogger().Infof("[Q-LEARNING-INIT] Initial Q-table size: %d (empty)", len(q.qTable))
+	// Q-table is empty at initialization, no need for lock
+	logger.GetLogger().Infof("[Q-LEARNING-INIT] Initial Q-table size: %d (empty)", 0)
 	logger.GetLogger().Infof("[EPISODE-CONFIG] Episode config: Type=%s, TasksPerEpisode=%d, TimePerEpisodeMinutes=%d, ResetOnEnd=%t",
 		cfg.EpisodeConfig.Type, cfg.EpisodeConfig.TasksPerEpisode, cfg.EpisodeConfig.TimePerEpisodeMinutes, cfg.EpisodeConfig.ResetOnEpisodeEnd)
 
@@ -89,8 +92,13 @@ func (q *QLearningScheduler) Name() string {
 
 // Schedule schedules tasks using Q-learning
 func (q *QLearningScheduler) Schedule(tasks []TaskEntry, nodeManager SingleNodeManager) []TaskEntry {
+	// Acquire read lock for Q-table size check
+	q.qTableMu.RLock()
+	qTableSize := len(q.qTable)
+	q.qTableMu.RUnlock()
+	
 	logger.GetLogger().Infof("[Q-LEARNING-SCHEDULE] Schedule called: Tasks=%d, Episode=%d, TaskCount=%d, QTableSize=%d, IsLearning=%t",
-		len(tasks), q.currentEpisode, q.episodeTaskCount, len(q.qTable), q.isLearning)
+		len(tasks), q.currentEpisode, q.episodeTaskCount, qTableSize, q.isLearning)
 	
 	if len(tasks) <= 1 {
 		return tasks
@@ -198,7 +206,9 @@ func (q *QLearningScheduler) handleEpisodeCompletion() {
 	episode := q.currentEpisode
 	
 	// Diagnostic logging: Q-table state at episode end
+	q.qTableMu.RLock()
 	qTableSize := len(q.qTable)
+	q.qTableMu.RUnlock()
 	taskCount := q.episodeTaskCount
 	episodeDuration := time.Since(q.episodeStartTime)
 
@@ -297,9 +307,11 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 	
 	stateKey := state.GetStateKey()
 
-	// Diagnostic logging: Q-table state before selection (CHANGED TO INFO LEVEL)
+	// Acquire read lock for Q-table state check
+	q.qTableMu.RLock()
 	qTableSize := len(q.qTable)
 	stateExists := q.qTable[stateKey] != nil
+	q.qTableMu.RUnlock()
 
 	logger.GetLogger().Infof("[Q-LEARNING-SELECT] Selecting action: State=%s, QTableSize=%d, StateExists=%v, Episode=%d, TaskCount=%d, ExplorationRate=%.3f",
 		stateKey, qTableSize, stateExists, q.currentEpisode, q.episodeTaskCount, q.config.ExplorationRate)
@@ -312,10 +324,14 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 		q.cleanupFrequentStatesCache()
 	}
 
-	// Initialize Q-values for this state if not exists
-	if _, exists := q.qTable[stateKey]; !exists {
-		q.initializeStateQValues(stateKey)
-	} else {
+	// Initialize Q-values for this state if not exists (with write lock)
+	if !stateExists {
+		q.qTableMu.Lock()
+		// Double-check after acquiring lock (another goroutine might have initialized it)
+		if _, exists := q.qTable[stateKey]; !exists {
+			q.initializeStateQValuesUnsafe(stateKey) // Unsafe version called while holding lock
+		}
+		q.qTableMu.Unlock()
 	}
 
 	// Epsilon-greedy action selection
@@ -336,7 +352,8 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 	// Exploit: choose best action with optimized lookup and caching
 	result := q.getBestActionOptimized(stateKey)
 	
-	// Get best Q-value and log ALL Q-values for this state
+	// Get best Q-value and log ALL Q-values for this state (with read lock)
+	q.qTableMu.RLock()
 	bestQValue := math.Inf(-1)
 	allQValues := make(map[int]float64)
 	if stateActions, exists := q.qTable[stateKey]; exists {
@@ -347,12 +364,11 @@ func (q *QLearningScheduler) SelectAction(state *StateFeatures) Action {
 			}
 		}
 	}
+	finalQTableSize := len(q.qTable)
+	q.qTableMu.RUnlock()
+	
 	logger.GetLogger().Infof("[Q-LEARNING-SELECT-EXPLOIT] Exploiting: Best action selected, Type=%d, Description=%s, QValue=%.3f, Episode=%d",
 		result.Type, result.Description, bestQValue, q.currentEpisode)
-	
-
-	// Diagnostic logging: Q-table state after selection (CHANGED TO INFO LEVEL)
-	finalQTableSize := len(q.qTable)
 
 	logger.GetLogger().Infof("[Q-LEARNING-SELECT] Action selected: %s, QTableSize=%d (after selection), Episode=%d",
 		result.Description, finalQTableSize, q.currentEpisode)
@@ -373,6 +389,8 @@ func (q *QLearningScheduler) getRandomAction() Action {
 
 // getBestActionOptimized finds the best action with optimized Q-table lookup
 func (q *QLearningScheduler) getBestActionOptimized(stateKey string) Action {
+	// Acquire read lock for Q-table access
+	q.qTableMu.RLock()
 	stateActions := q.qTable[stateKey]
 	
 	// Pre-allocate for better performance
@@ -386,6 +404,7 @@ func (q *QLearningScheduler) getBestActionOptimized(stateKey string) Action {
 			bestAction = actionType
 		}
 	}
+	q.qTableMu.RUnlock()
 
 	// Return the action with the best Q-value using optimized lookup
 	return q.getActionByType(bestAction)
@@ -431,12 +450,15 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 	logger.GetLogger().Infof("[Q-LEARNING-UPDATE] UpdatePolicy called: State=%s, NextState=%s, Action=%s, Reward=%.3f, Done=%t, Episode=%d",
 		currentStateKey, nextStateKey, experience.Action.Description, experience.Reward, experience.Done, q.currentEpisode)
 
+	// Acquire write lock for Q-table updates
+	q.qTableMu.Lock()
+	
 	// Track Q-table updates
 	oldSize := len(q.qTable)
 
-	// Initialize Q-values if not exists
-	q.initializeStateQValues(currentStateKey)
-	q.initializeStateQValues(nextStateKey)
+	// Initialize Q-values if not exists (using unsafe version since we hold the lock)
+	q.initializeStateQValuesUnsafe(currentStateKey)
+	q.initializeStateQValuesUnsafe(nextStateKey)
 
 	// Get current Q-value
 	currentQ := q.qTable[currentStateKey][experience.Action.Type]
@@ -467,12 +489,13 @@ func (q *QLearningScheduler) UpdatePolicy(experience *Experience) error {
 	newQ := currentQ + q.config.LearningRate*(targetQ-currentQ)
 	q.qTable[currentStateKey][experience.Action.Type] = newQ
 	
-	// Mark model as dirty (lightweight - no I/O, just sets flag)
+	newSize := len(q.qTable)
+	q.qTableMu.Unlock()
+	
+	// Mark model as dirty (lightweight - no I/O, just sets flag) - do this outside lock
 	if q.onDirty != nil {
 		q.onDirty()
 	}
-
-	newSize := len(q.qTable)
 
 	// Log Q-table update (CHANGED TO INFO LEVEL)
 	logger.GetLogger().Infof("[Q-LEARNING-UPDATE] Q-table updated: State=%s, Action=%s, Reward=%.3f, QTableSize=%d->%d, CurrentQ=%.3f, NewQ=%.3f, Episode=%d",
@@ -504,7 +527,16 @@ func (q *QLearningScheduler) getActionDescription(actionType ActionType) string 
 }
 
 // initializeStateQValues initializes Q-values for a state
+// This method acquires its own lock - use initializeStateQValuesUnsafe if you already hold the lock
 func (q *QLearningScheduler) initializeStateQValues(stateKey string) {
+	q.qTableMu.Lock()
+	defer q.qTableMu.Unlock()
+	q.initializeStateQValuesUnsafe(stateKey)
+}
+
+// initializeStateQValuesUnsafe initializes Q-values for a state without acquiring lock
+// Caller must hold q.qTableMu.Lock()
+func (q *QLearningScheduler) initializeStateQValuesUnsafe(stateKey string) {
 	if _, exists := q.qTable[stateKey]; !exists {
 		q.qTable[stateKey] = make(map[ActionType]float64)
 		// Use getAvailableActions to get all actions
@@ -556,7 +588,23 @@ func (q *QLearningScheduler) GetStats() map[string]interface{} {
 	q.stats["discount_factor"] = q.config.DiscountFactor
 	q.stats["exploration_rate"] = q.config.ExplorationRate
 	q.stats["is_learning"] = q.isLearning
-	q.stats["q_table_size"] = len(q.qTable)
+	
+	// Acquire read lock for Q-table access
+	q.qTableMu.RLock()
+	qTableSize := len(q.qTable)
+	
+	// Calculate average Q-values
+	totalQ := 0.0
+	count := 0
+	for _, actions := range q.qTable {
+		for _, qValue := range actions {
+			totalQ += qValue
+			count++
+		}
+	}
+	q.qTableMu.RUnlock()
+	
+	q.stats["q_table_size"] = qTableSize
 
 	// Episode statistics - now using currentEpisode field actively
 	q.stats["current_episode"] = q.currentEpisode
@@ -570,16 +618,6 @@ func (q *QLearningScheduler) GetStats() map[string]interface{} {
 	} else {
 		progress := float64(q.episodeTaskCount) / float64(q.config.EpisodeConfig.TasksPerEpisode)
 		q.stats["episode_progress"] = progress
-	}
-
-	// Calculate average Q-values
-	totalQ := 0.0
-	count := 0
-	for _, actions := range q.qTable {
-		for _, qValue := range actions {
-			totalQ += qValue
-			count++
-		}
 	}
 
 	if count > 0 {
@@ -607,6 +645,9 @@ func (q *QLearningScheduler) Configure(params map[string]interface{}) error {
 
 // GetQTable returns a copy of the Q-table for inspection
 func (q *QLearningScheduler) GetQTable() map[string]map[ActionType]float64 {
+	// Acquire read lock for Q-table access
+	q.qTableMu.RLock()
+	
 	// CRITICAL DIAGNOSTIC: Log original Q-table before copying
 	originalSize := len(q.qTable)
 	logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] GetQTable called: Original q.qTable size = %d", originalSize)
@@ -634,6 +675,8 @@ func (q *QLearningScheduler) GetQTable() map[string]map[ActionType]float64 {
 	}
 	
 	copySize := len(qTableCopy)
+	q.qTableMu.RUnlock()
+	
 	logger.GetLogger().Warnf("[Q-LEARNING-GET-QTABLE] GetQTable returning: Copy size = %d (original was %d)", copySize, originalSize)
 	if originalSize != copySize {
 		logger.GetLogger().Errorf("[Q-LEARNING-GET-QTABLE] CRITICAL MISMATCH: Original size (%d) != Copy size (%d)!", originalSize, copySize)
@@ -744,8 +787,11 @@ func (q *QLearningScheduler) ProcessTaskCompletion(task TaskEntry, report *pb.Ta
 
 	// Immediate Q-table update confirmation
 	if q.isLearning {
+		q.qTableMu.RLock()
+		qTableSize := len(q.qTable)
+		q.qTableMu.RUnlock()
 		logger.GetLogger().Infof("[QLEARNING-COMPLETE-SUCCESS] Q-table updated for task %s (Episode %d, QTableSize=%d)", 
-			task.GetTaskID(), q.currentEpisode, len(q.qTable))
+			task.GetTaskID(), q.currentEpisode, qTableSize)
 	}
 
 	return nil
@@ -807,6 +853,8 @@ func (q *QLearningScheduler) SetRewardWeights(weights config.RewardWeights) {
 }
 
 func (q *QLearningScheduler) SetQTable(qTable map[string]map[ActionType]float64) {
+	q.qTableMu.Lock()
+	defer q.qTableMu.Unlock()
 	q.qTable = qTable
 }
 
