@@ -99,7 +99,7 @@ func (rc *RewardCalculator) calculateMetrics(
 	}
 
 	if state != nil {
-		// DEBUG CODE: Do not use placeholder values for latency calculation
+		// Do not use placeholder values for latency calculation
 		// state.AvgWaitingTime is hardcoded to 1.0 (placeholder)
 		// state.AvgExecutionTime is estimated (not actual)
 		// Latency should come from actual completion reports, not placeholders

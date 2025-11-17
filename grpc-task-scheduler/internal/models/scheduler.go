@@ -723,10 +723,9 @@ func (se *SchedulerEngine) storeExperienceForNewTask(taskEntry *TaskEntry, cloud
 		return
 	}
 
-	// DEBUG CODE: Verify queue size matches expected value
+	// Verify queue size matches expected value (silent check - no log needed)
 	if actualQueueSize != queueSize {
-		logger.GetLogger().Warnf("[DEBUG CODE] [SCHEDULER-STORE-EXP-QUEUE-MISMATCH] Queue size mismatch: expected=%d, actual=%d, cloudletId=%s", 
-			queueSize, actualQueueSize, cloudletId)
+		// Queue size mismatch detected but not critical - state extraction uses actual size
 	}
 
 	// Convert to TaskEntry slice for state extraction
@@ -744,10 +743,6 @@ func (se *SchedulerEngine) storeExperienceForNewTask(taskEntry *TaskEntry, cloud
 		tracker = se.nodeStatusTracker
 	}
 	state := rl.ExtractStateFeatures(taskEntries, tracker)
-	
-	// DEBUG CODE: Log actual queue length used in state extraction
-	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-STORE-EXP-STATE-QUEUE] State extracted with QueueLength=%d (from %d tasks), StateKey=%s, cloudletId=%s",
-		state.QueueLength, actualQueueSize, state.GetStateKey(), cloudletId)
 
 	// Select action using Q-learning policy
 	action := qlScheduler.SelectAction(state)
@@ -755,19 +750,11 @@ func (se *SchedulerEngine) storeExperienceForNewTask(taskEntry *TaskEntry, cloud
 	// Get current episode
 	currentEpisode := qlScheduler.GetCurrentEpisode()
 
-	// DEBUG CODE: Track experience storage from task addition
-	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-STORE-EXP-FROM-ADD] About to store experience from task addition: cloudletId=%s, QueueSize=%d, Episode=%d",
-		cloudletId, queueSize, currentEpisode)
-	
 	// Store incomplete experience
 	expManager.StoreIncompleteExperience(cloudletId, state, action, currentEpisode)
 
 	logger.GetLogger().Infof("[SCHEDULER-EXPERIENCE-STORED] Experience stored immediately for task: cloudletId=%s, Action=%s, StateKey=%s, QueueSize=%d, Episode=%d",
 		cloudletId, action.Description, state.GetStateKey(), queueSize, currentEpisode)
-	
-	// DEBUG CODE: Track total experiences stored from task addition
-	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-STORE-EXP-FROM-ADD-COMPLETE] Experience stored from task addition completed: cloudletId=%s",
-		cloudletId)
 }
 
 func (se *SchedulerEngine) GetQueueStatus() map[string]interface{} {
@@ -951,10 +938,6 @@ func (se *SchedulerEngine) ProcessTaskCompletion(req *pb.TaskCompletionReport) e
 	// Get actual current queue length (before task is removed from scheduled tasks)
 	currentQueueLength := se.queue.Size()
 
-	// DEBUG CODE: Track completion report arrival
-	logger.GetLogger().Infof("[DEBUG CODE] [SCHEDULER-COMPLETION-BEFORE-EXP] About to complete experience: cloudletId=%s, HasNodeStatus=%t, QueueLength=%d, ReportTasks=%d",
-		cloudletIdForCompletion, req.NodeStatus != nil, currentQueueLength, len(req.Tasks))
-	
 	// **KEY PART: Delegate to Agent for RL experience handling** (before deleting from map)
 	if se.agent != nil && se.agent.IsEnabled() {
 		// The Agent should handle experience collection through AlgorithmManager

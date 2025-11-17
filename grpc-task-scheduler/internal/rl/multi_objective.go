@@ -738,9 +738,6 @@ func (morc *MultiObjectiveRewardCalculator) calculateMetricsFromReport(
 	nodeStatus *pb.FogNode, // NEW: Node status at completion time
 ) SystemPerformanceMetrics {
 
-	// DEBUG CODE: Track actual latency from completion report vs placeholder values
-	logger.GetLogger().Infof("[DEBUG CODE] [MULTI-OBJ-METRICS-LATENCY] Using actual latency from completion report: AverageLatencyMs=%.2f (NOT using placeholder AvgWaitingTime+AvgExecutionTime)",
-		metrics.AverageLatencyMs)
 	
 	// Convert protobuf metrics to internal format
 	derivedMetrics := SystemPerformanceMetrics{

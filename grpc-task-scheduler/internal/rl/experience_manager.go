@@ -86,17 +86,7 @@ func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *Sta
 	// NOTE: taskID parameter is cloudletId (unique instance identifier from iFogSim)
 	// This is NOT the pattern-based taskId - cloudletId and taskId are sent separately
 	// cloudletId is used for experience lookup, taskId is used for cache operations
-	// DEBUG CODE: Entry to StoreIncompleteExperience (before lock)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-ENTRY] StoreIncompleteExperience called: cloudletId=%s, Action=%s, StateKey=%s, QueueLength=%d, Episode=%d",
-		taskID, action.Description, state.GetStateKey(), state.QueueLength, episode)
-	
 	em.mu.Lock()
-	
-	// DEBUG CODE: After lock acquired
-	currentCountBeforeStore := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-AFTER-LOCK] Lock acquired: cloudletId=%s, CurrentIncompleteCount=%d, Episode=%d",
-		taskID, currentCountBeforeStore, episode)
-	
 	defer em.mu.Unlock()
 
 	// Check if experience exists for this task in the current episode
@@ -122,20 +112,12 @@ func (em *ExperienceManager) StoreIncompleteExperience(taskID string, state *Sta
 		Episode:   episode, // Store episode number
 	}
 	
-	// DEBUG CODE: After storing
 	totalIncomplete := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-AFTER-STORE] Experience stored: cloudletId=%s, TotalIncomplete=%d (was %d), Timeout=%s, Episode=%d",
-		taskID, totalIncomplete, currentCountBeforeStore, em.incompleteExperiences[taskID].Timeout.Format(time.RFC3339), episode)
-	
 	logger.GetLogger().Infof("[EXP-MGR-STORE] Experience stored successfully: cloudletId=%s, TotalIncomplete=%d, Timeout=%s, Episode=%d",
 		taskID, totalIncomplete, em.incompleteExperiences[taskID].Timeout.Format(time.RFC3339), episode)
 
 	// Update memory usage estimation
 	em.updateMemoryUsage()
-	
-	// DEBUG CODE: After memory update
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-STORE-AFTER-MEMORY] Memory updated: cloudletId=%s, MemoryUsageBytes=%d",
-		taskID, em.memoryUsageBytes)
 }
 
 func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCompletionReport, nodeStatus *pb.FogNode, queueLength int) error {
@@ -144,26 +126,13 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	// taskId (from report.TaskId) is pattern-based and used for cache operations, NOT for experience lookup
 	// Both cloudletId and taskId are sent separately from iFogSim - we do NOT assume taskId contains cloudletId
 	
-	// DEBUG CODE: Entry to CompleteExperience (before lock)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-ENTRY] CompleteExperience called: cloudletId=%s, report.taskId=%s, report.cloudletId=%s, QueueLength=%d, HasNodeStatus=%t",
-		taskID, report.TaskId, report.CloudletId, queueLength, nodeStatus != nil)
-	
 	em.mu.Lock()
-	
-	// DEBUG CODE: After lock acquired
-	currentCountBeforeLookup := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-LOCK] Lock acquired: cloudletId=%s, CurrentIncompleteCount=%d",
-		taskID, currentCountBeforeLookup)
 	
 	// Log all available cloudletIds before lookup (for debugging)
 	availableCloudletIds := make([]string, 0, len(em.incompleteExperiences))
 	for id := range em.incompleteExperiences {
 		availableCloudletIds = append(availableCloudletIds, id)
 	}
-	
-	// DEBUG CODE: Before lookup
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-BEFORE-LOOKUP] About to lookup: cloudletId=%s, AvailableIncompleteExperiences=%d, cloudletIds=%v",
-		taskID, len(availableCloudletIds), availableCloudletIds)
 	
 	logger.GetLogger().Infof("[EXP-MGR-COMPLETE] Looking up cloudletId=%s, AvailableIncompleteExperiences=%d, cloudletIds=%v",
 		taskID, len(availableCloudletIds), availableCloudletIds)
@@ -172,13 +141,7 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 	incompleteExp, exists := em.incompleteExperiences[taskID]
 	em.mu.Unlock()
 	
-	// DEBUG CODE: After lookup
-	if exists {
-		logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-LOOKUP-FOUND] Experience found: cloudletId=%s, CreatedAt=%s, Age=%s, Action=%s",
-			taskID, incompleteExp.Timestamp.Format(time.RFC3339), time.Since(incompleteExp.Timestamp).String(), incompleteExp.Action.Description)
-	} else {
-		logger.GetLogger().Warnf("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-LOOKUP-NOT-FOUND] Experience NOT found: cloudletId=%s, AvailableCloudletIds=%v",
-			taskID, availableCloudletIds)
+	if !exists {
 		
 		// Retry with small delay (handles race conditions between storage and completion)
 		// This can happen if completion report arrives very quickly after scheduling
@@ -197,18 +160,11 @@ func (em *ExperienceManager) CompleteExperience(taskID string, report *pb.TaskCo
 		logger.GetLogger().Infof("[EXP-MGR-COMPLETE-RETRY] Experience found after retry: cloudletId=%s", taskID)
 	}
 	
-	// DEBUG CODE: Before delete
 	em.mu.Lock()
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-BEFORE-DELETE] About to delete: cloudletId=%s, CurrentCount=%d",
-		taskID, len(em.incompleteExperiences))
 	
 	// Remove from incomplete experiences
 	delete(em.incompleteExperiences, taskID)
 	remainingIncomplete := len(em.incompleteExperiences)
-	
-	// DEBUG CODE: After delete
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-COMPLETE-AFTER-DELETE] Experience deleted: cloudletId=%s, RemainingIncomplete=%d (was %d)",
-		taskID, remainingIncomplete, currentCountBeforeLookup)
 	
 	em.mu.Unlock()
 	
@@ -597,17 +553,8 @@ func (em *ExperienceManager) emergencyMemoryCleanup() {
 }
 
 func (em *ExperienceManager) Cleanup() {
-	// DEBUG CODE: Entry to Cleanup
 	em.mu.Lock()
-	
-	// DEBUG CODE: After lock acquired
-	beforeCleanupCount := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-ENTRY] Cleanup called: CurrentIncompleteCount=%d, EpisodeCleanupCounter=%d, ConfigEnabled=%t",
-		beforeCleanupCount, em.episodeCleanupCounter, em.config.Enabled)
-	
-	defer func() {
-		em.mu.Unlock()
-	}()
+	defer em.mu.Unlock()
 
 	now := time.Now()
 
@@ -626,36 +573,18 @@ func (em *ExperienceManager) Cleanup() {
 
 	// Scheduled cleanup based on episode intervals (only for complete experiences)
 	if em.config.Enabled {
-		// DEBUG CODE: Before scheduled cleanup check
-		logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-BEFORE-SCHEDULED] Scheduled cleanup check: EpisodeCleanupCounter=%d, CleanupIntervalEpisodes=%d",
-			em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
-		
 		em.episodeCleanupCounter++
 
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes {
-			// DEBUG CODE: Before performScheduledCleanup
-			logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-BEFORE-PERFORM] About to perform scheduled cleanup: EpisodeCleanupCounter=%d",
-				em.episodeCleanupCounter)
-			
 			em.performScheduledCleanup()
 			em.episodeCleanupCounter = 0
 			em.lastCleanupTime = now
-			
-			// DEBUG CODE: After performScheduledCleanup
-			afterScheduledCleanupCount := len(em.incompleteExperiences)
-			logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-CLEANUP-AFTER-PERFORM] Scheduled cleanup complete: AfterCount=%d (incomplete experiences preserved)",
-				afterScheduledCleanupCount)
 		}
 	}
 }
 
 // Perform scheduled cleanup
 func (em *ExperienceManager) performScheduledCleanup() {
-	// DEBUG CODE: Entry to performScheduledCleanup
-	beforeCount := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-PERFORM-SCHEDULED-ENTRY] performScheduledCleanup called: BeforeIncompleteCount=%d",
-		beforeCount)
-	
 	em.CleanupStableExperiences()
 	em.enforceExperienceLimit()
 
@@ -663,12 +592,6 @@ func (em *ExperienceManager) performScheduledCleanup() {
 	em.cleanupUnusedQValueHistory()
 
 	em.updateMemoryUsage()
-	
-	// DEBUG CODE: After performScheduledCleanup
-	afterCount := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-PERFORM-SCHEDULED-EXIT] performScheduledCleanup complete: AfterIncompleteCount=%d (was %d)",
-		afterCount, beforeCount)
-
 }
 
 // Clean up unused Q-value history
@@ -767,16 +690,8 @@ func (em *ExperienceManager) GetStats() map[string]interface{} {
 
 // FIXED MarkEpisodeComplete - compilation errors resolved
 func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
-	// DEBUG CODE: Entry to MarkEpisodeComplete
 	em.mu.Lock()
-	
-	beforeCount := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-EPISODE-ENTRY] MarkEpisodeComplete called: Episode=%d, BeforeIncompleteCount=%d, EpisodeCleanupCounter=%d",
-		episodeNumber, beforeCount, em.episodeCleanupCounter)
-	
-	defer func() {
-		em.mu.Unlock()
-	}()
+	defer em.mu.Unlock()
 
 
 	// Episode completion triggers cleanup and stability updates
@@ -811,16 +726,8 @@ func (em *ExperienceManager) MarkEpisodeComplete(episodeNumber int) {
 		// Check if cleanup should be triggered
 		if em.episodeCleanupCounter >= em.config.CleanupIntervalEpisodes-1 {
 			// Will trigger on next Cleanup() call
-			// DEBUG CODE: Cleanup will trigger
-			logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-EPISODE-CLEANUP-TRIGGER] Cleanup will trigger on next Cleanup() call: EpisodeCleanupCounter=%d, CleanupIntervalEpisodes=%d",
-				em.episodeCleanupCounter, em.config.CleanupIntervalEpisodes)
 		}
 	}
-	
-	// DEBUG CODE: After episode processing
-	afterCount := len(em.incompleteExperiences)
-	logger.GetLogger().Infof("[DEBUG CODE] [EXP-MGR-EPISODE-EXIT] MarkEpisodeComplete complete: Episode=%d, AfterIncompleteCount=%d (was %d), CompleteExperiences=%d",
-		episodeNumber, afterCount, beforeCount, len(em.completeExperiences))
 	
 	logger.GetLogger().Infof("[EXP-MGR-EPISODE] MarkEpisodeComplete completed: Episode=%d, IncompleteExperiences=%d, CompleteExperiences=%d, CleanupCounter=%d",
 		episodeNumber, len(em.incompleteExperiences), len(em.completeExperiences), em.episodeCleanupCounter)
